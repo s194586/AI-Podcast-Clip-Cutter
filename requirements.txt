@@ -1,3 +1,4 @@
 yt-dlp
 python-dotenv
 google-generativeai
+tqdm

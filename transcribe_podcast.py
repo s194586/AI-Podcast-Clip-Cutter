@@ -29,10 +29,10 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 try:
-    import google.genai as genai
+    import google.generativeai as genai
 except Exception:
     try:
-        import google.generativeai as genai
+        import google.genai as genai
     except Exception:
         genai = None
 
@@ -283,7 +283,7 @@ def main():
     parser.add_argument("--silence-threshold", type=float, default=-30.0, help="dB threshold for silence detection")
     parser.add_argument("--min-silence-len", type=float, default=0.8, help="minimum silence to detect (s)")
     parser.add_argument("--min-segment-len", type=float, default=5.0, help="minimum kept segment length (s)")
-    parser.add_argument("--model", default='models/gemini-flash-latest', help="Model name for Gemini")
+    parser.add_argument("--model", default='models/gemini-2.5-flash', help="Model name for Gemini")
     args = parser.parse_args()
 
     inp = Path(args.file)
@@ -416,18 +416,23 @@ def main():
     for idx, (s, e) in enumerate(final_groups):
         out_chunk_json = tmp_transcripts / f"chunk{idx:04d}.json"
         
-        # Check if already processed
+        # Check if already processed (and has actual transcription data)
         if out_chunk_json.exists():
             try:
                 with open(out_chunk_json, "r", encoding="utf-8") as fh:
                     test_load = json.load(fh)
-                    if test_load: # not empty
+                    # Only skip if file has non-empty transcription
+                    if test_load and len(test_load) > 0:
                         print(f"Chunk {idx+1}/{total} found in cache, skipping.")
                         chunk_jsons.append(out_chunk_json)
                         offsets.append(s)
                         continue
+                    # If file exists but is empty, delete it to retry
+                    if not test_load or len(test_load) == 0:
+                        out_chunk_json.unlink(missing_ok=True)
             except Exception:
-                pass
+                # If file is corrupted, delete and retry
+                out_chunk_json.unlink(missing_ok=True)
 
         print(f"Processing chunk {idx+1}/{total}: {s:.1f}s - {e:.1f}s")
         chunk_path = cache_dir / f"chunk{idx:04d}.mp3"
@@ -435,30 +440,54 @@ def main():
             cut_chunk(inp, chunk_path, s, e)
         
         # transcribe
+        parsed = None
         try:
             parsed = transcribe_chunk(chunk_path, args.model, api_key)
         except Exception as exc:
-            print(f"Chunk {idx+1}/{total} failed: {exc}", file=sys.stderr)
-            parsed = []
+            print(f"⚠ Chunk {idx+1}/{total} failed: {exc}", file=sys.stderr)
+            parsed = None
         
-        try:
-            with open(out_chunk_json, "w", encoding="utf-8") as fh:
-                json.dump(parsed, fh, ensure_ascii=False, indent=2)
-        except Exception as exc:
-            print(f"Failed to write chunk JSON {out_chunk_json}: {exc}", file=sys.stderr)
+        # Only save to cache if transcription succeeded (non-empty)
+        if parsed is not None and len(parsed) > 0:
+            try:
+                with open(out_chunk_json, "w", encoding="utf-8") as fh:
+                    json.dump(parsed, fh, ensure_ascii=False, indent=2)
+                chunk_jsons.append(out_chunk_json)
+                offsets.append(s)
+            except Exception as exc:
+                print(f"✗ Failed to write chunk JSON {out_chunk_json}: {exc}", file=sys.stderr)
+        else:
+            # Don't save empty results; mark as failed for later validation
+            print(f"⚠ Chunk {idx+1}/{total}: No transcription data received", file=sys.stderr)
+            chunk_jsons.append(None)  # Mark as failed
+            offsets.append(s)
         
-        chunk_jsons.append(out_chunk_json)
-        offsets.append(s)
         print(f"Fragment {idx+1}/{total} przetworzony")
 
+    # Validate: check if all chunks were successfully transcribed
+    failed_chunks = [i for i, cj in enumerate(chunk_jsons) if cj is None]
+    if failed_chunks:
+        print(f"\n✗ BŁĄD: Transkrypcja nie powiodła się dla {len(failed_chunks)} fragmentów:", file=sys.stderr)
+        for idx in failed_chunks:
+            s, e = final_groups[idx]
+            print(f"  - Chunk {idx+1}/{total}: {s:.1f}s - {e:.1f}s", file=sys.stderr)
+        print(f"\n✗ Przerwanie przed zapisaniem final_transcript.json", file=sys.stderr)
+        sys.exit(1)
+    
     # merge and output
     merged = merge_transcripts(chunk_jsons, offsets)
+    
+    # Final check: ensure merged data is not empty
+    if not merged or len(merged) == 0:
+        print(f"\n✗ BŁĄD: Brak wyników transkrypcji po scaleniu wszystkich fragmentów", file=sys.stderr)
+        sys.exit(1)
+    
     out_path = Path(args.out) if args.out else Path("transcripts") / (inp.stem + "_Final.json")
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with open(out_path, "w", encoding="utf-8") as fh:
         json.dump(merged, fh, ensure_ascii=False, indent=2)
 
-    print(f"Transcription finished! Saved to {out_path}")
+    print(f"✓ Transcription finished! Saved to {out_path}")
 
 
 if __name__ == "__main__":
