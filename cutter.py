@@ -70,10 +70,11 @@ def cut_segment(video_path, output_path, start, duration):
     cmd = [
         'ffmpeg',
         '-y',
-        '-ss', f'{start:.3f}',
         '-i', str(video_path),
+        '-ss', f'{start:.3f}',
         '-t', f'{duration:.3f}',
         '-map', '0',
+        '-vf', 'crop=ih*9/16:ih:(iw-ih*9/16)/2:0,scale=1080:1920',
         '-c:v', 'libx264',
         '-preset', 'superfast',
         '-crf', '23',
@@ -93,10 +94,10 @@ def format_time(seconds):
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description='Wycinanie segmentów Shorts z wideo przy pomocy ffmpeg')
+    parser = argparse.ArgumentParser(description='Wycinanie surowych shotów Shorts z wideo przy pomocy ffmpeg')
     parser.add_argument('--video', default=None, help='Ścieżka do pliku wideo w input/')
     parser.add_argument('--windows', default='top_windows.json', help='Plik JSON z listą wybranych okien (start/end)')
-    parser.add_argument('--output-dir', default='cuts', help='Katalog wyjściowy dla wyciętych plików')
+    parser.add_argument('--output-dir', default='cuts/raw', help='Katalog wyjściowy dla surowych shotów')
     return parser.parse_args()
 
 

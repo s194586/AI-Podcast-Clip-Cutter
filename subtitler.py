@@ -4,14 +4,14 @@ subtitler.py — Dodawanie dynamicznych napisów na wycięte wideo.
 
 Funkcjonalność:
 - Ładuje transkrypcję z JSON (Naruciak_Final.json)
-- Dla każdego wycinku z cuts/ znajduje odpowiadające segmenty transkrypcji
-- Generuje napisy (1-3 słowa naraz) z bezpieczeństwem czasu
-- Dodaje napisy na wideo za pomocą ffmpeg (białe, duża czcionka, czarny obrys)
-- Umieszcza napisy w dolnej 1/3 ekranu
+- Dla każdego wycinku z cuts/raw/ znajduje odpowiadające segmenty transkrypcji
+- Generuje napisy (1-2 słowa naraz) z bezpieczeństwem czasu
+- Dodaje napisy na wideo za pomocą ffmpeg (białe, mała czcionka, czarny obrys)
+- Umieszcza małe napisy nisko na dole shota
 - Surowe wideo przenosi do cuts/raw/, z napisami zapisuje w cuts/subtitles/
 
 Użycie:
-  python subtitler.py --transcript transcripts/Naruciak_Final.json --input-dir cuts --output-raw cuts/raw --output-subs cuts/subtitles
+  python subtitler.py --transcript transcripts/Naruciak_Final.json --input-dir cuts/raw --output-raw cuts/raw --output-subs cuts/subtitles
 
 """
 
@@ -53,8 +53,8 @@ def load_transcript(path: Path) -> List[Dict]:
     return data
 
 
-def split_into_chunks(text: str, max_words: int = 3) -> List[str]:
-    """Dzieli tekst na kawałki (1-3 słowa)."""
+def split_into_chunks(text: str, max_words: int = 2) -> List[str]:
+    """Dzieli tekst na kawałki (1-2 słowa) dla dynamiki Shorts."""
     words = text.split()
     if not words:
         return []
@@ -97,8 +97,8 @@ def build_subtitle_lines(transcript: List[Dict], segment_start: float, segment_d
         rel_start = overlap_start - segment_start
         rel_end = overlap_end - segment_start
         
-        # Dziel tekst na małe kawałki (1-3 słowa)
-        text_chunks = split_into_chunks(text, max_words=3)
+        # Dziel tekst na małe kawałki (1-2 słowa, aby zachować dynamikę Shortsa)
+        text_chunks = split_into_chunks(text, max_words=2)
         
         if not text_chunks:
             continue
@@ -169,14 +169,15 @@ def add_subtitles_to_video(
     input_video: Path,
     output_video: Path,
     srt_file: Path,
-    font_size: int = 60,
-    font_name: str = 'Arial',
+    font_size: int = 22,
+    font_name: str = 'Montserrat-Bold',
 ) -> None:
     """
     Dodaje napisy do wideo za pomocą ffmpeg.
-    - Białe napisy z czarnym obrysem
-    - Umieszcza w dolnej 1/3 ekranu
-    - Używa filtru subtitles
+    - Białe napisy z cienkim czarnym obrysem
+    - Brak cienia dla nowoczesnego, minimalistycznego wyglądu
+    - Wyśrodkowane nisko na dole (Alignment=2), w stylu krótkich shotów
+    - Używa fontu Montserrat-Bold lub Arial Black
     """
     output_video.parent.mkdir(parents=True, exist_ok=True)
     
@@ -184,8 +185,8 @@ def add_subtitles_to_video(
     filter_str = (
         f"subtitles='{srt_file}':force_style="
         f"'FontName={font_name},FontSize={font_size},"
-        f"PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,Outline=2,"
-        f"MarginL=50,MarginR=50,MarginV=80'"
+        f"PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,Outline=1.2,"
+        f"BorderStyle=1,Shadow=0,Alignment=2,MarginL=70,MarginR=70,MarginV=25'"
     )
     
     cmd = [
@@ -231,10 +232,14 @@ def process_cut_file(
     if not subtitles:
         print(f'  ⚠ Brak napisów dla {cut_file.name}')
     
-    # Przenieś surowe wideo do cuts/raw/
+    # Zapisz surowe wideo do cuts/raw/. Gdy wejściem jest już cuts/raw,
+    # zostaw plik w miejscu i generuj tylko wariant z napisami.
     raw_output = output_raw / cut_file.name
-    shutil.copy2(cut_file, raw_output)
-    print(f'✓ Skopiowano surowe wideo: {raw_output.name}')
+    if cut_file.resolve() != raw_output.resolve():
+        shutil.copy2(cut_file, raw_output)
+        print(f'✓ Skopiowano surowe wideo: {raw_output.name}')
+    else:
+        print(f'✓ Surowe wideo jest już w cuts/raw: {raw_output.name}')
     
     # Stwórz SRT
     srt_content = create_subtitle_srt(subtitles)
@@ -245,7 +250,7 @@ def process_cut_file(
     # Dodaj napisy do wideo
     subs_output = output_subs / cut_file.name
     try:
-        add_subtitles_to_video(cut_file, subs_output, srt_file, font_size=60, font_name='Arial')
+        add_subtitles_to_video(raw_output, subs_output, srt_file, font_size=22, font_name='Montserrat-Bold')
         print(f'✓ Dodano napisy: {subs_output.name}')
     except Exception as e:
         print(f'  ✗ Błąd przy dodawaniu napisów: {e}')

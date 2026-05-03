@@ -25,8 +25,8 @@ python manager.py --url "..." --skip-download
 2. 📥 **Pobieranie** - `download_content.py` (wideo z YouTube max 1080p, audio, metadane)
 3. 🎙️ **Transkrypcja** - `transcribe_podcast.py` (dzielenie po ciszy, Google Gemini API)
 4. 📊 **Analiza** - `analyze_virals.py` (heatmapa + transkrypcja → top momenty)
-5. ✂️ **Wycinanie** - `cutter.py` (30-60s segmenty na bazie heatmapy)
-6. 📝 **Napisy** - `subtitler.py` (białe napisy z czarnym obrysem, dolna 1/3 ekranu)
+5. ✂️ **Wycinanie** - `cutter.py` (shoty 9:16 zapisywane od razu do `cuts/raw/`)
+6. 📝 **Napisy** - `subtitler.py` (małe białe napisy z czarnym obrysem, nisko na dole)
 7. 🧹 **Cleanup** (opcjonalnie) - usuwa wideo z input/ po sukcesie
 
 **Obsługa błędów:**
@@ -42,16 +42,16 @@ Dodaje napisy na wycięte wideo z transkrypcji.
 ```bash
 python subtitler.py \
   --transcript transcripts/Naruciak_Final.json \
-  --input-dir cuts \
+  --input-dir cuts/raw \
   --output-raw cuts/raw \
   --output-subs cuts/subtitles
 ```
 
 **Funkcjonalność:**
-- ✅ 1-3 słowa na ekranie (dynamiczny rozsplit transkrypcji)
-- ✅ Duża, czytelna czcionka (Arial 60pt)
-- ✅ Białe napisy z czarnym obrysem (2px)
-- ✅ Umieszczone w dolnej 1/3 ekranu (MarginV=80)
+- ✅ 1-2 słowa na ekranie (dynamiczny rozsplit transkrypcji)
+- ✅ Mała, czytelna czcionka dopasowana do shotów
+- ✅ Białe napisy z cienkim czarnym obrysem
+- ✅ Umieszczone nisko przy dole (Alignment=2, MarginV=25)
 - ✅ Bezpieczne strefy (nie zasłaniają UI TikToka/Shortsów)
 
 **Output:**
@@ -89,9 +89,9 @@ python analyze_virals.py \
 
 #### `cutter.py`
 ```bash
-python cutter.py --windows top_windows.json --output-dir cuts
+python cutter.py --windows top_windows.json --output-dir cuts/raw
 ```
-- Wycina segmenty z wideo
+- Wycina surowe shoty z wideo do `cuts/raw/`
 - Format: `segment_1_MM-SS_ms_MM-SS_ms.mp4`
 
 ---
@@ -106,7 +106,6 @@ project/
 │   ├── Naruciak_Final.json        # Główna transkrypcja
 │   └── cache/                      # Temp cache dla transkrypcji
 ├── cuts/                           # Wycięte segmenty
-│   ├── segment_*.mp4              # Surowe wycinki (tymczasowe)
 │   ├── raw/                        # Surowe wycinki (bez napisów)
 │   └── subtitles/                 # Wycinki z napisami (FINAL)
 ├── top_windows.json                # Wybrane momenty
@@ -209,8 +208,8 @@ export GOOGLE_API_KEY="your-key"
 ## 📝 Notatki
 
 - Napisy są **wbijane bezpośrednio** (burnt-in) za pomocą filtru ffmpeg `subtitles`
-- Tekst: dynamiczny (1-3 słowa), duża czcionka, czytelny
-- Safe zones: dolna 1/3 ekranu, MarginV=80 (nie zasłania UI)
+- Tekst: dynamiczny (1-2 słowa), mała czytelna czcionka
+- Safe zones: nisko przy dole, MarginV=25
 - Wszystkie procesy logują output dla debugowania
 - Workflow jest modularny - każdy krok można uruchomić niezależnie
 

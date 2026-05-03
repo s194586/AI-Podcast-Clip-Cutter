@@ -188,7 +188,7 @@ class WorkflowManager:
         candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
 
         for candidate in candidates:
-            if self.has_video_stream(candidate):
+            if self.has_video_stream(candidate) and self.has_audio_stream(candidate):
                 return candidate
 
         return None
@@ -248,8 +248,11 @@ class WorkflowManager:
     
     def transcribe_podcast(self) -> bool:
         """Krok 2: Transkrybuj audio."""
-        audio_file = self.find_latest_audio()
+        if self.transcript_file.exists():
+            print(f"  Plik transkrypcji już istnieje: {self.transcript_file.name}. Pomijam transkrypcję.")
+            return True
         
+        audio_file = self.find_latest_audio()
         if not audio_file:
             print("✗ Nie znaleziono pliku audio w input/")
             return False
@@ -301,7 +304,7 @@ class WorkflowManager:
             'python', str(self.script_dir / 'cutter.py'),
             '--video', str(video_file),
             '--windows', str(self.windows_file),
-            '--output-dir', str(self.cuts_dir),
+            '--output-dir', str(self.cuts_raw_dir),
         ]
         
         return self.run_command(cmd, "4️⃣  Wycinanie segmentów")
@@ -315,7 +318,7 @@ class WorkflowManager:
         cmd = [
             'python', str(self.script_dir / 'subtitler.py'),
             '--transcript', str(self.transcript_file),
-            '--input-dir', str(self.cuts_dir),
+            '--input-dir', str(self.cuts_raw_dir),
             '--output-raw', str(self.cuts_raw_dir),
             '--output-subs', str(self.cuts_subs_dir),
         ]
@@ -394,11 +397,27 @@ class WorkflowManager:
             
             # Workflow
             steps = []
-            
-            if not self.skip_download:
-                steps.append((self.download_content, "Pobieranie"))
-                steps.append((self.transcribe_podcast, "Transkrypcja"))
-            
+            has_video = self.find_latest_video() is not None
+            has_transcript = self.transcript_file.exists()
+
+            if has_video and has_transcript:
+                print("  Znaleziono istniejące pliki w input/ i transcripts/. Pomijam pobieranie i transkrypcję.")
+            else:
+                if self.skip_download:
+                    if has_video:
+                        print("  Pomijam pobieranie wideo (plik już jest w input/).")
+                    else:
+                        print("  Brak pliku wideo w input/. Wykonam pobieranie mimo --skip-download.")
+                        steps.append((self.download_content, "Pobieranie"))
+
+                    if not has_transcript:
+                        steps.append((self.transcribe_podcast, "Transkrypcja"))
+                else:
+                    if not has_video:
+                        steps.append((self.download_content, "Pobieranie"))
+                    if not has_transcript:
+                        steps.append((self.transcribe_podcast, "Transkrypcja"))
+
             steps.extend([
                 (self.analyze_virals, "Analiza"),
                 (self.cut_segments, "Wycinanie"),
