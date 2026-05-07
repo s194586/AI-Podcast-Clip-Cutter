@@ -49,6 +49,74 @@ ARTIFACT_RE = re.compile(
     r"brak dźwięku|w załączonym audio)",
     re.IGNORECASE,
 )
+RETRY_DELAYS_SECONDS = (5, 10, 20)
+COMMON_NAMES = {
+    "adam",
+    "ania",
+    "bartek",
+    "dawid",
+    "ewa",
+    "jan",
+    "kamil",
+    "kasia",
+    "maciek",
+    "marek",
+    "michal",
+    "michał",
+    "olaf",
+    "pawel",
+    "paweł",
+    "piotr",
+    "tomek",
+}
+
+
+def is_rate_limit_error(exc: Exception) -> bool:
+    parts = [
+        str(exc),
+        str(getattr(exc, "code", "")),
+        str(getattr(exc, "status", "")),
+        str(getattr(exc, "reason", "")),
+    ]
+    message = " ".join(parts).lower()
+    return (
+        "429" in message
+        or "too many requests" in message
+        or "rate limit" in message
+        or "resource_exhausted" in message
+        or "quota" in message
+    )
+
+
+def wait_before_retry(exc: Exception, attempt: int, max_retries: int, operation: str) -> None:
+    if attempt >= max_retries:
+        return
+    delay = RETRY_DELAYS_SECONDS[min(attempt - 1, len(RETRY_DELAYS_SECONDS) - 1)]
+    reason = "429/rate limit" if is_rate_limit_error(exc) else "temporary API error"
+    print(f"  ⚠ {operation}: {reason}, retry za {delay}s ({attempt}/{max_retries})")
+    time.sleep(delay)
+
+
+def generate_content_with_backoff(model: Any, payload: List[Any], operation: str, max_retries: int = 3) -> Any:
+    for attempt in range(1, max_retries + 1):
+        try:
+            return model.generate_content(payload)
+        except Exception as exc:
+            if attempt == max_retries:
+                raise
+            wait_before_retry(exc, attempt, max_retries, operation)
+    raise RuntimeError(f"Gemini call failed: {operation}")
+
+
+def upload_file_with_backoff(path: Path, operation: str, max_retries: int = 3) -> Any:
+    for attempt in range(1, max_retries + 1):
+        try:
+            return genai.upload_file(str(path))
+        except Exception as exc:
+            if attempt == max_retries:
+                raise
+            wait_before_retry(exc, attempt, max_retries, operation)
+    raise RuntimeError(f"Gemini upload failed: {operation}")
 
 
 def parse_time(value: Any) -> float:
@@ -90,6 +158,52 @@ def format_time(seconds: Optional[float]) -> Optional[str]:
 
 def tokenize(text: str) -> List[str]:
     return WORD_RE.findall(text.lower())
+
+
+def collapse_duplicate_words(text: str) -> str:
+    words = text.split()
+    cleaned = []
+    previous = ""
+    for word in words:
+        comparable = re.sub(r"[^\wąćęłńóśźżĄĆĘŁŃÓŚŹŻ]+", "", word).lower()
+        if comparable and comparable == previous:
+            continue
+        cleaned.append(word)
+        previous = comparable
+    return " ".join(cleaned)
+
+
+def apply_basic_text_fixes(text: str) -> Tuple[str, List[str]]:
+    fixes = []
+    fixed = re.sub(r"\s+", " ", text).strip()
+    if fixed != text:
+        fixes.append("whitespace")
+
+    deduped = collapse_duplicate_words(fixed)
+    if deduped != fixed:
+        fixed = deduped
+        fixes.append("duplicate_words")
+
+    if fixed:
+        capitalized = fixed[0].upper() + fixed[1:]
+        if capitalized != fixed:
+            fixed = capitalized
+            fixes.append("sentence_capitalization")
+
+    def capitalize_name(match: re.Match) -> str:
+        return match.group(1) + match.group(2).capitalize()
+
+    name_pattern = r"(^|[\s\"'(\[])\b(" + "|".join(re.escape(name) for name in sorted(COMMON_NAMES)) + r")\b"
+    named = re.sub(name_pattern, capitalize_name, fixed, flags=re.IGNORECASE)
+    if named != fixed:
+        fixed = named
+        fixes.append("name_capitalization")
+
+    if fixed and fixed[-1] not in ".!?…":
+        fixed += "."
+        fixes.append("terminal_punctuation")
+
+    return fixed, fixes
 
 
 def parse_bool(value: Any) -> Optional[bool]:
@@ -209,9 +323,9 @@ def normalize_transcript(
         if end <= start + 0.05:
             add_issue(
                 issues,
-                "warning",
+                "error",
                 "ZERO_DURATION",
-                "Segment ma zerową długość; traktuję go jak krótki segment z zaokrąglonym timestampem.",
+                "Segment musi spełniać warunek end > start.",
                 index=index,
                 start=start,
                 end=end,
@@ -578,35 +692,19 @@ def ask_gemini_to_check_sample(
         "\"heard_text\" string, \"hallucinated_words\" array, \"missing_words\" array, \"notes\" string."
     )
 
-    uploaded = None
-    last_error: Optional[Exception] = None
-    for attempt in range(1, max_retries + 1):
-        try:
-            uploaded = genai.upload_file(str(sample_path))
-            break
-        except Exception as exc:
-            last_error = exc
-            if attempt == max_retries:
-                raise
-            time.sleep(2 ** attempt)
-    if uploaded is None and last_error is not None:
-        raise last_error
-
+    uploaded = upload_file_with_backoff(sample_path, "Gemini sample upload", max_retries=max_retries)
     model = genai.GenerativeModel(model_name)
-    for attempt in range(1, max_retries + 1):
-        try:
-            result = model.generate_content([uploaded, prompt])
-            text = getattr(result, "text", None)
-            if not text and hasattr(result, "candidates") and result.candidates:
-                text = str(result.candidates[0])
-            parsed = extract_json_object(text or "")
-            return normalize_ai_result(parsed)
-        except Exception:
-            if attempt == max_retries:
-                raise
-            time.sleep(2 ** attempt)
-
-    raise RuntimeError("Nie udało się sprawdzić próbki audio.")
+    result = generate_content_with_backoff(
+        model,
+        [uploaded, prompt],
+        "Gemini audio subtitle check",
+        max_retries=max_retries,
+    )
+    text = getattr(result, "text", None)
+    if not text and hasattr(result, "candidates") and result.candidates:
+        text = str(result.candidates[0])
+    parsed = extract_json_object(text or "")
+    return normalize_ai_result(parsed)
 
 
 def retranscribe_window(audio_path: Path, start: float, end: float, api_key: str, model_name: str) -> Optional[str]:
@@ -623,9 +721,9 @@ def retranscribe_window(audio_path: Path, start: float, end: float, api_key: str
             "Nie dodawaj znaczków czasowych ani innych metadanych."
         )
 
-        uploaded = genai.upload_file(str(sample_path))
+        uploaded = upload_file_with_backoff(sample_path, "Gemini retranscription upload")
         model = genai.GenerativeModel(model_name)
-        result = model.generate_content([uploaded, prompt])
+        result = generate_content_with_backoff(model, [uploaded, prompt], "Gemini retranscription")
         text = getattr(result, "text", None)
         if text:
             return text.strip()
@@ -643,39 +741,41 @@ def fix_local_issues(segments: List[Dict[str, Any]], issues: List[Dict[str, Any]
         end = parse_time(segment.get("end"))
         text = segment.get("text", "").strip()
 
-        # Napraw overlapping segments
         if prev_end is not None and start < prev_end - 0.25:
-            new_start = prev_end
-            fixed_segment["start"] = format_time(new_start)
+            original_start = start
+            start = prev_end
+            fixed_segment["start"] = format_time(start)
             fix_log["fixes_applied"].append({
                 "type": "overlap_fix",
                 "segment_index": i,
-                "original_start": format_time(start),
-                "fixed_start": format_time(new_start),
-                "reason": "Segment nachodził na poprzedni",
+                "original_start": format_time(original_start),
+                "fixed_start": format_time(start),
+                "reason": "Segment nachodził na poprzedni segment",
             })
 
-        # Napraw zero duration
-        if end - start < 0.1:
+        if end <= start:
             new_end = start + 0.5
             fixed_segment["end"] = format_time(new_end)
             fix_log["fixes_applied"].append({
-                "type": "zero_duration_fix",
+                "type": "invalid_duration_fix",
                 "segment_index": i,
+                "original_start": format_time(parse_time(segment.get("start"))),
                 "original_end": format_time(end),
                 "fixed_end": format_time(new_end),
-                "reason": "Segment miał zerową długość",
+                "reason": "Segment nie spełniał warunku end > start",
             })
+            end = new_end
 
-        # Napraw negative duration
-        if end < start:
-            fixed_segment["end"] = fixed_segment["start"]
+        fixed_text, text_fixes = apply_basic_text_fixes(text)
+        if fixed_text != text:
+            fixed_segment["text"] = fixed_text
             fix_log["fixes_applied"].append({
-                "type": "negative_duration_fix",
+                "type": "text_cleanup",
                 "segment_index": i,
-                "original_end": format_time(end),
-                "fixed_end": fixed_segment["start"],
-                "reason": "Segment kończył się przed początkiem",
+                "original_text": text,
+                "fixed_text": fixed_text,
+                "fixes": text_fixes,
+                "reason": "Lokalna korekta tekstu przed generowaniem napisów",
             })
 
         fixed_segments.append(fixed_segment)
@@ -705,17 +805,15 @@ def fix_ai_issues(
         timing_ok = sample.get("timing_ok")
         hallucinated_words = sample.get("hallucinated_words", [])
         matches_audio = sample.get("matches_audio")
+        window_segments = []
+        for i, seg in enumerate(fixed_segments):
+            seg_start = parse_time(seg["start"])
+            seg_end = parse_time(seg["end"])
+            if seg_end > start and seg_start < end:
+                window_segments.append((i, seg))
 
         # Napraw timing mismatch
         if timing_ok is False:
-            # Znajdź segmenty w tym oknie
-            window_segments = []
-            for i, seg in enumerate(fixed_segments):
-                seg_start = parse_time(seg["start"])
-                seg_end = parse_time(seg["end"])
-                if seg_end > start and seg_start < end:
-                    window_segments.append((i, seg))
-
             if window_segments:
                 # Dostosuj timing na podstawie heard_text (jeśli dostępne)
                 heard_text = sample.get("heard_text", "")
@@ -740,6 +838,32 @@ def fix_ai_issues(
                                     "fixed_end": format_time(new_end),
                                     "reason": f"Timing mismatch w oknie {format_time(start)}-{format_time(end)}",
                                 })
+
+        logic_check = sample.get("logic_check") or {}
+        corrected_text = str(logic_check.get("corrected_text") or "").strip()
+        expected_text = str(sample.get("expected_text") or "").strip()
+        if logic_check and logic_check.get("has_errors") is True and corrected_text and corrected_text != expected_text:
+            if len(window_segments) == 1:
+                idx, seg = window_segments[0]
+                original_text = str(seg.get("text", "")).strip()
+                if corrected_text != original_text:
+                    fixed_segments[idx]["text"] = corrected_text
+                    fix_log["fixes_applied"].append({
+                        "type": "ai_logic_text_fix",
+                        "segment_index": idx,
+                        "original_text": original_text,
+                        "fixed_text": corrected_text,
+                        "window": f"{format_time(start)}-{format_time(end)}",
+                        "reason": logic_check.get("notes") or "Gemini wykrył błąd gramatyczny/kontekstowy",
+                    })
+            else:
+                fix_log["fixes_applied"].append({
+                    "type": "ai_logic_suggestion",
+                    "window": f"{format_time(start)}-{format_time(end)}",
+                    "original_text": expected_text,
+                    "suggested_text": corrected_text,
+                    "reason": "Sugestia obejmuje wiele segmentów, więc nie została automatycznie rozbita",
+                })
 
         # Napraw hallucinations
         if hallucinated_words or (matches_audio is False and not timing_ok):
@@ -882,6 +1006,39 @@ def normalize_ai_result(result: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def normalize_logic_result(result: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "natural": parse_bool(result.get("natural")),
+        "has_errors": parse_bool(result.get("has_errors")),
+        "corrected_text": str(result.get("corrected_text", "")).strip(),
+        "notes": str(result.get("notes", "")).strip(),
+    }
+
+
+def verify_with_ai(text: str, *, model_name: str, max_retries: int = 3) -> Dict[str, Any]:
+    """Sprawdza, czy tekst brzmi naturalnie i czy nie wymaga korekty językowej."""
+    model = genai.GenerativeModel(model_name)
+    prompt = (
+        "Czy to zdanie brzmi naturalnie i czy nie zawiera błędów gramatycznych/kontekstowych?\n\n"
+        f"TEKST:\n{text}\n\n"
+        "Zwróć WYŁĄCZNIE JSON jako obiekt z kluczami: "
+        "\"natural\" boolean, \"has_errors\" boolean, \"corrected_text\" string, \"notes\" string. "
+        "Jeśli tekst jest poprawny, corrected_text ma być identyczny z tekstem wejściowym. "
+        "Poprawiaj tylko oczywiste literówki, interpunkcję, wielkość liter i błędy gramatyczne. "
+        "Nie zmieniaj sensu wypowiedzi."
+    )
+    result = generate_content_with_backoff(
+        model,
+        [prompt],
+        "Gemini logic check",
+        max_retries=max_retries,
+    )
+    response_text = getattr(result, "text", None)
+    if not response_text and hasattr(result, "candidates") and result.candidates:
+        response_text = str(result.candidates[0])
+    return normalize_logic_result(extract_json_object(response_text or ""))
+
+
 def run_ai_samples(
     audio_path: Path,
     windows: List[Dict[str, Any]],
@@ -906,8 +1063,10 @@ def run_ai_samples(
                     window["expected_text"],
                     model_name=model_name,
                 )
+                logic_result = verify_with_ai(window["expected_text"], model_name=model_name)
                 window_result = dict(window)
                 window_result.update(ai_result)
+                window_result["logic_check"] = logic_result
                 window_result["status"] = "checked"
                 results.append(window_result)
             except Exception as exc:
@@ -939,6 +1098,9 @@ def calculate_score(issues: List[Dict[str, Any]], sample_results: List[Dict[str,
             score -= 18.0
         if sample.get("timing_ok") is False:
             score -= 8.0
+        logic_check = sample.get("logic_check") or {}
+        if logic_check.get("has_errors") is True or logic_check.get("natural") is False:
+            score -= 5.0
         score -= min(12.0, len(sample.get("hallucinated_words", [])) * 4.0)
 
     return max(0.0, min(100.0, round(score, 1)))
@@ -967,6 +1129,15 @@ def build_summary(
         for sample in sample_results
         if sample.get("status") == "checked" and sample.get("timing_ok") is False
     )
+    logic_errors = sum(
+        1
+        for sample in sample_results
+        if sample.get("status") == "checked"
+        and (
+            (sample.get("logic_check") or {}).get("has_errors") is True
+            or (sample.get("logic_check") or {}).get("natural") is False
+        )
+    )
 
     checked_samples = sum(1 for sample in sample_results if sample.get("status") == "checked")
     failed_samples = sum(1 for sample in sample_results if sample.get("status") == "error")
@@ -974,7 +1145,7 @@ def build_summary(
     status = "pass"
     if counts["errors"] > 0 or score < fail_under or hallucination_hits > max_hallucinations:
         status = "fail"
-    elif counts["warnings"] > 0 or hallucination_hits > 0 or timing_mismatches > 0 or failed_samples > 0 or ai_status != "checked":
+    elif counts["warnings"] > 0 or hallucination_hits > 0 or timing_mismatches > 0 or logic_errors > 0 or failed_samples > 0 or ai_status != "checked":
         status = "warning"
 
     return {
@@ -989,6 +1160,7 @@ def build_summary(
         "ai_samples_failed": failed_samples,
         "hallucination_hits": hallucination_hits,
         "timing_mismatches": timing_mismatches,
+        "logic_errors": logic_errors,
     }
 
 
@@ -1013,7 +1185,8 @@ def print_summary(summary: Dict[str, Any], report_path: Path) -> None:
         "  AI próbki: "
         f"{summary['ai_samples_checked']} sprawdzonych, "
         f"{summary['hallucination_hits']} podejrzeń halucynacji, "
-        f"{summary['timing_mismatches']} rozjazdów czasu"
+        f"{summary['timing_mismatches']} rozjazdów czasu, "
+        f"{summary.get('logic_errors', 0)} problemów językowych"
     )
     print(f"  Raport: {report_path.resolve()}")
 

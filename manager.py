@@ -73,7 +73,7 @@ class WorkflowManager:
         skip_download: bool = False,
         skip_subtitle_checker: bool = False,
         force_subtitle_checker: bool = False,
-        auto_fix_subtitles: bool = False,
+        auto_fix_subtitles: bool = True,
     ):
         self.url = url
         self.cleanup = cleanup
@@ -512,7 +512,7 @@ class WorkflowManager:
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description='Orkiestracja workflow: download → transkrypcja → checker → analiza → cutting → napisy',
+        description='Orkiestracja workflow: download -> transkrypcja -> checker -> analiza -> cutting -> napisy',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='''
 Przykłady:
@@ -553,10 +553,17 @@ Przykłady:
         help='Uruchom AI Subtitler Checker nawet jeśli raport jest aktualny',
     )
 
+    parser.set_defaults(auto_fix_subtitles=True)
     parser.add_argument(
         '--auto-fix-subtitles',
         action='store_true',
-        help='Automatycznie napraw wykryte błędy w transkrypcji',
+        help='Automatycznie napraw wykryte błędy w transkrypcji (domyślnie włączone)',
+    )
+    parser.add_argument(
+        '--no-auto-fix-subtitles',
+        dest='auto_fix_subtitles',
+        action='store_false',
+        help='Uruchom checker bez zapisywania automatycznych poprawek',
     )
     
     return parser.parse_args()
