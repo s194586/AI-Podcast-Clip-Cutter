@@ -1,0 +1,12 @@
+[project]
+name = "viral-cutter-ai"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "ffmpeg-python>=0.2.0",
+    "google-generativeai>=0.8.6",
+    "python-dotenv>=1.2.2",
+    "yt-dlp>=2026.3.17",
+]

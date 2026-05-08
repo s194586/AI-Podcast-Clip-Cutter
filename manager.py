@@ -94,8 +94,20 @@ class WorkflowManager:
         # Pliki
         self.transcript_file = self.transcripts_dir / 'final_transcript.json'
         self.subtitle_check_report_file = self.metadata_dir / 'subtitle_check_report.json'
+        self.cutting_logic_file = self.metadata_dir / 'cutting_logic.json'
         self.heatmap_file = self.metadata_dir / 'heatmap.json'
         self.windows_file = self.script_dir / 'top_windows.json'
+
+    def verify_external_tools(self):
+        """Sprawdza, czy narzędzia wymagane do obróbki audio/wideo są dostępne."""
+        missing_tools = [tool for tool in ('ffmpeg', 'ffprobe') if shutil.which(tool) is None]
+        if missing_tools:
+            tools = ', '.join(missing_tools)
+            raise ManagerError(
+                f"Brak wymaganego narzędzia: {tools}. "
+                "Zainstaluj FFmpeg i upewnij się, że ffmpeg oraz ffprobe są dostępne w PATH. "
+                "Windows: winget install Gyan.FFmpeg albo choco install ffmpeg, potem uruchom terminal ponownie."
+            )
     
     def ensure_directories(self):
         """Tworzy niezbędne foldery."""
@@ -251,7 +263,7 @@ class WorkflowManager:
     def download_content(self) -> bool:
         """Krok 1: Pobierz wideo z YouTube."""
         cmd = [
-            'python', str(self.script_dir / 'download_content.py'),
+            sys.executable, str(self.script_dir / 'download_content.py'),
             self.url,
             '--input', str(self.input_dir),
             '--metadata', str(self.metadata_dir),
@@ -273,7 +285,7 @@ class WorkflowManager:
         print(f"  Znalezione audio: {audio_file.name}")
         
         cmd = [
-            'python', str(self.script_dir / 'transcribe_podcast.py'),
+            sys.executable, str(self.script_dir / 'transcribe_podcast.py'),
             '--file', str(audio_file),
             '--out', str(self.transcript_file),
         ]
@@ -313,7 +325,7 @@ class WorkflowManager:
 
         print(f"  Sprawdzane audio: {audio_file.name}")
         cmd = [
-            'python', str(self.script_dir / 'subtitler_checker.py'),
+            sys.executable, str(self.script_dir / 'subtitler_checker.py'),
             '--audio', str(audio_file),
             '--transcript', str(self.transcript_file),
             '--report', str(self.subtitle_check_report_file),
@@ -334,10 +346,11 @@ class WorkflowManager:
             return False
         
         cmd = [
-            'python', str(self.script_dir / 'analyze_virals.py'),
+            sys.executable, str(self.script_dir / 'analyze_virals.py'),
             '--transcript', str(self.transcript_file),
             '--heatmap', str(self.heatmap_file),
             '--save-json', str(self.windows_file),
+            '--cutting-log', str(self.cutting_logic_file),
         ]
         
         return self.run_command(cmd, "4️⃣  Analiza viralowych momentów")
@@ -356,10 +369,12 @@ class WorkflowManager:
         print(f"  Znalezione wideo: {video_file.name}")
         
         cmd = [
-            'python', str(self.script_dir / 'cutter.py'),
+            sys.executable, str(self.script_dir / 'cutter.py'),
             '--video', str(video_file),
             '--windows', str(self.windows_file),
+            '--transcript', str(self.transcript_file),
             '--output-dir', str(self.cuts_raw_dir),
+            '--cutting-log', str(self.cutting_logic_file),
         ]
         
         return self.run_command(cmd, "5️⃣  Wycinanie segmentów")
@@ -371,7 +386,7 @@ class WorkflowManager:
             return False
         
         cmd = [
-            'python', str(self.script_dir / 'subtitler.py'),
+            sys.executable, str(self.script_dir / 'subtitler.py'),
             '--transcript', str(self.transcript_file),
             '--input-dir', str(self.cuts_raw_dir),
             '--output-raw', str(self.cuts_raw_dir),
@@ -450,6 +465,7 @@ class WorkflowManager:
         
         try:
             # Przygotowanie
+            self.verify_external_tools()
             self.ensure_directories()
             
             # Workflow
