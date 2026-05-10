@@ -8,13 +8,16 @@ import subprocess
 from pathlib import Path
 from typing import Dict, List, Tuple
 
-SPEAKER_STYLES: Dict[str, Dict[str, str]] = {
-    "Speaker 0": {"primary": "&H00FFFFFF", "outline": "&H0000FFFF"},
-    "Speaker 1": {"primary": "&H00FFCC00", "outline": "&H00000000"},
-    "Speaker 2": {"primary": "&H0000A5FF", "outline": "&H00000000"},
-    "Speaker 3": {"primary": "&H00FFCC66", "outline": "&H00000000"},
-    "Speaker 4": {"primary": "&H0088FF88", "outline": "&H00000000"},
-}
+SPEAKER_STYLE_PALETTE: List[Dict[str, str]] = [
+    {"primary": "&H00FFFFFF", "outline": "&H0000FFFF"},
+    {"primary": "&H00FFCC00", "outline": "&H00000000"},
+    {"primary": "&H0000A5FF", "outline": "&H00000000"},
+    {"primary": "&H00FFCC66", "outline": "&H00000000"},
+    {"primary": "&H0088FF88", "outline": "&H00000000"},
+    {"primary": "&H00CC99FF", "outline": "&H00000000"},
+    {"primary": "&H0066E0FF", "outline": "&H00000000"},
+    {"primary": "&H00A8FFDD", "outline": "&H00000000"},
+]
 DEFAULT_STYLE_NAME = "Default"
 CHAOS_EMPHASIS_STYLE = "ChaosEmphasis"
 DEFAULT_FONT = "Arial Black"
@@ -71,19 +74,39 @@ def normalize_speaker(segment: Dict) -> str:
             suffix = suffix.upper()
             if len(suffix) == 1 and "A" <= suffix <= "Z":
                 normalized = f"Speaker {ord(suffix) - ord('A')}"
-    return normalized if normalized in SPEAKER_STYLES else DEFAULT_STYLE_NAME
+    return normalized if normalized.lower().startswith("speaker ") else DEFAULT_STYLE_NAME
+
+
+def speaker_style(name: str) -> Dict[str, str]:
+    normalized = " ".join(str(name or "").strip().split())
+    if normalized == DEFAULT_STYLE_NAME:
+        return SPEAKER_STYLE_PALETTE[0]
+    match = re.search(r"(\d+)", normalized)
+    if not match:
+        return SPEAKER_STYLE_PALETTE[0]
+    speaker_index = int(match.group(1))
+    return SPEAKER_STYLE_PALETTE[speaker_index % len(SPEAKER_STYLE_PALETTE)]
+
+
+def collect_speaker_styles(events: List[Dict]) -> List[str]:
+    speaker_names = {DEFAULT_STYLE_NAME, "Speaker 0"}
+    for event in events:
+        speaker = normalize_speaker({"speaker": event.get("speaker")})
+        if speaker != DEFAULT_STYLE_NAME:
+            speaker_names.add(speaker)
+    return sorted(
+        speaker_names,
+        key=lambda name: (-1 if name == DEFAULT_STYLE_NAME else int(re.search(r"(\d+)", name).group(1))),
+    )
 
 
 def ass_color(color_value: str) -> str:
     return f"\\c{color_value}&" if color_value.endswith("&") else f"\\c{color_value}&"
 
 
-def apply_emphasis(text: str, speaker_color: str) -> str:
+def apply_emphasis(text: str, speaker_name: str) -> str:
     color_tag = f"\\c{EMPHASIS_COLOR}&"
-    reset_style = next(
-        (name for name, style in SPEAKER_STYLES.items() if style["primary"] == speaker_color),
-        DEFAULT_STYLE_NAME,
-    )
+    reset_style = speaker_name if speaker_name != DEFAULT_STYLE_NAME else "Speaker 0"
 
     def repl(match):
         word = match.group(0)
@@ -133,8 +156,7 @@ def build_subtitle_events(transcript: List[Dict], segment_start: float, segment_
         if not should_display_subtitle(item, rel_end - rel_start):
             continue
 
-        speaker_color = SPEAKER_STYLES.get(speaker, SPEAKER_STYLES["Speaker 0"])["primary"]
-        display_text = text if importance >= 5 else (apply_emphasis(text, speaker_color) if importance >= 4 else text)
+        display_text = text if importance >= 5 else (apply_emphasis(text, speaker) if importance >= 4 else text)
         events.append(
             {
                 "start": rel_start,
@@ -188,10 +210,13 @@ def create_ass_file(events: List[Dict]) -> str:
         "",
         "[V4+ Styles]",
         "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
-        create_style_line(DEFAULT_STYLE_NAME, SPEAKER_STYLES["Speaker 0"]["primary"], BASE_FONT_SIZE),
+        create_style_line(DEFAULT_STYLE_NAME, speaker_style("Speaker 0")["primary"], BASE_FONT_SIZE),
     ]
 
-    for speaker_name, style in SPEAKER_STYLES.items():
+    for speaker_name in collect_speaker_styles(events):
+        if speaker_name == DEFAULT_STYLE_NAME:
+            continue
+        style = speaker_style(speaker_name)
         lines.append(
             create_style_line(
                 speaker_name,

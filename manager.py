@@ -30,6 +30,20 @@ from typing import Optional
 import shutil
 import time
 
+from content_classifier import VALID_CONTENT_TYPE_MODES, normalize_content_type_mode
+from pipeline_modes import (
+    AI_MODE_LOCAL_ONLY,
+    VALID_AI_MODES,
+    VALID_SUBTITLE_CHECKER_MODES,
+    allows_gemini,
+    default_subtitle_checker_mode,
+    normalize_ai_mode,
+    normalize_subtitle_checker_mode,
+    requires_gemini,
+    subtitle_checker_sample_limit,
+    subtitle_checker_uses_ai,
+)
+
 os.environ["UV_NATIVE_TLS"] = "1"
 
 try:
@@ -118,14 +132,39 @@ class WorkflowManager:
         skip_smart_context: bool = False,
         force_subtitle_checker: bool = False,
         auto_fix_subtitles: bool = True,
+        ai_mode: str = 'gemini_optional',
+        subtitle_checker_mode: Optional[str] = None,
+        subtitle_checker_ai_samples: int = 8,
+        transcription_backend: str = 'faster_whisper',
+        whisper_model: str = 'small',
+        transcription_device: str = 'auto',
+        transcription_compute_type: str = 'auto',
+        enable_diarization: bool = True,
+        diarization_backend: str = 'heuristic_cluster',
+        diarization_max_speakers: int = 4,
+        content_type: str = 'auto',
     ):
         self.url = url
         self.cleanup = cleanup
         self.skip_download = skip_download
         self.skip_subtitle_checker = skip_subtitle_checker
-        self.skip_smart_context = skip_smart_context
+        self.ai_mode = normalize_ai_mode(AI_MODE_LOCAL_ONLY if skip_smart_context else ai_mode)
+        self.skip_smart_context = self.ai_mode == AI_MODE_LOCAL_ONLY
         self.force_subtitle_checker = force_subtitle_checker
         self.auto_fix_subtitles = auto_fix_subtitles
+        resolved_checker_mode = subtitle_checker_mode or default_subtitle_checker_mode(self.ai_mode)
+        self.subtitle_checker_mode = normalize_subtitle_checker_mode(resolved_checker_mode)
+        if not allows_gemini(self.ai_mode) and subtitle_checker_uses_ai(self.subtitle_checker_mode):
+            self.subtitle_checker_mode = 'local_only'
+        self.subtitle_checker_ai_samples = max(0, int(subtitle_checker_ai_samples))
+        self.transcription_backend = str(transcription_backend or 'faster_whisper').strip() or 'faster_whisper'
+        self.whisper_model = str(whisper_model or 'small').strip() or 'small'
+        self.transcription_device = str(transcription_device or 'auto').strip() or 'auto'
+        self.transcription_compute_type = str(transcription_compute_type or 'auto').strip() or 'auto'
+        self.enable_diarization = bool(enable_diarization)
+        self.diarization_backend = str(diarization_backend or 'heuristic_cluster').strip() or 'heuristic_cluster'
+        self.diarization_max_speakers = max(1, int(diarization_max_speakers))
+        self.content_type = normalize_content_type_mode(content_type)
         self.script_dir = Path(__file__).parent
         
         # Foldery
@@ -140,9 +179,11 @@ class WorkflowManager:
         self.transcript_file = self.transcripts_dir / 'final_transcript.json'
         self.subtitle_check_report_file = self.metadata_dir / 'subtitle_check_report.json'
         self.cutting_logic_file = self.metadata_dir / 'cutting_logic.json'
+        self.content_profile_file = self.metadata_dir / 'content_profile.json'
         self.heatmap_file = self.metadata_dir / 'heatmap.json'
         self.windows_file = self.script_dir / 'top_windows.json'
         self.gemini_transport = os.environ.get('GEMINI_TRANSPORT', '').strip().lower()
+        self.gemini_available = False
 
     def build_subprocess_env(self):
         env = os.environ.copy()
@@ -294,8 +335,8 @@ class WorkflowManager:
             return False, output.strip()
 
     def verify_gemini_connection(self):
-        if self.skip_smart_context:
-            print("  Pomijam test Gemini, bo włączono --skip-smart-context.")
+        if not allows_gemini(self.ai_mode):
+            print("  Pomijam test Gemini, bo aktywny tryb to local_only.")
             return
 
         api_key = self.get_gemini_api_key()
@@ -532,16 +573,26 @@ class WorkflowManager:
         print(f"  Znalezione audio: {audio_file.name}")
         
         cmd = [
-            sys.executable, str(self.script_dir / 'transcribe_podcast.py'),
+            sys.executable, str(self.script_dir / 'transcribe.py'),
             '--file', str(audio_file),
             '--out', str(self.transcript_file),
+            '--backend', self.transcription_backend,
+            '--whisper-model', self.whisper_model,
+            '--device', self.transcription_device,
+            '--compute-type', self.transcription_compute_type,
+            '--diarization-backend', self.diarization_backend,
+            '--max-speakers', str(self.diarization_max_speakers),
         ]
+        if not self.enable_diarization:
+            cmd.append('--disable-diarization')
         
-        # Retry 2 razy dla transkrypcji (czasami API się wysypuje)
-        return self.run_command(cmd, "2️⃣  Transkrypcja audio", max_retries=2)
+        return self.run_command(cmd, "2️⃣  Transkrypcja audio")
 
     def check_subtitles(self) -> bool:
         """Krok 3: Zweryfikuj transkrypcję, timing i potencjalne halucynacje."""
+        if self.subtitle_checker_mode == 'off':
+            print("  Pomijam Subtitle Checker (subtitle-checker-mode=off).")
+            return True
         if not self.transcript_file.exists():
             print(f"✗ Plik transkrypcji nie istnieje: {self.transcript_file}")
             return False
@@ -561,6 +612,9 @@ class WorkflowManager:
                     status = summary.get('status', 'unknown')
                     score = summary.get('score', '?')
                     if status == 'fail':
+                        if self.subtitle_checker_mode == 'local_only':
+                            print(f"  Raport Subtitle Checkera ma status FAIL (score: {score}), ale tryb local_only traktuje go diagnostycznie. Pomijam blokadę.")
+                            return True
                         print(f"✗ Istniejący raport AI Subtitler Checkera ma status FAIL (score: {score}).")
                         print(f"  Raport: {self.subtitle_check_report_file}")
                         print("  Użyj --force-subtitle-checker po poprawkach albo --skip-subtitle-checker, aby pominąć.")
@@ -577,8 +631,18 @@ class WorkflowManager:
             '--transcript', str(self.transcript_file),
             '--report', str(self.subtitle_check_report_file),
         ]
+        if self.subtitle_checker_mode == 'local_only':
+            cmd.append('--warn-only')
         if self.auto_fix_subtitles:
             cmd.append('--fix')
+        sample_limit = subtitle_checker_sample_limit(
+            self.subtitle_checker_mode,
+            default_full_samples=self.subtitle_checker_ai_samples,
+        )
+        if sample_limit <= 0:
+            cmd.append('--skip-ai')
+        else:
+            cmd.extend(['--max-samples', str(sample_limit)])
 
         return self.run_command(cmd, "3️⃣  AI Subtitler Checker")
     
@@ -592,18 +656,44 @@ class WorkflowManager:
             print(f"✗ Plik heatmapy nie istnieje: {self.heatmap_file}")
             return False
         
+        video_file = self.find_latest_video()
         cmd = [
             sys.executable, str(self.script_dir / 'analyze_virals.py'),
             '--transcript', str(self.transcript_file),
             '--heatmap', str(self.heatmap_file),
             '--save-json', str(self.windows_file),
             '--cutting-log', str(self.cutting_logic_file),
+            '--ai-mode', self.ai_mode,
+            '--content-profile', str(self.content_profile_file),
+            '--content-type', self.content_type,
         ]
+        if video_file:
+            cmd.extend(['--video', str(video_file)])
         if self.skip_smart_context:
             cmd.append('--skip-smart-context')
         
-        return self.run_command(cmd, "4️⃣  Analiza viralowych momentów")
+        return self.run_command(cmd, "5️⃣  Analiza viralowych momentów")
     
+    def classify_content(self) -> bool:
+        """Krok 4: Zbuduj lokalny profil typu materiaĹ‚u."""
+        if not self.transcript_file.exists():
+            print(f"âś— Plik transkrypcji nie istnieje: {self.transcript_file}")
+            return False
+
+        cmd = [
+            sys.executable, str(self.script_dir / 'content_classifier.py'),
+            '--transcript', str(self.transcript_file),
+            '--content-type', self.content_type,
+            '--output', str(self.content_profile_file),
+        ]
+        if self.heatmap_file.exists():
+            cmd.extend(['--heatmap', str(self.heatmap_file)])
+        video_file = self.find_latest_video()
+        if video_file:
+            cmd.extend(['--video', str(video_file)])
+
+        return self.run_command(cmd, "4. Content classification")
+
     def cut_segments(self) -> bool:
         """Krok 5: Wytnij segmenty z wideo."""
         if not self.windows_file.exists():
@@ -626,7 +716,7 @@ class WorkflowManager:
             '--cutting-log', str(self.cutting_logic_file),
         ]
         
-        return self.run_command(cmd, "5️⃣  Wycinanie segmentów")
+        return self.run_command(cmd, "6️⃣  Wycinanie segmentów")
     
     def add_subtitles(self) -> bool:
         """Krok 6: Dodaj napisy na wycinki."""
@@ -642,7 +732,7 @@ class WorkflowManager:
             '--output-subs', str(self.cuts_subs_dir),
         ]
         
-        return self.run_command(cmd, "6️⃣  Dodawanie napisów")
+        return self.run_command(cmd, "7️⃣  Dodawanie napisów")
     
     def cleanup_input(self):
         """Usuń ciężkie pliki wideo z input/."""
@@ -704,6 +794,7 @@ class WorkflowManager:
         requested = 0
         refined = 0
         fallback = 0
+        ai_status = ''
         if self.cutting_logic_file.exists():
             try:
                 with open(self.cutting_logic_file, 'r', encoding='utf-8') as file_handle:
@@ -711,14 +802,31 @@ class WorkflowManager:
                 requested = int(cutting_log.get('clips_requested') or 0)
                 refined = int(cutting_log.get('clips_refined_with_ai') or 0)
                 fallback = int(cutting_log.get('clips_with_local_fallback') or 0)
+                ai_status = str(cutting_log.get('ai_status') or '').strip()
                 log_transport = str(cutting_log.get('ai_transport') or '').strip()
                 if log_transport:
                     transport = log_transport.upper()
-                refinement_status = 'FULL SUCCESS' if requested and refined == requested and fallback == 0 else 'PARTIAL'
+                if str(cutting_log.get('ai_mode') or '').strip() == 'local_only':
+                    refinement_status = 'LOCAL ONLY'
+                else:
+                    refinement_status = 'FULL SUCCESS' if requested and refined == requested and fallback == 0 else 'PARTIAL'
             except Exception:
                 refinement_status = 'UNKNOWN'
         print(f"  Wygenerowano {clip_count} klipów, AI refinement: {refinement_status} (Transport: {transport})")
         print(f"  AI sukcesy: {refined}/{requested} | Fallbacki: {fallback}")
+        print(f"  Selection mode: {self.ai_mode} | AI status: {ai_status or 'n/a'}")
+        if self.content_profile_file.exists():
+            try:
+                with open(self.content_profile_file, 'r', encoding='utf-8') as file_handle:
+                    content_profile = json.load(file_handle)
+                print(
+                    f"  Content type: {content_profile.get('content_type', 'unknown')} | "
+                    f"Strategy: {content_profile.get('strategy_name', 'unknown')} | "
+                    f"Confidence: {content_profile.get('confidence', 0.0)} | "
+                    f"Source: {content_profile.get('source', 'unknown')}"
+                )
+            except Exception:
+                pass
         print()
     
     def run(self):
@@ -727,9 +835,17 @@ class WorkflowManager:
         print("🚀 VIRAL CUTTER AI — WORKFLOW MANAGER")
         print("="*60)
         print(f"URL: {self.url if self.url else '(local input mode)'}")
+        print(f"AI Mode: {self.ai_mode}")
         print(f"Skip Download: {'Tak' if self.skip_download else 'Nie'}")
         print(f"Skip Subtitle Checker: {'Tak' if self.skip_subtitle_checker else 'Nie'}")
+        print(f"Subtitle Checker Mode: {self.subtitle_checker_mode}")
         print(f"Skip Smart Context: {'Tak' if self.skip_smart_context else 'Nie'}")
+        print(f"Transcription Backend: {self.transcription_backend} ({self.whisper_model})")
+        print(
+            f"Diarization: {'Tak' if self.enable_diarization else 'Nie'}"
+            f" [{self.diarization_backend}, max speakers: {self.diarization_max_speakers}]"
+        )
+        print(f"Content Type: {self.content_type}")
         print(f"Auto Fix Subtitles: {'Tak' if self.auto_fix_subtitles else 'Nie'}")
         print(f"Cleanup: {'Tak' if self.cleanup else 'Nie'}")
         print()
@@ -739,7 +855,17 @@ class WorkflowManager:
             self.verify_external_tools()
             self.ensure_directories()
             self.cleanup_previous_run()
-            self.verify_gemini_connection()
+            if allows_gemini(self.ai_mode):
+                try:
+                    self.verify_gemini_connection()
+                    self.gemini_available = True
+                except ManagerError:
+                    self.gemini_available = False
+                    if requires_gemini(self.ai_mode):
+                        raise
+                    print("  Warning: Gemini verification failed. Continuing with local fallback.")
+            else:
+                self.gemini_available = False
             
             # Workflow
             steps = []
@@ -772,6 +898,7 @@ class WorkflowManager:
                 steps.append((self.check_subtitles, "AI Subtitler Checker"))
 
             steps.extend([
+                (self.classify_content, "Klasyfikacja typu materiału"),
                 (self.analyze_virals, "Analiza"),
                 (self.cut_segments, "Wycinanie"),
                 (self.add_subtitles, "Napisy"),
@@ -850,6 +977,85 @@ Przykłady:
         help='Pomiń analizę Gemini i użyj lokalnych granic z heatmapy',
     )
 
+    parser.add_argument(
+        '--ai-mode',
+        choices=VALID_AI_MODES,
+        default='gemini_optional',
+        help='Tryb pipeline: local_only, gemini_optional albo gemini_enabled',
+    )
+
+    parser.add_argument(
+        '--subtitle-checker-mode',
+        choices=VALID_SUBTITLE_CHECKER_MODES,
+        default=None,
+        help='Tryb checkera: off, local_only, limited albo full',
+    )
+
+    parser.add_argument(
+        '--subtitle-checker-ai-samples',
+        type=int,
+        default=8,
+        help='Liczba probek AI dla subtitle checkera w trybie full',
+    )
+
+    parser.add_argument(
+        '--transcription-backend',
+        default='faster_whisper',
+        help='Backend transkrypcji. Obecnie: faster_whisper',
+    )
+
+    parser.add_argument(
+        '--whisper-model',
+        default='small',
+        help='Model faster-whisper, np. tiny, base, small albo medium',
+    )
+
+    parser.add_argument(
+        '--transcription-device',
+        default='auto',
+        help='Device dla transkrypcji: auto, cpu albo cuda',
+    )
+
+    parser.add_argument(
+        '--transcription-compute-type',
+        default='auto',
+        help='Compute type dla faster-whisper: auto, int8, float16 itd.',
+    )
+
+    parser.set_defaults(enable_diarization=True)
+    parser.add_argument(
+        '--enable-diarization',
+        dest='enable_diarization',
+        action='store_true',
+        help='Wlacz lokalne speaker attribution po transkrypcji (domyslnie wlaczone)',
+    )
+    parser.add_argument(
+        '--disable-diarization',
+        dest='enable_diarization',
+        action='store_false',
+        help='Wylacz diarization i ustaw fallback Speaker 0',
+    )
+
+    parser.add_argument(
+        '--diarization-backend',
+        default='heuristic_cluster',
+        help='Backend diarization. Obecnie: heuristic_cluster',
+    )
+
+    parser.add_argument(
+        '--diarization-max-speakers',
+        type=int,
+        default=4,
+        help='Maksymalna liczba speakerow przypisywanych lokalnie',
+    )
+
+    parser.add_argument(
+        '--content-type',
+        choices=VALID_CONTENT_TYPE_MODES,
+        default='auto',
+        help='Typ materiału: auto, podcast, gameplay, tutorial albo generic',
+    )
+
     parser.set_defaults(auto_fix_subtitles=True)
     parser.add_argument(
         '--auto-fix-subtitles',
@@ -885,6 +1091,17 @@ def main():
         skip_smart_context=args.skip_smart_context,
         force_subtitle_checker=args.force_subtitle_checker,
         auto_fix_subtitles=args.auto_fix_subtitles,
+        ai_mode=args.ai_mode,
+        subtitle_checker_mode=args.subtitle_checker_mode,
+        subtitle_checker_ai_samples=args.subtitle_checker_ai_samples,
+        transcription_backend=args.transcription_backend,
+        whisper_model=args.whisper_model,
+        transcription_device=args.transcription_device,
+        transcription_compute_type=args.transcription_compute_type,
+        enable_diarization=args.enable_diarization,
+        diarization_backend=args.diarization_backend,
+        diarization_max_speakers=args.diarization_max_speakers,
+        content_type=args.content_type,
     )
     
     manager.run()

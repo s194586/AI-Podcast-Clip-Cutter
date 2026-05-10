@@ -1,0 +1,53 @@
+INFO: Created TensorFlow Lite XNNPACK delegate for CPU.
+W0000 00:00:1778435522.749499   13692 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+  Content classification: generic (confidence=1.00, source=manual_override)
+  Routing reasons: Content type manually forced to generic.
+  Strategy selected: generic | weights={"chaos_score": 0.04, "duration_fit_score": 0.05, "emotion_score": 0.1, "heatmap_avg": 0.34, "heatmap_peak": 0.12, "hook_score": 0.08, "importance_score": 0.12, "payoff_score": 0.08, "punchiness_score": 0.08, "repetition_penalty": 0.06, "speaker_turn_score": 0.05, "speech_density_score": 0.1}
+  Local candidate generation: 36673 windows
+  Local scoring ready: top pool 15 / requested clips 5
+  AI rerank skipped: local_only mode is active.
+
+Top 5 moments for Shorts:
+Clip 1:
+  Range: 17:40.72 - 18:16.46
+  Avg heatmap score: 0.5000
+  Local score: 82.33
+  Duration: 35.7s
+  Why selected: contains punchy or emotional language, good speech density for a short clip, starts with a stronger hook signal
+  Summary: Co z tego zrealizowano? Nic, nul, na fink, tak. Mamy obecnoœæ Finlandii i Szwecji. W NATO, NATO jest jeszcze mocniejsze na granicach Ukrainy. Mamy gwa³towne zbrojenia pañstw ba³tywskich, Polski....
+
+Clip 2:
+  Range: 11:56.88 - 12:27.68
+  Avg heatmap score: 0.5000
+  Local score: 79.86
+  Duration: 30.8s
+  Why selected: contains punchy or emotional language, contains high-importance transcript moments, good speech density for a short clip
+  Summary: I teraz, co nam ucieka i gdzie jest du¿a czarna liczba, która zani¿a faktycznie z t¹ liczbê poleg³ych Rosjan? No wiêc tak, nie mamy tutaj ujêtych najemników, którzy nie maj¹ rosyjskiego bywatelska....
+
+Clip 3:
+  Range: 20:43.05 - 21:13.50
+  Avg heatmap score: 0.5000
+  Local score: 78.00
+  Duration: 30.5s
+  Why selected: contains punchy or emotional language, starts with a stronger hook signal, contains high-importance transcript moments
+  Summary: Jakie s¹ te straty ukraiñskie? Du¿e, ma³e. Co o nich wiemy? No wiêc mamy tak¹ stronê Ualoses, Ualut Ukrainian Lozes, czyli straty, nie wiem, co t¹ stronê prowadzi....
+
+Clip 4:
+  Range: 10:12.83 - 10:48.78
+  Avg heatmap score: 0.5000
+  Local score: 77.46
+  Duration: 35.9s
+  Why selected: contains punchy or emotional language, good speech density for a short clip, ends with a clearer payoff signal
+  Summary: Koniec koñcika czytelniczego przechodzimy do tego, co wszyscy robimy najbardziej, czyli ponad miliona gruzu 200 i gruzu 300....
+
+Clip 5:
+  Range: 22:39.10 - 23:23.72
+  Avg heatmap score: 0.5000
+  Local score: 76.91
+  Duration: 44.6s
+  Why selected: contains punchy or emotional language, good speech density for a short clip, contains high-importance transcript moments
+  Summary: ale jak jakiœ opornik ukraiñski wpada rosyjska tonówka czy pó³tonówka no to niestety identyfikacja szcz¹tek ¿o³nierzy jest mo¿liwa ju¿ tylko podena, tak? Wiêc jest 56 tysiêcy zaginionych i wiêkszoœæ z nich to s¹ w³aœnie...
+
+Saved selected windows to: D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_171633\ukraine_war_report\manual_generic\top_windows.json
+$ D:\PythonProjects\viral-cutter-ai\.venv\Scripts\python.exe D:\PythonProjects\viral-cutter-ai\analyze_virals.py --transcript D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_171633\ukraine_war_report\shared\transcript.json --heatmap D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_171633\ukraine_war_report\shared\heatmap.json --video D:\PythonProjects\viral-cutter-ai\benchmarks\assets\ukraine_war_report\input\source.mp4 --save-json D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_171633\ukraine_war_report\manual_generic\top_windows.json --cutting-log D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_171633\ukraine_war_report\manual_generic\cutting_logic.json --content-profile D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_171633\ukraine_war_report\manual_generic\content_profile.json --content-type generic --ai-mode local_only --top 5
+

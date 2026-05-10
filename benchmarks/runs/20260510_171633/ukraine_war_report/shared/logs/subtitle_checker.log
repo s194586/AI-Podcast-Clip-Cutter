@@ -1,0 +1,14 @@
+🔎 AI Subtitler Checker
+  Audio: D:\PythonProjects\viral-cutter-ai\benchmarks\assets\ukraine_war_report\input\source.mp3
+  Transkrypcja: D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_171633\ukraine_war_report\shared\transcript.json
+  AI próbki: pominięte (--skip-ai albo --max-samples=0)
+
+📊 Wynik AI Subtitler Checkera
+  Status: WARNING
+  Score: 70.0/100
+  Segmenty: 1053
+  Problemy: 0 błędów, 10 ostrzeżeń
+  AI próbki: 0 sprawdzonych, 0 podejrzeń halucynacji, 0 rozjazdów czasu, 0 problemów językowych
+  Raport: D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_171633\ukraine_war_report\shared\subtitle_check_report.json
+$ D:\PythonProjects\viral-cutter-ai\.venv\Scripts\python.exe D:\PythonProjects\viral-cutter-ai\subtitler_checker.py --audio D:\PythonProjects\viral-cutter-ai\benchmarks\assets\ukraine_war_report\input\source.mp3 --transcript D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_171633\ukraine_war_report\shared\transcript.json --report D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_171633\ukraine_war_report\shared\subtitle_check_report.json --warn-only --skip-ai
+

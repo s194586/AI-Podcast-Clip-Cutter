@@ -1,0 +1,43 @@
+Starting local transcription...
+  Audio file: D:\PythonProjects\viral-cutter-ai\benchmarks\assets\putin_parade_commentary\input\source.mp3
+  Backend: faster_whisper
+  Whisper model: small
+  Device: auto | Compute type: auto
+  Diarization: enabled (heuristic_cluster)
+Traceback (most recent call last):
+  File "D:\PythonProjects\viral-cutter-ai\transcribe.py", line 175, in <module>
+    main()
+    ~~~~^^
+  File "D:\PythonProjects\viral-cutter-ai\transcribe.py", line 135, in main
+    transcription_result = transcription_backend.transcribe(audio_path)
+  File "D:\PythonProjects\viral-cutter-ai\transcription\faster_whisper_backend.py", line 154, in transcribe
+    segments_iter, info = self.model.transcribe(
+                          ~~~~~~~~~~~~~~~~~~~~~^
+        str(audio_path),
+        ^^^^^^^^^^^^^^^^
+    ...<3 lines>...
+        word_timestamps=bool(self.config.word_timestamps),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "D:\PythonProjects\viral-cutter-ai\.venv\Lib\site-packages\faster_whisper\transcribe.py", line 942, in transcribe
+    ) = self.detect_language(
+        ~~~~~~~~~~~~~~~~~~~~^
+        features=features[..., seek:],
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        language_detection_segments=language_detection_segments,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        language_detection_threshold=language_detection_threshold,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "D:\PythonProjects\viral-cutter-ai\.venv\Lib\site-packages\faster_whisper\transcribe.py", line 1819, in detect_language
+    encoder_output = self.encode(
+        pad_or_trim(features[..., i : i + self.feature_extractor.nb_max_frames])
+    )
+  File "D:\PythonProjects\viral-cutter-ai\.venv\Lib\site-packages\faster_whisper\transcribe.py", line 1400, in encode
+    return self.model.encode(features, to_cpu=to_cpu)
+           ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+RuntimeError: Library cublas64_12.dll is not found or cannot be loaded
+$ D:\PythonProjects\viral-cutter-ai\.venv\Scripts\python.exe D:\PythonProjects\viral-cutter-ai\transcribe.py --file D:\PythonProjects\viral-cutter-ai\benchmarks\assets\putin_parade_commentary\input\source.mp3 --out D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_164907\putin_parade_commentary\shared\transcript.json --backend faster_whisper --whisper-model small --device auto --compute-type auto --diarization-backend heuristic_cluster --max-speakers 4
+

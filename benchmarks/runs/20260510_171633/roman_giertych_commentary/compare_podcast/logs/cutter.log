@@ -1,0 +1,344 @@
+INFO: Created TensorFlow Lite XNNPACK delegate for CPU.
+W0000 00:00:1778436792.546331   33444 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+ffmpeg version 8.1.1-full_build-www.gyan.dev Copyright (c) 2000-2026 the FFmpeg developers
+  built with gcc 15.2.0 (Rev13, Built by MSYS2 project)
+  configuration: --enable-gpl --enable-version3 --enable-static --disable-w32threads --disable-autodetect --enable-cairo --enable-fontconfig --enable-iconv --enable-gnutls --enable-lcms2 --enable-libxml2 --enable-gmp --enable-bzlib --enable-lzma --enable-libsnappy --enable-zlib --enable-librist --enable-libsrt --enable-libssh --enable-libzmq --enable-avisynth --enable-libbluray --enable-libcaca --enable-libdvdnav --enable-libdvdread --enable-sdl2 --enable-libaribb24 --enable-libaribcaption --enable-libdav1d --enable-libdavs2 --enable-libopenjpeg --enable-libquirc --enable-libuavs3d --enable-libxevd --enable-libzvbi --enable-liboapv --enable-libqrencode --enable-librav1e --enable-libsvtav1 --enable-libvvenc --enable-libwebp --enable-libx264 --enable-libx265 --enable-libxavs2 --enable-libxeve --enable-libxvid --enable-libaom --enable-libjxl --enable-libsvtjpegxs --enable-libvpx --enable-mediafoundation --enable-libass --enable-frei0r --enable-libfreetype --enable-libfribidi --enable-libharfbuzz --enable-liblensfun --enable-libvidstab --enable-libvmaf --enable-libzimg --enable-amf --enable-cuda-llvm --enable-cuvid --enable-dxva2 --enable-d3d11va --enable-d3d12va --enable-ffnvcodec --enable-libvpl --enable-nvdec --enable-nvenc --enable-vaapi --enable-libshaderc --enable-vulkan --enable-libplacebo --enable-opencl --enable-libcdio --enable-openal --enable-libgme --enable-libmodplug --enable-libopenmpt --enable-libopencore-amrwb --enable-libmp3lame --enable-libshine --enable-libtheora --enable-libtwolame --enable-libvo-amrwbenc --enable-libcodec2 --enable-libilbc --enable-libgsm --enable-liblc3 --enable-libopencore-amrnb --enable-libopus --enable-libspeex --enable-libvorbis --enable-ladspa --enable-libbs2b --enable-libflite --enable-libmysofa --enable-librubberband --enable-libsoxr --enable-chromaprint --enable-whisper
+  libavutil      60. 26.101 / 60. 26.101
+  libavcodec     62. 28.101 / 62. 28.101
+  libavformat    62. 12.101 / 62. 12.101
+  libavdevice    62.  3.101 / 62.  3.101
+  libavfilter    11. 14.101 / 11. 14.101
+  libswscale      9.  5.101 /  9.  5.101
+  libswresample   6.  3.101 /  6.  3.101
+Input #0, avi, from 'C:\Users\Macie\AppData\Local\Temp\face_track_stxqj82a\segment_1_19-09_66_20-01_48_silent.avi':
+  Metadata:
+    software        : Lavf62.12.101
+  Duration: 00:00:51.82, start: 0.000000, bitrate: 6518 kb/s
+  Stream #0:0: Video: h264 (High) (H264 / 0x34363248), yuvj420p(pc, bt470bg/unknown/unknown, progressive), 1080x1920 [SAR 1:1 DAR 9:16], 6507 kb/s, 60 fps, 60 tbr, 60 tbn
+Input #1, mov,mp4,m4a,3gp,3g2,mj2, from 'C:\Users\Macie\AppData\Local\Temp\face_track_stxqj82a\segment_1_19-09_66_20-01_48_audio.m4a':
+  Metadata:
+    major_brand     : M4A 
+    minor_version   : 512
+    compatible_brands: M4A isomiso2
+    encoder         : Lavf62.12.101
+  Duration: 00:00:51.82, start: 0.000000, bitrate: 193 kb/s
+  Stream #1:0[0x1](eng): Audio: aac (LC) (mp4a / 0x6134706D), 48000 Hz, stereo, fltp, 191 kb/s (default)
+    Metadata:
+      handler_name    : SoundHandler
+Stream mapping:
+  Stream #0:0 -> #0:0 (h264 (native) -> h264 (libx264))
+  Stream #1:0 -> #0:1 (aac (native) -> aac (native))
+Press [q] to stop, [?] for help
+[swscaler @ 000001763e83a8c0] deprecated pixel format used, make sure you did set range correctly
+[libx264 @ 000001763cde0c00] using SAR=1/1
+[libx264 @ 000001763cde0c00] using cpu capabilities: MMX2 SSE2Fast SSSE3 SSE4.2 AVX FMA3 BMI2 AVX2 AVX512
+[libx264 @ 000001763cde0c00] profile High, level 4.2, 4:2:0, 8-bit
+[libx264 @ 000001763cde0c00] 264 - core 165 r3223 0480cb0 - H.264/MPEG-4 AVC codec - Copyleft 2003-2025 - http://www.videolan.org/x264.html - options: cabac=1 ref=1 deblock=1:0:0 analyse=0x3:0x3 me=dia subme=1 psy=1 psy_rd=1.00:0.00 mixed_ref=0 me_range=16 chroma_me=1 trellis=0 8x8dct=1 cqm=0 deadzone=21,11 fast_pskip=1 chroma_qp_offset=0 threads=24 lookahead_threads=4 sliced_threads=0 nr=0 decimate=1 interlaced=0 bluray_compat=0 constrained_intra=0 bframes=3 b_pyramid=2 b_adapt=1 b_bias=0 direct=1 weightb=1 open_gop=0 weightp=1 keyint=250 keyint_min=25 scenecut=40 intra_refresh=0 rc=crf mbtree=0 crf=23.0 qcomp=0.60 qpmin=0 qpmax=69 qpstep=4 ip_ratio=1.40 pb_ratio=1.30 aq=1:1.00
+Output #0, mp4, to 'D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_171633\roman_giertych_commentary\compare_podcast\cuts_raw\segment_1_19-09_66_20-01_48.mp4':
+  Metadata:
+    software        : Lavf62.12.101
+    encoder         : Lavf62.12.101
+  Stream #0:0: Video: h264 (avc1 / 0x31637661), yuv420p(pc, bt470bg/unknown/unknown, progressive), 1080x1920 [SAR 1:1 DAR 9:16], q=2-31, 60 fps, 15360 tbn
+    Metadata:
+      encoder         : Lavc62.28.101 libx264
+    Side data:
+      CPB properties: bitrate max/min/avg: 0/0/0 buffer size: 0 vbv_delay: N/A
+  Stream #0:1(eng): Audio: aac (LC) (mp4a / 0x6134706D), 48000 Hz, stereo, fltp, 192 kb/s (default)
+    Metadata:
+      encoder         : Lavc62.28.101 aac
+      handler_name    : SoundHandler
+frame=  352 fps=0.0 q=27.0 size=    1792KiB time=00:00:05.86 bitrate=2502.3kbits/s speed=11.4x elapsed=0:00:00.51    frame=  573 fps=560 q=25.0 size=    3840KiB time=00:00:09.55 bitrate=3294.0kbits/s speed=9.33x elapsed=0:00:01.02    frame=  878 fps=572 q=22.0 size=    5120KiB time=00:00:14.63 bitrate=2866.3kbits/s speed=9.53x elapsed=0:00:01.53    frame= 1293 fps=627 q=25.0 size=    7424KiB time=00:00:21.55 bitrate=2822.2kbits/s speed=10.5x elapsed=0:00:02.06    frame= 1691 fps=657 q=25.0 size=    9472KiB time=00:00:28.18 bitrate=2753.2kbits/s speed=  11x elapsed=0:00:02.57    frame= 2095 fps=678 q=25.0 size=   11520KiB time=00:00:34.91 bitrate=2702.8kbits/s speed=11.3x elapsed=0:00:03.08    frame= 2500 fps=693 q=24.0 size=   13824KiB time=00:00:42.24 bitrate=2681.0kbits/s speed=11.7x elapsed=0:00:03.60    frame= 3001 fps=728 q=20.0 size=   18432KiB time=00:00:50.56 bitrate=2986.5kbits/s speed=12.3x elapsed=0:00:04.12    [mp4 @ 000001763cf47cc0] Starting second pass: moving the moov atom to the beginning of the file
+[out#0/mp4 @ 000001763cba3100] video:18276KiB audio:1230KiB subtitle:0KiB other streams:0KiB global headers:0KiB muxing overhead: 0.404706%
+frame= 3108 fps=737 q=-1.0 Lsize=   19585KiB time=00:00:51.80 bitrate=3097.3kbits/s speed=12.3x elapsed=0:00:04.21    
+[libx264 @ 000001763cde0c00] frame I:17    Avg QP:15.42  size: 71577
+[libx264 @ 000001763cde0c00] frame P:1176  Avg QP:17.30  size: 10894
+[libx264 @ 000001763cde0c00] frame B:1915  Avg QP:19.55  size:  2447
+[libx264 @ 000001763cde0c00] consecutive B-frames: 15.0%  8.3%  1.1% 75.7%
+[libx264 @ 000001763cde0c00] mb I  I16..4: 24.8% 49.4% 25.9%
+[libx264 @ 000001763cde0c00] mb P  I16..4:  3.8%  4.5%  0.4%  P16..4: 29.9%  0.0%  0.0%  0.0%  0.0%    skip:61.4%
+[libx264 @ 000001763cde0c00] mb B  I16..4:  0.3%  0.2%  0.0%  B16..8: 10.3%  0.0%  0.0%  direct: 4.6%  skip:84.6%  L0:40.1% L1:54.8% BI: 5.1%
+[libx264 @ 000001763cde0c00] 8x8 transform intra:51.0% inter:46.6%
+[libx264 @ 000001763cde0c00] coded y,uvDC,uvAC intra: 29.8% 40.8% 14.3% inter: 2.2% 6.4% 0.0%
+[libx264 @ 000001763cde0c00] i16 v,h,dc,p: 52% 32%  5% 10%
+[libx264 @ 000001763cde0c00] i8 v,h,dc,ddl,ddr,vr,hd,vl,hu: 20% 22% 17%  5%  7%  8%  8%  6%  6%
+[libx264 @ 000001763cde0c00] i4 v,h,dc,ddl,ddr,vr,hd,vl,hu: 26% 23%  9%  8%  7%  8%  6%  7%  7%
+[libx264 @ 000001763cde0c00] i8c dc,h,v,p: 44% 23% 20% 13%
+[libx264 @ 000001763cde0c00] Weighted P-Frames: Y:0.3% UV:0.0%
+[libx264 @ 000001763cde0c00] kb/s:2890.20
+[aac @ 000001763aa71640] Qavg: 700.554
+W0000 00:00:1778436844.207393   32720 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+ffmpeg version 8.1.1-full_build-www.gyan.dev Copyright (c) 2000-2026 the FFmpeg developers
+  built with gcc 15.2.0 (Rev13, Built by MSYS2 project)
+  configuration: --enable-gpl --enable-version3 --enable-static --disable-w32threads --disable-autodetect --enable-cairo --enable-fontconfig --enable-iconv --enable-gnutls --enable-lcms2 --enable-libxml2 --enable-gmp --enable-bzlib --enable-lzma --enable-libsnappy --enable-zlib --enable-librist --enable-libsrt --enable-libssh --enable-libzmq --enable-avisynth --enable-libbluray --enable-libcaca --enable-libdvdnav --enable-libdvdread --enable-sdl2 --enable-libaribb24 --enable-libaribcaption --enable-libdav1d --enable-libdavs2 --enable-libopenjpeg --enable-libquirc --enable-libuavs3d --enable-libxevd --enable-libzvbi --enable-liboapv --enable-libqrencode --enable-librav1e --enable-libsvtav1 --enable-libvvenc --enable-libwebp --enable-libx264 --enable-libx265 --enable-libxavs2 --enable-libxeve --enable-libxvid --enable-libaom --enable-libjxl --enable-libsvtjpegxs --enable-libvpx --enable-mediafoundation --enable-libass --enable-frei0r --enable-libfreetype --enable-libfribidi --enable-libharfbuzz --enable-liblensfun --enable-libvidstab --enable-libvmaf --enable-libzimg --enable-amf --enable-cuda-llvm --enable-cuvid --enable-dxva2 --enable-d3d11va --enable-d3d12va --enable-ffnvcodec --enable-libvpl --enable-nvdec --enable-nvenc --enable-vaapi --enable-libshaderc --enable-vulkan --enable-libplacebo --enable-opencl --enable-libcdio --enable-openal --enable-libgme --enable-libmodplug --enable-libopenmpt --enable-libopencore-amrwb --enable-libmp3lame --enable-libshine --enable-libtheora --enable-libtwolame --enable-libvo-amrwbenc --enable-libcodec2 --enable-libilbc --enable-libgsm --enable-liblc3 --enable-libopencore-amrnb --enable-libopus --enable-libspeex --enable-libvorbis --enable-ladspa --enable-libbs2b --enable-libflite --enable-libmysofa --enable-librubberband --enable-libsoxr --enable-chromaprint --enable-whisper
+  libavutil      60. 26.101 / 60. 26.101
+  libavcodec     62. 28.101 / 62. 28.101
+  libavformat    62. 12.101 / 62. 12.101
+  libavdevice    62.  3.101 / 62.  3.101
+  libavfilter    11. 14.101 / 11. 14.101
+  libswscale      9.  5.101 /  9.  5.101
+  libswresample   6.  3.101 /  6.  3.101
+Input #0, avi, from 'C:\Users\Macie\AppData\Local\Temp\face_track_4h8e2ivn\segment_2_00-53_90_01-26_86_silent.avi':
+  Metadata:
+    software        : Lavf62.12.101
+  Duration: 00:00:32.97, start: 0.000000, bitrate: 7350 kb/s
+  Stream #0:0: Video: h264 (High) (H264 / 0x34363248), yuvj420p(pc, bt470bg/unknown/unknown, progressive), 1080x1920 [SAR 1:1 DAR 9:16], 7340 kb/s, 60 fps, 60 tbr, 60 tbn
+Input #1, mov,mp4,m4a,3gp,3g2,mj2, from 'C:\Users\Macie\AppData\Local\Temp\face_track_4h8e2ivn\segment_2_00-53_90_01-26_86_audio.m4a':
+  Metadata:
+    major_brand     : M4A 
+    minor_version   : 512
+    compatible_brands: M4A isomiso2
+    encoder         : Lavf62.12.101
+  Duration: 00:00:32.96, start: 0.000000, bitrate: 193 kb/s
+  Stream #1:0[0x1](eng): Audio: aac (LC) (mp4a / 0x6134706D), 48000 Hz, stereo, fltp, 191 kb/s (default)
+    Metadata:
+      handler_name    : SoundHandler
+Stream mapping:
+  Stream #0:0 -> #0:0 (h264 (native) -> h264 (libx264))
+  Stream #1:0 -> #0:1 (aac (native) -> aac (native))
+Press [q] to stop, [?] for help
+[swscaler @ 000001aeee2b6180] deprecated pixel format used, make sure you did set range correctly
+[libx264 @ 000001aeea535cc0] using SAR=1/1
+[libx264 @ 000001aeea535cc0] using cpu capabilities: MMX2 SSE2Fast SSSE3 SSE4.2 AVX FMA3 BMI2 AVX2 AVX512
+[libx264 @ 000001aeea535cc0] profile High, level 4.2, 4:2:0, 8-bit
+[libx264 @ 000001aeea535cc0] 264 - core 165 r3223 0480cb0 - H.264/MPEG-4 AVC codec - Copyleft 2003-2025 - http://www.videolan.org/x264.html - options: cabac=1 ref=1 deblock=1:0:0 analyse=0x3:0x3 me=dia subme=1 psy=1 psy_rd=1.00:0.00 mixed_ref=0 me_range=16 chroma_me=1 trellis=0 8x8dct=1 cqm=0 deadzone=21,11 fast_pskip=1 chroma_qp_offset=0 threads=24 lookahead_threads=4 sliced_threads=0 nr=0 decimate=1 interlaced=0 bluray_compat=0 constrained_intra=0 bframes=3 b_pyramid=2 b_adapt=1 b_bias=0 direct=1 weightb=1 open_gop=0 weightp=1 keyint=250 keyint_min=25 scenecut=40 intra_refresh=0 rc=crf mbtree=0 crf=23.0 qcomp=0.60 qpmin=0 qpmax=69 qpstep=4 ip_ratio=1.40 pb_ratio=1.30 aq=1:1.00
+Output #0, mp4, to 'D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_171633\roman_giertych_commentary\compare_podcast\cuts_raw\segment_2_00-53_90_01-26_86.mp4':
+  Metadata:
+    software        : Lavf62.12.101
+    encoder         : Lavf62.12.101
+  Stream #0:0: Video: h264 (avc1 / 0x31637661), yuv420p(pc, bt470bg/unknown/unknown, progressive), 1080x1920 [SAR 1:1 DAR 9:16], q=2-31, 60 fps, 15360 tbn
+    Metadata:
+      encoder         : Lavc62.28.101 libx264
+    Side data:
+      CPB properties: bitrate max/min/avg: 0/0/0 buffer size: 0 vbv_delay: N/A
+  Stream #0:1(eng): Audio: aac (LC) (mp4a / 0x6134706D), 48000 Hz, stereo, fltp, 192 kb/s (default)
+    Metadata:
+      encoder         : Lavc62.28.101 aac
+      handler_name    : SoundHandler
+frame=  315 fps=0.0 q=24.0 size=    2048KiB time=00:00:05.25 bitrate=3195.7kbits/s speed=10.2x elapsed=0:00:00.51    frame=  573 fps=549 q=28.0 size=    4352KiB time=00:00:09.55 bitrate=3733.2kbits/s speed=9.16x elapsed=0:00:01.04    frame=  799 fps=513 q=22.0 size=    5632KiB time=00:00:13.31 bitrate=3464.7kbits/s speed=8.55x elapsed=0:00:01.55    frame= 1131 fps=547 q=26.0 size=    8448KiB time=00:00:18.85 bitrate=3671.4kbits/s speed=9.12x elapsed=0:00:02.06    frame= 1508 fps=582 q=22.0 size=   13056KiB time=00:00:25.70 bitrate=4160.6kbits/s speed=9.93x elapsed=0:00:02.58    [mp4 @ 000001aeec430900] Starting second pass: moving the moov atom to the beginning of the file
+[out#0/mp4 @ 000001aeea535100] video:14578KiB audio:778KiB subtitle:0KiB other streams:0KiB global headers:0KiB muxing overhead: 0.339769%
+frame= 1975 fps=657 q=-1.0 Lsize=   15408KiB time=00:00:32.91 bitrate=3834.7kbits/s speed=  11x elapsed=0:00:03.00    
+[libx264 @ 000001aeea535cc0] frame I:12    Avg QP:15.28  size: 70827
+[libx264 @ 000001aeea535cc0] frame P:620   Avg QP:19.25  size: 15896
+[libx264 @ 000001aeea535cc0] frame B:1343  Avg QP:19.18  size:  3144
+[libx264 @ 000001aeea535cc0] consecutive B-frames:  4.5% 12.9%  5.3% 77.4%
+[libx264 @ 000001aeea535cc0] mb I  I16..4: 33.8% 38.6% 27.7%
+[libx264 @ 000001aeea535cc0] mb P  I16..4:  7.0%  8.9%  0.8%  P16..4: 42.0%  0.0%  0.0%  0.0%  0.0%    skip:41.3%
+[libx264 @ 000001aeea535cc0] mb B  I16..4:  0.6%  0.8%  0.0%  B16..8: 11.3%  0.0%  0.0%  direct: 4.3%  skip:82.9%  L0:39.7% L1:53.7% BI: 6.6%
+[libx264 @ 000001aeea535cc0] 8x8 transform intra:52.7% inter:54.3%
+[libx264 @ 000001aeea535cc0] coded y,uvDC,uvAC intra: 26.5% 30.6% 8.4% inter: 3.4% 5.3% 0.1%
+[libx264 @ 000001aeea535cc0] i16 v,h,dc,p: 69% 16%  5% 10%
+[libx264 @ 000001aeea535cc0] i8 v,h,dc,ddl,ddr,vr,hd,vl,hu: 17% 19% 16%  7%  8%  8% 10%  7%  8%
+[libx264 @ 000001aeea535cc0] i4 v,h,dc,ddl,ddr,vr,hd,vl,hu: 20% 28% 11%  8%  7%  6%  9%  5%  7%
+[libx264 @ 000001aeea535cc0] i8c dc,h,v,p: 54% 19% 17% 10%
+[libx264 @ 000001aeea535cc0] Weighted P-Frames: Y:3.7% UV:0.3%
+[libx264 @ 000001aeea535cc0] kb/s:3627.99
+[aac @ 000001aeec8d0640] Qavg: 1531.739
+W0000 00:00:1778436880.401039   32680 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+ffmpeg version 8.1.1-full_build-www.gyan.dev Copyright (c) 2000-2026 the FFmpeg developers
+  built with gcc 15.2.0 (Rev13, Built by MSYS2 project)
+  configuration: --enable-gpl --enable-version3 --enable-static --disable-w32threads --disable-autodetect --enable-cairo --enable-fontconfig --enable-iconv --enable-gnutls --enable-lcms2 --enable-libxml2 --enable-gmp --enable-bzlib --enable-lzma --enable-libsnappy --enable-zlib --enable-librist --enable-libsrt --enable-libssh --enable-libzmq --enable-avisynth --enable-libbluray --enable-libcaca --enable-libdvdnav --enable-libdvdread --enable-sdl2 --enable-libaribb24 --enable-libaribcaption --enable-libdav1d --enable-libdavs2 --enable-libopenjpeg --enable-libquirc --enable-libuavs3d --enable-libxevd --enable-libzvbi --enable-liboapv --enable-libqrencode --enable-librav1e --enable-libsvtav1 --enable-libvvenc --enable-libwebp --enable-libx264 --enable-libx265 --enable-libxavs2 --enable-libxeve --enable-libxvid --enable-libaom --enable-libjxl --enable-libsvtjpegxs --enable-libvpx --enable-mediafoundation --enable-libass --enable-frei0r --enable-libfreetype --enable-libfribidi --enable-libharfbuzz --enable-liblensfun --enable-libvidstab --enable-libvmaf --enable-libzimg --enable-amf --enable-cuda-llvm --enable-cuvid --enable-dxva2 --enable-d3d11va --enable-d3d12va --enable-ffnvcodec --enable-libvpl --enable-nvdec --enable-nvenc --enable-vaapi --enable-libshaderc --enable-vulkan --enable-libplacebo --enable-opencl --enable-libcdio --enable-openal --enable-libgme --enable-libmodplug --enable-libopenmpt --enable-libopencore-amrwb --enable-libmp3lame --enable-libshine --enable-libtheora --enable-libtwolame --enable-libvo-amrwbenc --enable-libcodec2 --enable-libilbc --enable-libgsm --enable-liblc3 --enable-libopencore-amrnb --enable-libopus --enable-libspeex --enable-libvorbis --enable-ladspa --enable-libbs2b --enable-libflite --enable-libmysofa --enable-librubberband --enable-libsoxr --enable-chromaprint --enable-whisper
+  libavutil      60. 26.101 / 60. 26.101
+  libavcodec     62. 28.101 / 62. 28.101
+  libavformat    62. 12.101 / 62. 12.101
+  libavdevice    62.  3.101 / 62.  3.101
+  libavfilter    11. 14.101 / 11. 14.101
+  libswscale      9.  5.101 /  9.  5.101
+  libswresample   6.  3.101 /  6.  3.101
+Input #0, avi, from 'C:\Users\Macie\AppData\Local\Temp\face_track_swu3kdov\segment_3_11-14_48_11-53_92_silent.avi':
+  Metadata:
+    software        : Lavf62.12.101
+  Duration: 00:00:39.43, start: 0.000000, bitrate: 4667 kb/s
+  Stream #0:0: Video: h264 (High) (H264 / 0x34363248), yuvj420p(pc, bt470bg/unknown/unknown, progressive), 1080x1920 [SAR 1:1 DAR 9:16], 4656 kb/s, 60 fps, 60 tbr, 60 tbn
+Input #1, mov,mp4,m4a,3gp,3g2,mj2, from 'C:\Users\Macie\AppData\Local\Temp\face_track_swu3kdov\segment_3_11-14_48_11-53_92_audio.m4a':
+  Metadata:
+    major_brand     : M4A 
+    minor_version   : 512
+    compatible_brands: M4A isomiso2
+    encoder         : Lavf62.12.101
+  Duration: 00:00:39.44, start: 0.000000, bitrate: 193 kb/s
+  Stream #1:0[0x1](eng): Audio: aac (LC) (mp4a / 0x6134706D), 48000 Hz, stereo, fltp, 191 kb/s (default)
+    Metadata:
+      handler_name    : SoundHandler
+Stream mapping:
+  Stream #0:0 -> #0:0 (h264 (native) -> h264 (libx264))
+  Stream #1:0 -> #0:1 (aac (native) -> aac (native))
+Press [q] to stop, [?] for help
+[swscaler @ 000002b948f82f40] deprecated pixel format used, make sure you did set range correctly
+[libx264 @ 000002b94762f4c0] using SAR=1/1
+[libx264 @ 000002b94762f4c0] using cpu capabilities: MMX2 SSE2Fast SSSE3 SSE4.2 AVX FMA3 BMI2 AVX2 AVX512
+[libx264 @ 000002b94762f4c0] profile High, level 4.2, 4:2:0, 8-bit
+[libx264 @ 000002b94762f4c0] 264 - core 165 r3223 0480cb0 - H.264/MPEG-4 AVC codec - Copyleft 2003-2025 - http://www.videolan.org/x264.html - options: cabac=1 ref=1 deblock=1:0:0 analyse=0x3:0x3 me=dia subme=1 psy=1 psy_rd=1.00:0.00 mixed_ref=0 me_range=16 chroma_me=1 trellis=0 8x8dct=1 cqm=0 deadzone=21,11 fast_pskip=1 chroma_qp_offset=0 threads=24 lookahead_threads=4 sliced_threads=0 nr=0 decimate=1 interlaced=0 bluray_compat=0 constrained_intra=0 bframes=3 b_pyramid=2 b_adapt=1 b_bias=0 direct=1 weightb=1 open_gop=0 weightp=1 keyint=250 keyint_min=25 scenecut=40 intra_refresh=0 rc=crf mbtree=0 crf=23.0 qcomp=0.60 qpmin=0 qpmax=69 qpstep=4 ip_ratio=1.40 pb_ratio=1.30 aq=1:1.00
+Output #0, mp4, to 'D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_171633\roman_giertych_commentary\compare_podcast\cuts_raw\segment_3_11-14_48_11-53_92.mp4':
+  Metadata:
+    software        : Lavf62.12.101
+    encoder         : Lavf62.12.101
+  Stream #0:0: Video: h264 (avc1 / 0x31637661), yuv420p(pc, bt470bg/unknown/unknown, progressive), 1080x1920 [SAR 1:1 DAR 9:16], q=2-31, 60 fps, 15360 tbn
+    Metadata:
+      encoder         : Lavc62.28.101 libx264
+    Side data:
+      CPB properties: bitrate max/min/avg: 0/0/0 buffer size: 0 vbv_delay: N/A
+  Stream #0:1(eng): Audio: aac (LC) (mp4a / 0x6134706D), 48000 Hz, stereo, fltp, 192 kb/s (default)
+    Metadata:
+      encoder         : Lavc62.28.101 aac
+      handler_name    : SoundHandler
+frame=  323 fps=0.0 q=22.0 size=    1536KiB time=00:00:05.38 bitrate=2337.5kbits/s speed=10.4x elapsed=0:00:00.51    frame=  573 fps=556 q=24.0 size=    2560KiB time=00:00:09.55 bitrate=2196.0kbits/s speed=9.27x elapsed=0:00:01.03    frame=  880 fps=565 q=25.0 size=    4608KiB time=00:00:14.66 bitrate=2573.8kbits/s speed=9.42x elapsed=0:00:01.55    frame= 1253 fps=606 q=21.0 size=    6400KiB time=00:00:20.88 bitrate=2510.6kbits/s speed=10.1x elapsed=0:00:02.06    frame= 1673 fps=648 q=25.0 size=    7936KiB time=00:00:27.88 bitrate=2331.6kbits/s speed=10.8x elapsed=0:00:02.58    frame= 2163 fps=699 q=22.0 size=   10496KiB time=00:00:36.60 bitrate=2348.8kbits/s speed=11.8x elapsed=0:00:03.09    [mp4 @ 000002b947697bc0] Starting second pass: moving the moov atom to the beginning of the file
+[out#0/mp4 @ 000002b94762e7c0] video:10742KiB audio:935KiB subtitle:0KiB other streams:0KiB global headers:0KiB muxing overhead: 0.535852%
+frame= 2364 fps=722 q=-1.0 Lsize=   11739KiB time=00:00:39.40 bitrate=2440.8kbits/s speed=  12x elapsed=0:00:03.27    
+[libx264 @ 000002b94762f4c0] frame I:13    Avg QP:14.06  size: 64148
+[libx264 @ 000002b94762f4c0] frame P:693   Avg QP:16.22  size:  9585
+[libx264 @ 000002b94762f4c0] frame B:1658  Avg QP:18.08  size:  2125
+[libx264 @ 000002b94762f4c0] consecutive B-frames:  2.6% 11.3%  1.1% 84.9%
+[libx264 @ 000002b94762f4c0] mb I  I16..4: 29.8% 47.2% 23.0%
+[libx264 @ 000002b94762f4c0] mb P  I16..4:  5.9%  5.3%  0.4%  P16..4: 25.4%  0.0%  0.0%  0.0%  0.0%    skip:63.0%
+[libx264 @ 000002b94762f4c0] mb B  I16..4:  0.3%  0.2%  0.0%  B16..8:  8.3%  0.0%  0.0%  direct: 4.7%  skip:86.6%  L0:44.9% L1:50.4% BI: 4.8%
+[libx264 @ 000002b94762f4c0] 8x8 transform intra:44.5% inter:40.1%
+[libx264 @ 000002b94762f4c0] coded y,uvDC,uvAC intra: 23.8% 33.9% 15.4% inter: 1.2% 6.3% 0.1%
+[libx264 @ 000002b94762f4c0] i16 v,h,dc,p: 67% 22%  4%  7%
+[libx264 @ 000002b94762f4c0] i8 v,h,dc,ddl,ddr,vr,hd,vl,hu: 20% 22% 19%  5%  7%  8%  8%  6%  6%
+[libx264 @ 000002b94762f4c0] i4 v,h,dc,ddl,ddr,vr,hd,vl,hu: 25% 25% 11%  8%  6%  7%  6%  6%  7%
+[libx264 @ 000002b94762f4c0] i8c dc,h,v,p: 53% 19% 20%  9%
+[libx264 @ 000002b94762f4c0] Weighted P-Frames: Y:0.6% UV:0.0%
+[libx264 @ 000002b94762f4c0] kb/s:2233.38
+[aac @ 000002b947584540] Qavg: 700.333
+W0000 00:00:1778436919.199700   24068 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+ffmpeg version 8.1.1-full_build-www.gyan.dev Copyright (c) 2000-2026 the FFmpeg developers
+  built with gcc 15.2.0 (Rev13, Built by MSYS2 project)
+  configuration: --enable-gpl --enable-version3 --enable-static --disable-w32threads --disable-autodetect --enable-cairo --enable-fontconfig --enable-iconv --enable-gnutls --enable-lcms2 --enable-libxml2 --enable-gmp --enable-bzlib --enable-lzma --enable-libsnappy --enable-zlib --enable-librist --enable-libsrt --enable-libssh --enable-libzmq --enable-avisynth --enable-libbluray --enable-libcaca --enable-libdvdnav --enable-libdvdread --enable-sdl2 --enable-libaribb24 --enable-libaribcaption --enable-libdav1d --enable-libdavs2 --enable-libopenjpeg --enable-libquirc --enable-libuavs3d --enable-libxevd --enable-libzvbi --enable-liboapv --enable-libqrencode --enable-librav1e --enable-libsvtav1 --enable-libvvenc --enable-libwebp --enable-libx264 --enable-libx265 --enable-libxavs2 --enable-libxeve --enable-libxvid --enable-libaom --enable-libjxl --enable-libsvtjpegxs --enable-libvpx --enable-mediafoundation --enable-libass --enable-frei0r --enable-libfreetype --enable-libfribidi --enable-libharfbuzz --enable-liblensfun --enable-libvidstab --enable-libvmaf --enable-libzimg --enable-amf --enable-cuda-llvm --enable-cuvid --enable-dxva2 --enable-d3d11va --enable-d3d12va --enable-ffnvcodec --enable-libvpl --enable-nvdec --enable-nvenc --enable-vaapi --enable-libshaderc --enable-vulkan --enable-libplacebo --enable-opencl --enable-libcdio --enable-openal --enable-libgme --enable-libmodplug --enable-libopenmpt --enable-libopencore-amrwb --enable-libmp3lame --enable-libshine --enable-libtheora --enable-libtwolame --enable-libvo-amrwbenc --enable-libcodec2 --enable-libilbc --enable-libgsm --enable-liblc3 --enable-libopencore-amrnb --enable-libopus --enable-libspeex --enable-libvorbis --enable-ladspa --enable-libbs2b --enable-libflite --enable-libmysofa --enable-librubberband --enable-libsoxr --enable-chromaprint --enable-whisper
+  libavutil      60. 26.101 / 60. 26.101
+  libavcodec     62. 28.101 / 62. 28.101
+  libavformat    62. 12.101 / 62. 12.101
+  libavdevice    62.  3.101 / 62.  3.101
+  libavfilter    11. 14.101 / 11. 14.101
+  libswscale      9.  5.101 /  9.  5.101
+  libswresample   6.  3.101 /  6.  3.101
+Input #0, avi, from 'C:\Users\Macie\AppData\Local\Temp\face_track_dcs0ctl2\segment_4_04-13_30_04-54_70_silent.avi':
+  Metadata:
+    software        : Lavf62.12.101
+  Duration: 00:00:41.40, start: 0.000000, bitrate: 7198 kb/s
+  Stream #0:0: Video: h264 (High) (H264 / 0x34363248), yuvj420p(pc, bt470bg/unknown/unknown, progressive), 1080x1920 [SAR 1:1 DAR 9:16], 7188 kb/s, 60 fps, 60 tbr, 60 tbn
+Input #1, mov,mp4,m4a,3gp,3g2,mj2, from 'C:\Users\Macie\AppData\Local\Temp\face_track_dcs0ctl2\segment_4_04-13_30_04-54_70_audio.m4a':
+  Metadata:
+    major_brand     : M4A 
+    minor_version   : 512
+    compatible_brands: M4A isomiso2
+    encoder         : Lavf62.12.101
+  Duration: 00:00:41.40, start: 0.000000, bitrate: 193 kb/s
+  Stream #1:0[0x1](eng): Audio: aac (LC) (mp4a / 0x6134706D), 48000 Hz, stereo, fltp, 191 kb/s (default)
+    Metadata:
+      handler_name    : SoundHandler
+Stream mapping:
+  Stream #0:0 -> #0:0 (h264 (native) -> h264 (libx264))
+  Stream #1:0 -> #0:1 (aac (native) -> aac (native))
+Press [q] to stop, [?] for help
+[swscaler @ 000002d2f42822c0] deprecated pixel format used, make sure you did set range correctly
+[libx264 @ 000002d2f27c00c0] using SAR=1/1
+[libx264 @ 000002d2f27c00c0] using cpu capabilities: MMX2 SSE2Fast SSSE3 SSE4.2 AVX FMA3 BMI2 AVX2 AVX512
+[libx264 @ 000002d2f27c00c0] profile High, level 4.2, 4:2:0, 8-bit
+[libx264 @ 000002d2f27c00c0] 264 - core 165 r3223 0480cb0 - H.264/MPEG-4 AVC codec - Copyleft 2003-2025 - http://www.videolan.org/x264.html - options: cabac=1 ref=1 deblock=1:0:0 analyse=0x3:0x3 me=dia subme=1 psy=1 psy_rd=1.00:0.00 mixed_ref=0 me_range=16 chroma_me=1 trellis=0 8x8dct=1 cqm=0 deadzone=21,11 fast_pskip=1 chroma_qp_offset=0 threads=24 lookahead_threads=4 sliced_threads=0 nr=0 decimate=1 interlaced=0 bluray_compat=0 constrained_intra=0 bframes=3 b_pyramid=2 b_adapt=1 b_bias=0 direct=1 weightb=1 open_gop=0 weightp=1 keyint=250 keyint_min=25 scenecut=40 intra_refresh=0 rc=crf mbtree=0 crf=23.0 qcomp=0.60 qpmin=0 qpmax=69 qpstep=4 ip_ratio=1.40 pb_ratio=1.30 aq=1:1.00
+Output #0, mp4, to 'D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_171633\roman_giertych_commentary\compare_podcast\cuts_raw\segment_4_04-13_30_04-54_70.mp4':
+  Metadata:
+    software        : Lavf62.12.101
+    encoder         : Lavf62.12.101
+  Stream #0:0: Video: h264 (avc1 / 0x31637661), yuv420p(pc, bt470bg/unknown/unknown, progressive), 1080x1920 [SAR 1:1 DAR 9:16], q=2-31, 60 fps, 15360 tbn
+    Metadata:
+      encoder         : Lavc62.28.101 libx264
+    Side data:
+      CPB properties: bitrate max/min/avg: 0/0/0 buffer size: 0 vbv_delay: N/A
+  Stream #0:1(eng): Audio: aac (LC) (mp4a / 0x6134706D), 48000 Hz, stereo, fltp, 192 kb/s (default)
+    Metadata:
+      encoder         : Lavc62.28.101 aac
+      handler_name    : SoundHandler
+frame=  240 fps=0.0 q=27.0 size=    2816KiB time=00:00:04.00 bitrate=5767.3kbits/s speed=7.78x elapsed=0:00:00.51    frame=  573 fps=560 q=23.0 size=    6144KiB time=00:00:09.55 bitrate=5270.4kbits/s speed=9.33x elapsed=0:00:01.02    frame=  764 fps=495 q=26.0 size=    7168KiB time=00:00:12.73 bitrate=4611.6kbits/s speed=8.25x elapsed=0:00:01.54    frame= 1160 fps=563 q=26.0 size=    9728KiB time=00:00:19.33 bitrate=4122.0kbits/s speed=9.39x elapsed=0:00:02.05    frame= 1572 fps=612 q=23.0 size=   11776KiB time=00:00:26.20 bitrate=3682.0kbits/s speed=10.2x elapsed=0:00:02.57    frame= 2020 fps=655 q=23.0 size=   14080KiB time=00:00:34.24 bitrate=3368.7kbits/s speed=11.1x elapsed=0:00:03.08    [mp4 @ 000002d2f28c1400] Starting second pass: moving the moov atom to the beginning of the file
+[out#0/mp4 @ 000002d2f041efc0] video:16798KiB audio:979KiB subtitle:0KiB other streams:0KiB global headers:0KiB muxing overhead: 0.364470%
+frame= 2482 fps=699 q=-1.0 Lsize=   17842KiB time=00:00:41.36 bitrate=3533.3kbits/s speed=11.7x elapsed=0:00:03.55    
+[libx264 @ 000002d2f27c00c0] frame I:14    Avg QP:15.12  size: 66925
+[libx264 @ 000002d2f27c00c0] frame P:920   Avg QP:17.11  size: 11781
+[libx264 @ 000002d2f27c00c0] frame B:1548  Avg QP:18.77  size:  3505
+[libx264 @ 000002d2f27c00c0] consecutive B-frames:  8.9% 23.3%  1.2% 66.6%
+[libx264 @ 000002d2f27c00c0] mb I  I16..4: 21.4% 54.5% 24.1%
+[libx264 @ 000002d2f27c00c0] mb P  I16..4:  6.9% 10.8%  0.5%  P16..4: 28.6%  0.0%  0.0%  0.0%  0.0%    skip:53.2%
+[libx264 @ 000002d2f27c00c0] mb B  I16..4:  1.3%  1.7%  0.0%  B16..8: 12.1%  0.0%  0.0%  direct: 4.2%  skip:80.7%  L0:44.4% L1:51.0% BI: 4.6%
+[libx264 @ 000002d2f27c00c0] 8x8 transform intra:58.5% inter:44.6%
+[libx264 @ 000002d2f27c00c0] coded y,uvDC,uvAC intra: 22.4% 25.0% 7.4% inter: 1.7% 6.6% 0.1%
+[libx264 @ 000002d2f27c00c0] i16 v,h,dc,p: 54% 25%  7% 15%
+[libx264 @ 000002d2f27c00c0] i8 v,h,dc,ddl,ddr,vr,hd,vl,hu: 18% 19% 19%  7%  8%  8%  9%  6%  6%
+[libx264 @ 000002d2f27c00c0] i4 v,h,dc,ddl,ddr,vr,hd,vl,hu: 24% 24% 13%  8%  7%  6%  7%  6%  6%
+[libx264 @ 000002d2f27c00c0] i8c dc,h,v,p: 59% 17% 17%  7%
+[libx264 @ 000002d2f27c00c0] Weighted P-Frames: Y:1.1% UV:0.1%
+[libx264 @ 000002d2f27c00c0] kb/s:3326.52
+[aac @ 000002d2f282c600] Qavg: 673.096
+W0000 00:00:1778436963.741149   23136 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+ffmpeg version 8.1.1-full_build-www.gyan.dev Copyright (c) 2000-2026 the FFmpeg developers
+  built with gcc 15.2.0 (Rev13, Built by MSYS2 project)
+  configuration: --enable-gpl --enable-version3 --enable-static --disable-w32threads --disable-autodetect --enable-cairo --enable-fontconfig --enable-iconv --enable-gnutls --enable-lcms2 --enable-libxml2 --enable-gmp --enable-bzlib --enable-lzma --enable-libsnappy --enable-zlib --enable-librist --enable-libsrt --enable-libssh --enable-libzmq --enable-avisynth --enable-libbluray --enable-libcaca --enable-libdvdnav --enable-libdvdread --enable-sdl2 --enable-libaribb24 --enable-libaribcaption --enable-libdav1d --enable-libdavs2 --enable-libopenjpeg --enable-libquirc --enable-libuavs3d --enable-libxevd --enable-libzvbi --enable-liboapv --enable-libqrencode --enable-librav1e --enable-libsvtav1 --enable-libvvenc --enable-libwebp --enable-libx264 --enable-libx265 --enable-libxavs2 --enable-libxeve --enable-libxvid --enable-libaom --enable-libjxl --enable-libsvtjpegxs --enable-libvpx --enable-mediafoundation --enable-libass --enable-frei0r --enable-libfreetype --enable-libfribidi --enable-libharfbuzz --enable-liblensfun --enable-libvidstab --enable-libvmaf --enable-libzimg --enable-amf --enable-cuda-llvm --enable-cuvid --enable-dxva2 --enable-d3d11va --enable-d3d12va --enable-ffnvcodec --enable-libvpl --enable-nvdec --enable-nvenc --enable-vaapi --enable-libshaderc --enable-vulkan --enable-libplacebo --enable-opencl --enable-libcdio --enable-openal --enable-libgme --enable-libmodplug --enable-libopenmpt --enable-libopencore-amrwb --enable-libmp3lame --enable-libshine --enable-libtheora --enable-libtwolame --enable-libvo-amrwbenc --enable-libcodec2 --enable-libilbc --enable-libgsm --enable-liblc3 --enable-libopencore-amrnb --enable-libopus --enable-libspeex --enable-libvorbis --enable-ladspa --enable-libbs2b --enable-libflite --enable-libmysofa --enable-librubberband --enable-libsoxr --enable-chromaprint --enable-whisper
+  libavutil      60. 26.101 / 60. 26.101
+  libavcodec     62. 28.101 / 62. 28.101
+  libavformat    62. 12.101 / 62. 12.101
+  libavdevice    62.  3.101 / 62.  3.101
+  libavfilter    11. 14.101 / 11. 14.101
+  libswscale      9.  5.101 /  9.  5.101
+  libswresample   6.  3.101 /  6.  3.101
+Input #0, avi, from 'C:\Users\Macie\AppData\Local\Temp\face_track_ulvl_dn4\segment_5_13-39_04_14-30_56_silent.avi':
+  Metadata:
+    software        : Lavf62.12.101
+  Duration: 00:00:51.52, start: 0.000000, bitrate: 5694 kb/s
+  Stream #0:0: Video: h264 (High) (H264 / 0x34363248), yuvj420p(pc, bt470bg/unknown/unknown, progressive), 1080x1920 [SAR 1:1 DAR 9:16], 5683 kb/s, 60 fps, 60 tbr, 60 tbn
+Input #1, mov,mp4,m4a,3gp,3g2,mj2, from 'C:\Users\Macie\AppData\Local\Temp\face_track_ulvl_dn4\segment_5_13-39_04_14-30_56_audio.m4a':
+  Metadata:
+    major_brand     : M4A 
+    minor_version   : 512
+    compatible_brands: M4A isomiso2
+    encoder         : Lavf62.12.101
+  Duration: 00:00:51.52, start: 0.000000, bitrate: 194 kb/s
+  Stream #1:0[0x1](eng): Audio: aac (LC) (mp4a / 0x6134706D), 48000 Hz, stereo, fltp, 192 kb/s (default)
+    Metadata:
+      handler_name    : SoundHandler
+Stream mapping:
+  Stream #0:0 -> #0:0 (h264 (native) -> h264 (libx264))
+  Stream #1:0 -> #0:1 (aac (native) -> aac (native))
+Press [q] to stop, [?] for help
+[swscaler @ 0000017b82a98800] deprecated pixel format used, make sure you did set range correctly
+[libx264 @ 0000017bff3c0c00] using SAR=1/1
+[libx264 @ 0000017bff3c0c00] using cpu capabilities: MMX2 SSE2Fast SSSE3 SSE4.2 AVX FMA3 BMI2 AVX2 AVX512
+[libx264 @ 0000017bff3c0c00] profile High, level 4.2, 4:2:0, 8-bit
+[libx264 @ 0000017bff3c0c00] 264 - core 165 r3223 0480cb0 - H.264/MPEG-4 AVC codec - Copyleft 2003-2025 - http://www.videolan.org/x264.html - options: cabac=1 ref=1 deblock=1:0:0 analyse=0x3:0x3 me=dia subme=1 psy=1 psy_rd=1.00:0.00 mixed_ref=0 me_range=16 chroma_me=1 trellis=0 8x8dct=1 cqm=0 deadzone=21,11 fast_pskip=1 chroma_qp_offset=0 threads=24 lookahead_threads=4 sliced_threads=0 nr=0 decimate=1 interlaced=0 bluray_compat=0 constrained_intra=0 bframes=3 b_pyramid=2 b_adapt=1 b_bias=0 direct=1 weightb=1 open_gop=0 weightp=1 keyint=250 keyint_min=25 scenecut=40 intra_refresh=0 rc=crf mbtree=0 crf=23.0 qcomp=0.60 qpmin=0 qpmax=69 qpstep=4 ip_ratio=1.40 pb_ratio=1.30 aq=1:1.00
+Output #0, mp4, to 'D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_171633\roman_giertych_commentary\compare_podcast\cuts_raw\segment_5_13-39_04_14-30_56.mp4':
+  Metadata:
+    software        : Lavf62.12.101
+    encoder         : Lavf62.12.101
+  Stream #0:0: Video: h264 (avc1 / 0x31637661), yuv420p(pc, bt470bg/unknown/unknown, progressive), 1080x1920 [SAR 1:1 DAR 9:16], q=2-31, 60 fps, 15360 tbn
+    Metadata:
+      encoder         : Lavc62.28.101 libx264
+    Side data:
+      CPB properties: bitrate max/min/avg: 0/0/0 buffer size: 0 vbv_delay: N/A
+  Stream #0:1(eng): Audio: aac (LC) (mp4a / 0x6134706D), 48000 Hz, stereo, fltp, 192 kb/s (default)
+    Metadata:
+      encoder         : Lavc62.28.101 aac
+      handler_name    : SoundHandler
+frame=  376 fps=0.0 q=23.0 size=    2048KiB time=00:00:06.26 bitrate=2677.3kbits/s speed=  12x elapsed=0:00:00.52    frame=  573 fps=551 q=25.0 size=    3072KiB time=00:00:09.55 bitrate=2635.2kbits/s speed=9.19x elapsed=0:00:01.03    frame=  980 fps=630 q=20.0 size=    4864KiB time=00:00:16.33 bitrate=2439.6kbits/s speed=10.5x elapsed=0:00:01.55    frame= 1414 fps=681 q=23.0 size=    6912KiB time=00:00:23.56 bitrate=2402.7kbits/s speed=11.3x elapsed=0:00:02.07    frame= 1800 fps=694 q=22.0 size=    9472KiB time=00:00:30.00 bitrate=2586.5kbits/s speed=11.6x elapsed=0:00:02.59    frame= 2188 fps=704 q=21.0 size=   12032KiB time=00:00:36.46 bitrate=2702.9kbits/s speed=11.7x elapsed=0:00:03.10    frame= 2606 fps=720 q=24.0 size=   14336KiB time=00:00:43.98 bitrate=2669.8kbits/s speed=12.2x elapsed=0:00:03.61    [mp4 @ 0000017bff3becc0] Starting second pass: moving the moov atom to the beginning of the file
+[out#0/mp4 @ 0000017bff91f880] video:15627KiB audio:1221KiB subtitle:0KiB other streams:0KiB global headers:0KiB muxing overhead: 0.473759%
+frame= 3089 fps=755 q=-1.0 Lsize=   16928KiB time=00:00:51.48 bitrate=2693.6kbits/s speed=12.6x elapsed=0:00:04.08    
+[libx264 @ 0000017bff3c0c00] frame I:19    Avg QP:15.59  size: 81709
+[libx264 @ 0000017bff3c0c00] frame P:1166  Avg QP:17.42  size:  9719
+[libx264 @ 0000017bff3c0c00] frame B:1904  Avg QP:19.12  size:  1637
+[libx264 @ 0000017bff3c0c00] consecutive B-frames: 11.0% 20.3%  0.8% 68.0%
+[libx264 @ 0000017bff3c0c00] mb I  I16..4: 17.4% 48.6% 34.0%
+[libx264 @ 0000017bff3c0c00] mb P  I16..4:  1.8%  2.8%  0.4%  P16..4: 29.2%  0.0%  0.0%  0.0%  0.0%    skip:65.8%
+[libx264 @ 0000017bff3c0c00] mb B  I16..4:  0.1%  0.1%  0.0%  B16..8:  5.8%  0.0%  0.0%  direct: 3.8%  skip:90.1%  L0:41.3% L1:53.8% BI: 4.9%
+[libx264 @ 0000017bff3c0c00] 8x8 transform intra:53.5% inter:44.8%
+[libx264 @ 0000017bff3c0c00] coded y,uvDC,uvAC intra: 39.8% 33.7% 13.1% inter: 2.2% 4.9% 0.0%
+[libx264 @ 0000017bff3c0c00] i16 v,h,dc,p: 51% 32%  7% 10%
+[libx264 @ 0000017bff3c0c00] i8 v,h,dc,ddl,ddr,vr,hd,vl,hu: 22% 22% 16%  6%  7%  7%  7%  6%  6%
+[libx264 @ 0000017bff3c0c00] i4 v,h,dc,ddl,ddr,vr,hd,vl,hu: 21% 30%  9%  7%  6%  6%  7%  5%  7%
+[libx264 @ 0000017bff3c0c00] i8c dc,h,v,p: 53% 20% 17% 10%
+[libx264 @ 0000017bff3c0c00] Weighted P-Frames: Y:0.1% UV:0.0%
+[libx264 @ 0000017bff3c0c00] kb/s:2486.50
+[aac @ 0000017bff85c0c0] Qavg: 644.810
+Cutting segment 1: 1149.66s - 1201.48s -> D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_171633\roman_giertych_commentary\compare_podcast\cuts_raw\segment_1_19-09_66_20-01_48.mp4
+Cutting segment 2: 53.90s - 86.86s -> D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_171633\roman_giertych_commentary\compare_podcast\cuts_raw\segment_2_00-53_90_01-26_86.mp4
+Cutting segment 3: 674.48s - 713.92s -> D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_171633\roman_giertych_commentary\compare_podcast\cuts_raw\segment_3_11-14_48_11-53_92.mp4
+Cutting segment 4: 253.30s - 294.70s -> D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_171633\roman_giertych_commentary\compare_podcast\cuts_raw\segment_4_04-13_30_04-54_70.mp4
+Cutting segment 5: 819.04s - 870.56s -> D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_171633\roman_giertych_commentary\compare_podcast\cuts_raw\segment_5_13-39_04_14-30_56.mp4
+Done. Files saved in D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_171633\roman_giertych_commentary\compare_podcast\cuts_raw
+$ D:\PythonProjects\viral-cutter-ai\.venv\Scripts\python.exe D:\PythonProjects\viral-cutter-ai\cutter.py --video D:\PythonProjects\viral-cutter-ai\benchmarks\assets\roman_giertych_commentary\input\source.mp4 --windows D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_171633\roman_giertych_commentary\compare_podcast\top_windows.json --transcript D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_171633\roman_giertych_commentary\shared\transcript.json --output-dir D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_171633\roman_giertych_commentary\compare_podcast\cuts_raw --cutting-log D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_171633\roman_giertych_commentary\compare_podcast\cutting_logic.json
+

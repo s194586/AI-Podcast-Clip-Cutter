@@ -5,3 +5,5 @@ tqdm
 mediapipe
 opencv-python-headless
 certifi
+numpy
+faster-whisper

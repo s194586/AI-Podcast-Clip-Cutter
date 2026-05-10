@@ -1,0 +1,53 @@
+INFO: Created TensorFlow Lite XNNPACK delegate for CPU.
+W0000 00:00:1778429067.465537   20964 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+  Content classification: gameplay (confidence=0.97, source=heuristic_classifier)
+  Routing reasons: Visual motion is high across sampled frames., Scene changes are frequent., Speech contains many emotionally elevated segments.
+  Strategy selected: gameplay | weights={"chaos_score": 0.08, "duration_fit_score": 0.03, "emotion_score": 0.16, "heatmap_avg": 0.2, "heatmap_peak": 0.14, "hook_score": 0.05, "importance_score": 0.14, "payoff_score": 0.08, "punchiness_score": 0.14, "repetition_penalty": 0.06, "speaker_turn_score": 0.06, "speech_density_score": 0.06}
+  Local candidate generation: 40661 windows
+  Local scoring ready: top pool 15 / requested clips 5
+  AI rerank skipped: local_only mode is active.
+
+Top 5 moments for Shorts:
+Clip 1:
+  Range: 17:47.41 - 18:35.79
+  Avg heatmap score: 0.5241
+  Local score: 94.23
+  Duration: 48.4s
+  Why selected: strong heatmap support, contains punchy or emotional language, has several short punchy lines
+  Summary: Co to nie s¹ d³ugo jest to? Ta, bajtu i po prostu d³ugi. Ja pik³em o serpody info i tofa. Mi widzê. Nie widzia³em m¹ stara w ogóle. I do dole wej. Kl¹k, kliwy. Jaka le¿y. Ja jeszcze jeden fantana, jeden. Dobra....
+
+Clip 2:
+  Range: 05:25.33 - 05:58.35
+  Avg heatmap score: 0.5160
+  Local score: 92.97
+  Duration: 33.0s
+  Why selected: strong heatmap support, contains punchy or emotional language, has several short punchy lines
+  Summary: Bo by³em trochê te¿ ju¿ w slezem pizzy, jak siê dzie³a akcja. Zobaczem tylko nogê, tylko w jakiegoœ sajury Fenix. Mamy sm¹³kê jakiegoœ jeszcze. Mamy gra³y force, no. Sm¹³ka mnie. Mamy jednego maæ. Nie trafili w palaka....
+
+Clip 3:
+  Range: 16:38.20 - 17:19.73
+  Avg heatmap score: 0.5042
+  Local score: 92.73
+  Duration: 41.5s
+  Why selected: strong heatmap support, contains punchy or emotional language, contains high-importance transcript moments
+  Summary: Dlaczego mnie ¿yjemy? Ja ci powiedzia³em, ¿ebyœ tylko ciê rzuci³. Tylko ciê rzuci³ i wracamy. Mog¹ dojechaæ. to jest zajebiœcie, ¿e... ¿e wy dojechali A. My mo¿emy za... PaŸdŸ do B, wejœæ w drugiej tempo....
+
+Clip 4:
+  Range: 02:17.46 - 02:52.19
+  Avg heatmap score: 0.4906
+  Local score: 92.62
+  Duration: 34.7s
+  Why selected: strong heatmap support, contains punchy or emotional language, has several short punchy lines
+  Summary: Znajduj¹ siê tu równie¿ skrzynie pro graczy. Takich jak Alexy, beat, sensu oraz techno. Dostêpna jest równie¿ opcja beatems innymi graczami. Oraz mo¿liwoœæ wymiany przedmiotów za pomoc¹ X-Changer'a....
+
+Clip 5:
+  Range: 04:14.05 - 04:59.95
+  Avg heatmap score: 0.5020
+  Local score: 92.07
+  Duration: 45.9s
+  Why selected: strong heatmap support, contains punchy or emotional language, has several short punchy lines
+  Summary: Trzymam co? Zawaæ, wyschowam. Zaszujê. Zobacz, bangle¿. Ja nie wiem, czy ja mam. Ja oni ch³oplecy s¹ albo nie, no chow³aœ niechowaj¹. To do. Gaj to nie jakoœ. To jest wiek, nie widzê. Przez szyjê pod bal¹....
+
+Saved selected windows to: D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_160345\emeritos_gameplay\auto\top_windows.json
+$ D:\PythonProjects\viral-cutter-ai\.venv\Scripts\python.exe D:\PythonProjects\viral-cutter-ai\analyze_virals.py --transcript D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_160345\emeritos_gameplay\shared\transcript.json --heatmap D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_160345\emeritos_gameplay\shared\heatmap.json --video "D:\PythonProjects\viral-cutter-ai\input\EMERITOS BANDITOS BEZ MVP MAJORA W ESEA INTERMEDIATE!.mp4" --save-json D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_160345\emeritos_gameplay\auto\top_windows.json --cutting-log D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_160345\emeritos_gameplay\auto\cutting_logic.json --content-profile D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_160345\emeritos_gameplay\auto\content_profile.json --content-type auto --ai-mode local_only --top 5
+

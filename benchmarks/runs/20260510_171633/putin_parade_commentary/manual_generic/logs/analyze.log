@@ -1,0 +1,53 @@
+INFO: Created TensorFlow Lite XNNPACK delegate for CPU.
+W0000 00:00:1778437366.297735   33740 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+  Content classification: generic (confidence=1.00, source=manual_override)
+  Routing reasons: Content type manually forced to generic.
+  Strategy selected: generic | weights={"chaos_score": 0.04, "duration_fit_score": 0.05, "emotion_score": 0.1, "heatmap_avg": 0.34, "heatmap_peak": 0.12, "hook_score": 0.08, "importance_score": 0.12, "payoff_score": 0.08, "punchiness_score": 0.08, "repetition_penalty": 0.06, "speaker_turn_score": 0.05, "speech_density_score": 0.1}
+  Local candidate generation: 4797 windows
+  Local scoring ready: top pool 15 / requested clips 5
+  AI rerank skipped: local_only mode is active.
+
+Top 5 moments for Shorts:
+Clip 1:
+  Range: 06:57.53 - 07:47.13
+  Avg heatmap score: 0.5000
+  Local score: 74.92
+  Duration: 49.6s
+  Why selected: contains punchy or emotional language, good speech density for a short clip, starts with a stronger hook signal
+  Summary: Chcesz zacz¹æ inwestowaæ, ale nie wiesz jak? SprawdŸ aplikacjê inwestycyjn¹ XTB. Teraz otwieraj¹c konto....
+
+Clip 2:
+  Range: 00:55.26 - 01:34.25
+  Avg heatmap score: 0.5000
+  Local score: 73.73
+  Duration: 39.0s
+  Why selected: contains punchy or emotional language, contains high-importance transcript moments, good speech density for a short clip
+  Summary: o twój wybór. Zawsze p³acê zenem, niewa¿ne za co. Wa¿ne, ¿e w zenie zarabiam na ka¿dych zakupach. Ty te¿ mo¿esz....
+
+Clip 3:
+  Range: 10:08.63 - 10:39.61
+  Avg heatmap score: 0.5000
+  Local score: 73.31
+  Duration: 31.0s
+  Why selected: contains punchy or emotional language, good speech density for a short clip, contains high-importance transcript moments
+  Summary: ¿e to W³adimir Putin prosi³ o Rosjê. Nie tak jak w poprzednich latach, to Ukrainy zale¿a³o na Rosyjmie. Teraz to Rosji zale¿a³o na Rosyjmie. A Wo³odymyr Za³êski jakby siê z W³adimirem Putinem droczy³....
+
+Clip 4:
+  Range: 12:31.65 - 13:06.09
+  Avg heatmap score: 0.5000
+  Local score: 71.15
+  Duration: 34.4s
+  Why selected: contains punchy or emotional language, good speech density for a short clip, contains high-importance transcript moments
+  Summary: A to wy³¹czanie internetu naprawdê Rosjan boli jak nic innego, to wywo³a³o najwiêksz¹ reakcjê w rosyjskim spo³eczeñstwie, a 9 maja i zapowiedziano to wczeœniej, to te¿ jest bardzo symptomatyczne....
+
+Clip 5:
+  Range: 03:28.09 - 04:02.47
+  Avg heatmap score: 0.5000
+  Local score: 68.88
+  Duration: 34.4s
+  Why selected: contains punchy or emotional language, good speech density for a short clip, contains high-importance transcript moments
+  Summary: bo nie uznawane i prawie przez nikogo abhazji....
+
+Saved selected windows to: D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_171633\putin_parade_commentary\manual_generic\top_windows.json
+$ D:\PythonProjects\viral-cutter-ai\.venv\Scripts\python.exe D:\PythonProjects\viral-cutter-ai\analyze_virals.py --transcript D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_171633\putin_parade_commentary\shared\transcript.json --heatmap D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_171633\putin_parade_commentary\shared\heatmap.json --video D:\PythonProjects\viral-cutter-ai\benchmarks\assets\putin_parade_commentary\input\source.mp4 --save-json D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_171633\putin_parade_commentary\manual_generic\top_windows.json --cutting-log D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_171633\putin_parade_commentary\manual_generic\cutting_logic.json --content-profile D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_171633\putin_parade_commentary\manual_generic\content_profile.json --content-type generic --ai-mode local_only --top 5
+

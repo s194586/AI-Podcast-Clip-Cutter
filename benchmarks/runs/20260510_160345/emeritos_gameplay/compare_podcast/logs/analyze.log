@@ -1,0 +1,53 @@
+INFO: Created TensorFlow Lite XNNPACK delegate for CPU.
+W0000 00:00:1778429799.322962   21496 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+  Content classification: podcast (confidence=1.00, source=manual_override)
+  Routing reasons: Content type manually forced to podcast.
+  Strategy selected: podcast | weights={"chaos_score": 0.1, "duration_fit_score": 0.04, "emotion_score": 0.05, "heatmap_avg": 0.12, "heatmap_peak": 0.06, "hook_score": 0.12, "importance_score": 0.1, "payoff_score": 0.12, "punchiness_score": 0.05, "repetition_penalty": 0.08, "speaker_turn_score": 0.14, "speech_density_score": 0.16}
+  Local candidate generation: 40661 windows
+  Local scoring ready: top pool 15 / requested clips 5
+  AI rerank skipped: local_only mode is active.
+
+Top 5 moments for Shorts:
+Clip 1:
+  Range: 17:47.41 - 18:35.79
+  Avg heatmap score: 0.5241
+  Local score: 89.18
+  Duration: 48.4s
+  Why selected: strong heatmap support, good speech density for a short clip, has speaker dynamics or conversational turns
+  Summary: Co to nie s¹ d³ugo jest to? Ta, bajtu i po prostu d³ugi. Ja pik³em o serpody info i tofa. Mi widzê. Nie widzia³em m¹ stara w ogóle. I do dole wej. Kl¹k, kliwy. Jaka le¿y. Ja jeszcze jeden fantana, jeden. Dobra....
+
+Clip 2:
+  Range: 16:38.20 - 17:28.11
+  Avg heatmap score: 0.5051
+  Local score: 88.26
+  Duration: 49.9s
+  Why selected: strong heatmap support, has speaker dynamics or conversational turns, good speech density for a short clip
+  Summary: Dlaczego mnie ¿yjemy? Ja ci powiedzia³em, ¿ebyœ tylko ciê rzuci³. Tylko ciê rzuci³ i wracamy. Mog¹ dojechaæ. to jest zajebiœcie, ¿e... ¿e wy dojechali A. My mo¿emy za... PaŸdŸ do B, wejœæ w drugiej tempo....
+
+Clip 3:
+  Range: 04:58.65 - 05:58.35
+  Avg heatmap score: 0.4997
+  Local score: 87.52
+  Duration: 59.7s
+  Why selected: strong heatmap support, good speech density for a short clip, has speaker dynamics or conversational turns
+  Summary: No co jest? Ok, ma³em. Gala i Fenix. Ja powinien bli¿ej tam graæ. Wow. Z tym jest lesê. Najpierw na placê musimy przej¹æ Fenix, razem z Sajem. nie, i¿ sobie gdzieœ tam bananem czy Biblem....
+
+Clip 4:
+  Range: 00:06.56 - 00:45.74
+  Avg heatmap score: 0.5349
+  Local score: 85.53
+  Duration: 39.2s
+  Why selected: strong heatmap support, good speech density for a short clip, has speaker dynamics or conversational turns
+  Summary: Mhm. Co zaznaczy³? No nie wiem, czyta³em i tak nie odpierw, ale no. ¯e m¹czy, ¿e m¹czy, No to ty, chcia³em. Nie chcia³em tego s³owa u¿ywaæ, m¹czy, bo by by³y zaraz potrzebki bójki. Ja tam zawsze myœlê, ¿e m¹czy....
+
+Clip 5:
+  Range: 07:54.74 - 08:25.84
+  Avg heatmap score: 0.4863
+  Local score: 85.53
+  Duration: 31.1s
+  Why selected: strong heatmap support, good speech density for a short clip, has speaker dynamics or conversational turns
+  Summary: Szerpa tam mogami zainteren, bo co, bo Wobrze mosterze, bo raczej nie maj¹ symbol. To ¿e nas je okej. Te. Przejemy nas mokê i... Batkona goce llyg, batkona... Walty trzeba. No, walczy, na maty... Baju, sta¿. Wleci. Bum....
+
+Saved selected windows to: D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_160345\emeritos_gameplay\compare_podcast\top_windows.json
+$ D:\PythonProjects\viral-cutter-ai\.venv\Scripts\python.exe D:\PythonProjects\viral-cutter-ai\analyze_virals.py --transcript D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_160345\emeritos_gameplay\shared\transcript.json --heatmap D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_160345\emeritos_gameplay\shared\heatmap.json --video "D:\PythonProjects\viral-cutter-ai\input\EMERITOS BANDITOS BEZ MVP MAJORA W ESEA INTERMEDIATE!.mp4" --save-json D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_160345\emeritos_gameplay\compare_podcast\top_windows.json --cutting-log D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_160345\emeritos_gameplay\compare_podcast\cutting_logic.json --content-profile D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_160345\emeritos_gameplay\compare_podcast\content_profile.json --content-type podcast --ai-mode local_only --top 5
+

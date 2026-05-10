@@ -1,0 +1,438 @@
+ffmpeg version 8.1.1-full_build-www.gyan.dev Copyright (c) 2000-2026 the FFmpeg developers
+  built with gcc 15.2.0 (Rev13, Built by MSYS2 project)
+  configuration: --enable-gpl --enable-version3 --enable-static --disable-w32threads --disable-autodetect --enable-cairo --enable-fontconfig --enable-iconv --enable-gnutls --enable-lcms2 --enable-libxml2 --enable-gmp --enable-bzlib --enable-lzma --enable-libsnappy --enable-zlib --enable-librist --enable-libsrt --enable-libssh --enable-libzmq --enable-avisynth --enable-libbluray --enable-libcaca --enable-libdvdnav --enable-libdvdread --enable-sdl2 --enable-libaribb24 --enable-libaribcaption --enable-libdav1d --enable-libdavs2 --enable-libopenjpeg --enable-libquirc --enable-libuavs3d --enable-libxevd --enable-libzvbi --enable-liboapv --enable-libqrencode --enable-librav1e --enable-libsvtav1 --enable-libvvenc --enable-libwebp --enable-libx264 --enable-libx265 --enable-libxavs2 --enable-libxeve --enable-libxvid --enable-libaom --enable-libjxl --enable-libsvtjpegxs --enable-libvpx --enable-mediafoundation --enable-libass --enable-frei0r --enable-libfreetype --enable-libfribidi --enable-libharfbuzz --enable-liblensfun --enable-libvidstab --enable-libvmaf --enable-libzimg --enable-amf --enable-cuda-llvm --enable-cuvid --enable-dxva2 --enable-d3d11va --enable-d3d12va --enable-ffnvcodec --enable-libvpl --enable-nvdec --enable-nvenc --enable-vaapi --enable-libshaderc --enable-vulkan --enable-libplacebo --enable-opencl --enable-libcdio --enable-openal --enable-libgme --enable-libmodplug --enable-libopenmpt --enable-libopencore-amrwb --enable-libmp3lame --enable-libshine --enable-libtheora --enable-libtwolame --enable-libvo-amrwbenc --enable-libcodec2 --enable-libilbc --enable-libgsm --enable-liblc3 --enable-libopencore-amrnb --enable-libopus --enable-libspeex --enable-libvorbis --enable-ladspa --enable-libbs2b --enable-libflite --enable-libmysofa --enable-librubberband --enable-libsoxr --enable-chromaprint --enable-whisper
+  libavutil      60. 26.101 / 60. 26.101
+  libavcodec     62. 28.101 / 62. 28.101
+  libavformat    62. 12.101 / 62. 12.101
+  libavdevice    62.  3.101 / 62.  3.101
+  libavfilter    11. 14.101 / 11. 14.101
+  libswscale      9.  5.101 /  9.  5.101
+  libswresample   6.  3.101 /  6.  3.101
+Input #0, mov,mp4,m4a,3gp,3g2,mj2, from 'D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_160345\emeritos_gameplay\compare_generic\cuts_raw\segment_1_17-47_41_18-35_79.mp4':
+  Metadata:
+    major_brand     : isom
+    minor_version   : 512
+    compatible_brands: isomiso2avc1mp41
+    encoder         : Lavf62.12.101
+  Duration: 00:00:48.38, start: 0.000000, bitrate: 7025 kb/s
+  Stream #0:0[0x1](und): Video: h264 (High) (avc1 / 0x31637661), yuvj420p(pc, bt470bg/unknown/unknown, progressive), 1080x1920 [SAR 1:1 DAR 9:16], 6817 kb/s, 59.94 fps, 59.94 tbr, 60k tbn, start 0.033000 (default)
+    Metadata:
+      handler_name    : VideoHandler
+      encoder         : Lavc62.28.101 libx264
+  Stream #0:1[0x2](eng): Audio: aac (LC) (mp4a / 0x6134706D), 48000 Hz, stereo, fltp, 200 kb/s (default)
+    Metadata:
+      handler_name    : SoundHandler
+[Parsed_ass_0 @ 0000017cc39cdfc0] libass API version: 0x1704000
+[Parsed_ass_0 @ 0000017cc39cdfc0] libass source: commit: 0.17.4-27-g1cbba0a8818c83495114b3c2b5730410eecbdb2c
+[Parsed_ass_0 @ 0000017cc39cdfc0] Shaper: FriBidi 1.0.16 (SIMPLE) HarfBuzz-ng 14.2.0 (COMPLEX)
+[Parsed_ass_0 @ 0000017cc39cdfc0] Using font provider directwrite (with GDI)
+[Parsed_ass_0 @ 0000017cc39cdfc0] Added subtitle file: 'D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_160345\emeritos_gameplay\compare_generic\cuts_raw\segment_1_17-47_41_18-35_79.ass' (7 styles, 25 events)
+Stream mapping:
+  Stream #0:0 -> #0:0 (h264 (native) -> h264 (libx264))
+  Stream #0:1 -> #0:1 (aac (native) -> aac (native))
+Press [q] to stop, [?] for help
+[Parsed_ass_0 @ 0000017cc39ced80] libass API version: 0x1704000
+[Parsed_ass_0 @ 0000017cc39ced80] libass source: commit: 0.17.4-27-g1cbba0a8818c83495114b3c2b5730410eecbdb2c
+[Parsed_ass_0 @ 0000017cc39ced80] Shaper: FriBidi 1.0.16 (SIMPLE) HarfBuzz-ng 14.2.0 (COMPLEX)
+[Parsed_ass_0 @ 0000017cc39ced80] Using font provider directwrite (with GDI)
+[Parsed_ass_0 @ 0000017cc39ced80] Added subtitle file: 'D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_160345\emeritos_gameplay\compare_generic\cuts_raw\segment_1_17-47_41_18-35_79.ass' (7 styles, 25 events)
+[libx264 @ 0000017cc59d6b40] using SAR=1/1
+[libx264 @ 0000017cc59d6b40] using cpu capabilities: MMX2 SSE2Fast SSSE3 SSE4.2 AVX FMA3 BMI2 AVX2 AVX512
+[libx264 @ 0000017cc59d6b40] profile High, level 4.2, 4:2:0, 8-bit
+[libx264 @ 0000017cc59d6b40] 264 - core 165 r3223 0480cb0 - H.264/MPEG-4 AVC codec - Copyleft 2003-2025 - http://www.videolan.org/x264.html - options: cabac=1 ref=3 deblock=1:0:0 analyse=0x3:0x113 me=hex subme=7 psy=1 psy_rd=1.00:0.00 mixed_ref=1 me_range=16 chroma_me=1 trellis=1 8x8dct=1 cqm=0 deadzone=21,11 fast_pskip=1 chroma_qp_offset=-2 threads=24 lookahead_threads=4 sliced_threads=0 nr=0 decimate=1 interlaced=0 bluray_compat=0 constrained_intra=0 bframes=3 b_pyramid=2 b_adapt=1 b_bias=0 direct=1 weightb=1 open_gop=0 weightp=2 keyint=250 keyint_min=25 scenecut=40 intra_refresh=0 rc_lookahead=40 rc=crf mbtree=1 crf=23.0 qcomp=0.60 qpmin=0 qpmax=69 qpstep=4 ip_ratio=1.40 aq=1:1.00
+Output #0, mp4, to 'D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_160345\emeritos_gameplay\compare_generic\cuts_subtitles\segment_1_17-47_41_18-35_79.mp4':
+  Metadata:
+    major_brand     : isom
+    minor_version   : 512
+    compatible_brands: isomiso2avc1mp41
+    encoder         : Lavf62.12.101
+  Stream #0:0(und): Video: h264 (avc1 / 0x31637661), yuvj420p(pc, bt470bg/unknown/unknown, progressive), 1080x1920 [SAR 1:1 DAR 9:16], q=2-31, 59.94 fps, 60k tbn (default)
+    Metadata:
+      encoder         : Lavc62.28.101 libx264
+      handler_name    : VideoHandler
+    Side data:
+      CPB properties: bitrate max/min/avg: 0/0/0 buffer size: 0 vbv_delay: N/A
+  Stream #0:1(eng): Audio: aac (LC) (mp4a / 0x6134706D), 48000 Hz, stereo, fltp, 192 kb/s (default)
+    Metadata:
+      encoder         : Lavc62.28.101 aac
+      handler_name    : SoundHandler
+[Parsed_ass_0 @ 0000017cc39ced80] fontselect: (Arial Black, 400, 0) -> Arial-Black, 0, Arial-Black
+[Parsed_ass_0 @ 0000017cc39ced80] fontselect: (Arial Black, 700, 0) -> Arial-Black, 0, Arial-Black
+frame=   41 fps=0.0 q=31.0 size=     512KiB time=00:00:00.68 bitrate=6132.4kbits/s speed=1.33x elapsed=0:00:00.51    frame=  139 fps=136 q=31.0 size=    1792KiB time=00:00:02.31 bitrate=6330.6kbits/s speed=2.28x elapsed=0:00:01.01    frame=  238 fps=155 q=31.0 size=    2816KiB time=00:00:03.97 bitrate=5809.9kbits/s speed=2.58x elapsed=0:00:01.53    frame=  345 fps=168 q=31.0 size=    4096KiB time=00:00:05.75 bitrate=5829.8kbits/s speed= 2.8x elapsed=0:00:02.05    frame=  466 fps=181 q=31.0 size=    5120KiB time=00:00:07.77 bitrate=5395.0kbits/s speed=3.03x elapsed=0:00:02.57    frame=  586 fps=189 q=31.0 size=    6144KiB time=00:00:09.77 bitrate=5148.3kbits/s speed=3.16x elapsed=0:00:03.09    frame=  699 fps=194 q=31.0 size=    7168KiB time=00:00:11.66 bitrate=5035.4kbits/s speed=3.23x elapsed=0:00:03.61    frame=  798 fps=193 q=31.0 size=    8448KiB time=00:00:13.31 bitrate=5198.3kbits/s speed=3.22x elapsed=0:00:04.12    frame=  896 fps=193 q=31.0 size=    9728KiB time=00:00:14.94 bitrate=5331.2kbits/s speed=3.21x elapsed=0:00:04.65    frame= 1006 fps=195 q=31.0 size=   10752KiB time=00:00:16.78 bitrate=5248.1kbits/s speed=3.25x elapsed=0:00:05.16    frame= 1136 fps=200 q=31.0 size=   12032KiB time=00:00:18.95 bitrate=5200.8kbits/s speed=3.33x elapsed=0:00:05.68    frame= 1262 fps=204 q=31.0 size=   13056KiB time=00:00:21.05 bitrate=5080.0kbits/s speed= 3.4x elapsed=0:00:06.20    frame= 1372 fps=205 q=31.0 size=   13824KiB time=00:00:22.88 bitrate=4947.5kbits/s speed=3.41x elapsed=0:00:06.70    frame= 1487 fps=206 q=31.0 size=   15104KiB time=00:00:24.80 bitrate=4987.6kbits/s speed=3.43x elapsed=0:00:07.23    frame= 1601 fps=207 q=31.0 size=   15872KiB time=00:00:26.71 bitrate=4868.0kbits/s speed=3.45x elapsed=0:00:07.74    frame= 1713 fps=208 q=31.0 size=   17152KiB time=00:00:28.57 bitrate=4916.6kbits/s speed=3.46x elapsed=0:00:08.25    frame= 1825 fps=208 q=31.0 size=   18432KiB time=00:00:30.44 bitrate=4959.3kbits/s speed=3.47x elapsed=0:00:08.77    frame= 1933 fps=208 q=31.0 size=   19712KiB time=00:00:32.24 bitrate=5007.3kbits/s speed=3.47x elapsed=0:00:09.28    frame= 2059 fps=210 q=31.0 size=   20992KiB time=00:00:34.35 bitrate=5006.2kbits/s speed= 3.5x elapsed=0:00:09.80    frame= 2174 fps=211 q=31.0 size=   22016KiB time=00:00:36.26 bitrate=4972.6kbits/s speed=3.51x elapsed=0:00:10.32    frame= 2293 fps=211 q=31.0 size=   23296KiB time=00:00:38.25 bitrate=4988.7kbits/s speed=3.53x elapsed=0:00:10.84    frame= 2403 fps=212 q=31.0 size=   24320KiB time=00:00:40.09 bitrate=4969.6kbits/s speed=3.53x elapsed=0:00:11.36    frame= 2513 fps=211 q=31.0 size=   25856KiB time=00:00:41.92 bitrate=5052.2kbits/s speed=3.53x elapsed=0:00:11.88    frame= 2628 fps=212 q=31.0 size=   27392KiB time=00:00:43.84 bitrate=5118.1kbits/s speed=3.54x elapsed=0:00:12.39    frame= 2732 fps=211 q=31.0 size=   28928KiB time=00:00:45.57 bitrate=5199.3kbits/s speed=3.53x elapsed=0:00:12.92    frame= 2852 fps=212 q=31.0 size=   30208KiB time=N/A bitrate=N/A speed=N/A elapsed=0:00:13.43    [out#0/mp4 @ 0000017cc3951380] video:29800KiB audio:1173KiB subtitle:0KiB other streams:0KiB global headers:0KiB muxing overhead: 0.243959%
+frame= 2898 fps=213 q=-1.0 Lsize=   31048KiB time=00:00:48.34 bitrate=5260.7kbits/s speed=3.55x elapsed=0:00:13.60    
+[libx264 @ 0000017cc59d6b40] frame I:17    Avg QP:22.21  size: 58215
+[libx264 @ 0000017cc59d6b40] frame P:1407  Avg QP:24.69  size: 15956
+[libx264 @ 0000017cc59d6b40] frame B:1474  Avg QP:27.69  size:  4799
+[libx264 @ 0000017cc59d6b40] consecutive B-frames:  6.4% 75.8%  4.6% 13.3%
+[libx264 @ 0000017cc59d6b40] mb I  I16..4: 17.1% 70.7% 12.2%
+[libx264 @ 0000017cc59d6b40] mb P  I16..4:  7.3% 14.6%  0.6%  P16..4: 35.1%  3.0%  1.1%  0.0%  0.0%    skip:38.3%
+[libx264 @ 0000017cc59d6b40] mb B  I16..4:  0.9%  1.3%  0.0%  B16..8: 26.7%  0.8%  0.1%  direct: 0.4%  skip:69.8%  L0:40.4% L1:57.8% BI: 1.7%
+[libx264 @ 0000017cc59d6b40] 8x8 transform intra:64.7% inter:88.6%
+[libx264 @ 0000017cc59d6b40] coded y,uvDC,uvAC intra: 22.4% 30.1% 3.3% inter: 4.3% 6.9% 0.0%
+[libx264 @ 0000017cc59d6b40] i16 v,h,dc,p: 21% 46%  9% 24%
+[libx264 @ 0000017cc59d6b40] i8 v,h,dc,ddl,ddr,vr,hd,vl,hu: 22% 30% 26%  3%  4%  3%  6%  2%  4%
+[libx264 @ 0000017cc59d6b40] i4 v,h,dc,ddl,ddr,vr,hd,vl,hu: 21% 34% 11%  5%  7%  5%  8%  4%  6%
+[libx264 @ 0000017cc59d6b40] i8c dc,h,v,p: 62% 22% 13%  3%
+[libx264 @ 0000017cc59d6b40] Weighted P-Frames: Y:0.1% UV:0.0%
+[libx264 @ 0000017cc59d6b40] ref P L0: 75.3%  8.3% 13.2%  3.2%
+[libx264 @ 0000017cc59d6b40] ref B L0: 91.7%  7.9%  0.5%
+[libx264 @ 0000017cc59d6b40] ref B L1: 99.4%  0.6%
+[libx264 @ 0000017cc59d6b40] kb/s:5049.04
+[aac @ 0000017cc5c8bec0] Qavg: 595.035
+ffmpeg version 8.1.1-full_build-www.gyan.dev Copyright (c) 2000-2026 the FFmpeg developers
+  built with gcc 15.2.0 (Rev13, Built by MSYS2 project)
+  configuration: --enable-gpl --enable-version3 --enable-static --disable-w32threads --disable-autodetect --enable-cairo --enable-fontconfig --enable-iconv --enable-gnutls --enable-lcms2 --enable-libxml2 --enable-gmp --enable-bzlib --enable-lzma --enable-libsnappy --enable-zlib --enable-librist --enable-libsrt --enable-libssh --enable-libzmq --enable-avisynth --enable-libbluray --enable-libcaca --enable-libdvdnav --enable-libdvdread --enable-sdl2 --enable-libaribb24 --enable-libaribcaption --enable-libdav1d --enable-libdavs2 --enable-libopenjpeg --enable-libquirc --enable-libuavs3d --enable-libxevd --enable-libzvbi --enable-liboapv --enable-libqrencode --enable-librav1e --enable-libsvtav1 --enable-libvvenc --enable-libwebp --enable-libx264 --enable-libx265 --enable-libxavs2 --enable-libxeve --enable-libxvid --enable-libaom --enable-libjxl --enable-libsvtjpegxs --enable-libvpx --enable-mediafoundation --enable-libass --enable-frei0r --enable-libfreetype --enable-libfribidi --enable-libharfbuzz --enable-liblensfun --enable-libvidstab --enable-libvmaf --enable-libzimg --enable-amf --enable-cuda-llvm --enable-cuvid --enable-dxva2 --enable-d3d11va --enable-d3d12va --enable-ffnvcodec --enable-libvpl --enable-nvdec --enable-nvenc --enable-vaapi --enable-libshaderc --enable-vulkan --enable-libplacebo --enable-opencl --enable-libcdio --enable-openal --enable-libgme --enable-libmodplug --enable-libopenmpt --enable-libopencore-amrwb --enable-libmp3lame --enable-libshine --enable-libtheora --enable-libtwolame --enable-libvo-amrwbenc --enable-libcodec2 --enable-libilbc --enable-libgsm --enable-liblc3 --enable-libopencore-amrnb --enable-libopus --enable-libspeex --enable-libvorbis --enable-ladspa --enable-libbs2b --enable-libflite --enable-libmysofa --enable-librubberband --enable-libsoxr --enable-chromaprint --enable-whisper
+  libavutil      60. 26.101 / 60. 26.101
+  libavcodec     62. 28.101 / 62. 28.101
+  libavformat    62. 12.101 / 62. 12.101
+  libavdevice    62.  3.101 / 62.  3.101
+  libavfilter    11. 14.101 / 11. 14.101
+  libswscale      9.  5.101 /  9.  5.101
+  libswresample   6.  3.101 /  6.  3.101
+Input #0, mov,mp4,m4a,3gp,3g2,mj2, from 'D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_160345\emeritos_gameplay\compare_generic\cuts_raw\segment_2_16-38_20_17-19_73.mp4':
+  Metadata:
+    major_brand     : isom
+    minor_version   : 512
+    compatible_brands: isomiso2avc1mp41
+    encoder         : Lavf62.12.101
+  Duration: 00:00:41.54, start: 0.000000, bitrate: 4995 kb/s
+  Stream #0:0[0x1](und): Video: h264 (High) (avc1 / 0x31637661), yuvj420p(pc, bt470bg/unknown/unknown, progressive), 1080x1920 [SAR 1:1 DAR 9:16], 4791 kb/s, 59.94 fps, 59.94 tbr, 60k tbn, start 0.033000 (default)
+    Metadata:
+      handler_name    : VideoHandler
+      encoder         : Lavc62.28.101 libx264
+  Stream #0:1[0x2](eng): Audio: aac (LC) (mp4a / 0x6134706D), 48000 Hz, stereo, fltp, 195 kb/s (default)
+    Metadata:
+      handler_name    : SoundHandler
+[Parsed_ass_0 @ 0000012e200b2d40] libass API version: 0x1704000
+[Parsed_ass_0 @ 0000012e200b2d40] libass source: commit: 0.17.4-27-g1cbba0a8818c83495114b3c2b5730410eecbdb2c
+[Parsed_ass_0 @ 0000012e200b2d40] Shaper: FriBidi 1.0.16 (SIMPLE) HarfBuzz-ng 14.2.0 (COMPLEX)
+[Parsed_ass_0 @ 0000012e200b2d40] Using font provider directwrite (with GDI)
+[Parsed_ass_0 @ 0000012e200b2d40] Added subtitle file: 'D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_160345\emeritos_gameplay\compare_generic\cuts_raw\segment_2_16-38_20_17-19_73.ass' (7 styles, 21 events)
+Stream mapping:
+  Stream #0:0 -> #0:0 (h264 (native) -> h264 (libx264))
+  Stream #0:1 -> #0:1 (aac (native) -> aac (native))
+Press [q] to stop, [?] for help
+[Parsed_ass_0 @ 0000012e200b46c0] libass API version: 0x1704000
+[Parsed_ass_0 @ 0000012e200b46c0] libass source: commit: 0.17.4-27-g1cbba0a8818c83495114b3c2b5730410eecbdb2c
+[Parsed_ass_0 @ 0000012e200b46c0] Shaper: FriBidi 1.0.16 (SIMPLE) HarfBuzz-ng 14.2.0 (COMPLEX)
+[Parsed_ass_0 @ 0000012e200b46c0] Using font provider directwrite (with GDI)
+[Parsed_ass_0 @ 0000012e200b46c0] Added subtitle file: 'D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_160345\emeritos_gameplay\compare_generic\cuts_raw\segment_2_16-38_20_17-19_73.ass' (7 styles, 21 events)
+[Parsed_ass_0 @ 0000012e200b46c0] fontselect: (Arial Black, 400, 0) -> Arial-Black, 0, Arial-Black
+[Parsed_ass_0 @ 0000012e200b46c0] fontselect: (Arial Black, 700, 0) -> Arial-Black, 0, Arial-Black
+[libx264 @ 0000012e208b00c0] using SAR=1/1
+[libx264 @ 0000012e208b00c0] using cpu capabilities: MMX2 SSE2Fast SSSE3 SSE4.2 AVX FMA3 BMI2 AVX2 AVX512
+[libx264 @ 0000012e208b00c0] profile High, level 4.2, 4:2:0, 8-bit
+[libx264 @ 0000012e208b00c0] 264 - core 165 r3223 0480cb0 - H.264/MPEG-4 AVC codec - Copyleft 2003-2025 - http://www.videolan.org/x264.html - options: cabac=1 ref=3 deblock=1:0:0 analyse=0x3:0x113 me=hex subme=7 psy=1 psy_rd=1.00:0.00 mixed_ref=1 me_range=16 chroma_me=1 trellis=1 8x8dct=1 cqm=0 deadzone=21,11 fast_pskip=1 chroma_qp_offset=-2 threads=24 lookahead_threads=4 sliced_threads=0 nr=0 decimate=1 interlaced=0 bluray_compat=0 constrained_intra=0 bframes=3 b_pyramid=2 b_adapt=1 b_bias=0 direct=1 weightb=1 open_gop=0 weightp=2 keyint=250 keyint_min=25 scenecut=40 intra_refresh=0 rc_lookahead=40 rc=crf mbtree=1 crf=23.0 qcomp=0.60 qpmin=0 qpmax=69 qpstep=4 ip_ratio=1.40 aq=1:1.00
+Output #0, mp4, to 'D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_160345\emeritos_gameplay\compare_generic\cuts_subtitles\segment_2_16-38_20_17-19_73.mp4':
+  Metadata:
+    major_brand     : isom
+    minor_version   : 512
+    compatible_brands: isomiso2avc1mp41
+    encoder         : Lavf62.12.101
+  Stream #0:0(und): Video: h264 (avc1 / 0x31637661), yuvj420p(pc, bt470bg/unknown/unknown, progressive), 1080x1920 [SAR 1:1 DAR 9:16], q=2-31, 59.94 fps, 60k tbn (default)
+    Metadata:
+      encoder         : Lavc62.28.101 libx264
+      handler_name    : VideoHandler
+    Side data:
+      CPB properties: bitrate max/min/avg: 0/0/0 buffer size: 0 vbv_delay: N/A
+  Stream #0:1(eng): Audio: aac (LC) (mp4a / 0x6134706D), 48000 Hz, stereo, fltp, 192 kb/s (default)
+    Metadata:
+      encoder         : Lavc62.28.101 aac
+      handler_name    : SoundHandler
+frame=  175 fps=0.0 q=31.0 size=     256KiB time=00:00:02.91 bitrate= 718.4kbits/s speed=5.74x elapsed=0:00:00.50    frame=  354 fps=345 q=31.0 size=    1280KiB time=00:00:05.90 bitrate=1775.5kbits/s speed=5.76x elapsed=0:00:01.02    frame=  592 fps=383 q=31.0 size=    1792KiB time=00:00:09.87 bitrate=1486.4kbits/s speed=6.39x elapsed=0:00:01.54    frame=  763 fps=369 q=31.0 size=    2560KiB time=00:00:12.72 bitrate=1647.5kbits/s speed=6.16x elapsed=0:00:02.06    frame=  905 fps=352 q=31.0 size=    3840KiB time=00:00:15.09 bitrate=2083.5kbits/s speed=5.87x elapsed=0:00:02.57    frame= 1020 fps=330 q=31.0 size=    5120KiB time=00:00:17.01 bitrate=2464.8kbits/s speed= 5.5x elapsed=0:00:03.09    frame= 1124 fps=312 q=31.0 size=    6144KiB time=00:00:18.75 bitrate=2684.1kbits/s speed=5.21x elapsed=0:00:03.60    frame= 1270 fps=309 q=31.0 size=    6912KiB time=00:00:21.18 bitrate=2672.5kbits/s speed=5.15x elapsed=0:00:04.11    frame= 1367 fps=295 q=31.0 size=    7424KiB time=00:00:22.80 bitrate=2666.7kbits/s speed=4.92x elapsed=0:00:04.63    frame= 1477 fps=286 q=31.0 size=    8704KiB time=00:00:24.64 bitrate=2893.7kbits/s speed=4.77x elapsed=0:00:05.16    frame= 1585 fps=279 q=31.0 size=    9728KiB time=00:00:26.44 bitrate=3013.7kbits/s speed=4.65x elapsed=0:00:05.68    frame= 1681 fps=271 q=31.0 size=   11008KiB time=00:00:28.04 bitrate=3215.5kbits/s speed=4.52x elapsed=0:00:06.20    frame= 1775 fps=264 q=31.0 size=   12544KiB time=00:00:29.61 bitrate=3470.1kbits/s speed=4.41x elapsed=0:00:06.71    frame= 1877 fps=259 q=31.0 size=   13824KiB time=00:00:31.31 bitrate=3616.4kbits/s speed=4.33x elapsed=0:00:07.23    frame= 2011 fps=260 q=31.0 size=   14848KiB time=00:00:33.55 bitrate=3625.5kbits/s speed=4.33x elapsed=0:00:07.74    frame= 2232 fps=270 q=31.0 size=   15872KiB time=00:00:37.23 bitrate=3491.8kbits/s speed=4.51x elapsed=0:00:08.26    [out#0/mp4 @ 0000012e1e541140] video:15637KiB audio:991KiB subtitle:0KiB other streams:0KiB global headers:0KiB muxing overhead: 0.388347%
+frame= 2487 fps=286 q=-1.0 Lsize=   16693KiB time=00:00:41.49 bitrate=3295.8kbits/s speed=4.77x elapsed=0:00:08.70    
+[libx264 @ 0000012e208b00c0] frame I:14    Avg QP:20.35  size: 68547
+[libx264 @ 0000012e208b00c0] frame P:1088  Avg QP:22.49  size: 10606
+[libx264 @ 0000012e208b00c0] frame B:1385  Avg QP:26.35  size:  2537
+[libx264 @ 0000012e208b00c0] consecutive B-frames:  9.2% 47.8%  5.7% 37.3%
+[libx264 @ 0000012e208b00c0] mb I  I16..4: 20.1% 64.5% 15.4%
+[libx264 @ 0000012e208b00c0] mb P  I16..4:  7.2% 17.2%  0.4%  P16..4: 18.8%  1.6%  0.7%  0.0%  0.0%    skip:54.0%
+[libx264 @ 0000012e208b00c0] mb B  I16..4:  1.3%  1.4%  0.0%  B16..8: 12.1%  0.4%  0.0%  direct: 0.9%  skip:83.9%  L0:40.2% L1:58.1% BI: 1.7%
+[libx264 @ 0000012e208b00c0] 8x8 transform intra:66.9% inter:88.1%
+[libx264 @ 0000012e208b00c0] coded y,uvDC,uvAC intra: 15.2% 25.2% 3.3% inter: 2.3% 5.3% 0.1%
+[libx264 @ 0000012e208b00c0] i16 v,h,dc,p: 25% 47%  7% 21%
+[libx264 @ 0000012e208b00c0] i8 v,h,dc,ddl,ddr,vr,hd,vl,hu: 32% 26% 25%  2%  3%  3%  4%  2%  3%
+[libx264 @ 0000012e208b00c0] i4 v,h,dc,ddl,ddr,vr,hd,vl,hu: 26% 31% 11%  4%  6%  6%  7%  4%  5%
+[libx264 @ 0000012e208b00c0] i8c dc,h,v,p: 66% 18% 12%  3%
+[libx264 @ 0000012e208b00c0] Weighted P-Frames: Y:7.2% UV:2.1%
+[libx264 @ 0000012e208b00c0] ref P L0: 72.6% 10.7% 13.2%  3.5%  0.1%
+[libx264 @ 0000012e208b00c0] ref B L0: 87.9% 11.0%  1.1%
+[libx264 @ 0000012e208b00c0] ref B L1: 98.7%  1.3%
+[libx264 @ 0000012e208b00c0] kb/s:3087.29
+[aac @ 0000012e20674480] Qavg: 597.382
+ffmpeg version 8.1.1-full_build-www.gyan.dev Copyright (c) 2000-2026 the FFmpeg developers
+  built with gcc 15.2.0 (Rev13, Built by MSYS2 project)
+  configuration: --enable-gpl --enable-version3 --enable-static --disable-w32threads --disable-autodetect --enable-cairo --enable-fontconfig --enable-iconv --enable-gnutls --enable-lcms2 --enable-libxml2 --enable-gmp --enable-bzlib --enable-lzma --enable-libsnappy --enable-zlib --enable-librist --enable-libsrt --enable-libssh --enable-libzmq --enable-avisynth --enable-libbluray --enable-libcaca --enable-libdvdnav --enable-libdvdread --enable-sdl2 --enable-libaribb24 --enable-libaribcaption --enable-libdav1d --enable-libdavs2 --enable-libopenjpeg --enable-libquirc --enable-libuavs3d --enable-libxevd --enable-libzvbi --enable-liboapv --enable-libqrencode --enable-librav1e --enable-libsvtav1 --enable-libvvenc --enable-libwebp --enable-libx264 --enable-libx265 --enable-libxavs2 --enable-libxeve --enable-libxvid --enable-libaom --enable-libjxl --enable-libsvtjpegxs --enable-libvpx --enable-mediafoundation --enable-libass --enable-frei0r --enable-libfreetype --enable-libfribidi --enable-libharfbuzz --enable-liblensfun --enable-libvidstab --enable-libvmaf --enable-libzimg --enable-amf --enable-cuda-llvm --enable-cuvid --enable-dxva2 --enable-d3d11va --enable-d3d12va --enable-ffnvcodec --enable-libvpl --enable-nvdec --enable-nvenc --enable-vaapi --enable-libshaderc --enable-vulkan --enable-libplacebo --enable-opencl --enable-libcdio --enable-openal --enable-libgme --enable-libmodplug --enable-libopenmpt --enable-libopencore-amrwb --enable-libmp3lame --enable-libshine --enable-libtheora --enable-libtwolame --enable-libvo-amrwbenc --enable-libcodec2 --enable-libilbc --enable-libgsm --enable-liblc3 --enable-libopencore-amrnb --enable-libopus --enable-libspeex --enable-libvorbis --enable-ladspa --enable-libbs2b --enable-libflite --enable-libmysofa --enable-librubberband --enable-libsoxr --enable-chromaprint --enable-whisper
+  libavutil      60. 26.101 / 60. 26.101
+  libavcodec     62. 28.101 / 62. 28.101
+  libavformat    62. 12.101 / 62. 12.101
+  libavdevice    62.  3.101 / 62.  3.101
+  libavfilter    11. 14.101 / 11. 14.101
+  libswscale      9.  5.101 /  9.  5.101
+  libswresample   6.  3.101 /  6.  3.101
+Input #0, mov,mp4,m4a,3gp,3g2,mj2, from 'D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_160345\emeritos_gameplay\compare_generic\cuts_raw\segment_3_05-37_91_06-14_94.mp4':
+  Metadata:
+    major_brand     : isom
+    minor_version   : 512
+    compatible_brands: isomiso2avc1mp41
+    encoder         : Lavf62.12.101
+  Duration: 00:00:37.03, start: 0.000000, bitrate: 7264 kb/s
+  Stream #0:0[0x1](und): Video: h264 (High) (avc1 / 0x31637661), yuvj420p(pc, bt470bg/unknown/unknown, progressive), 1080x1920 [SAR 1:1 DAR 9:16], 7062 kb/s, 59.94 fps, 59.94 tbr, 60k tbn, start 0.033000 (default)
+    Metadata:
+      handler_name    : VideoHandler
+      encoder         : Lavc62.28.101 libx264
+  Stream #0:1[0x2](eng): Audio: aac (LC) (mp4a / 0x6134706D), 48000 Hz, stereo, fltp, 198 kb/s (default)
+    Metadata:
+      handler_name    : SoundHandler
+[Parsed_ass_0 @ 00000186a9920680] libass API version: 0x1704000
+[Parsed_ass_0 @ 00000186a9920680] libass source: commit: 0.17.4-27-g1cbba0a8818c83495114b3c2b5730410eecbdb2c
+[Parsed_ass_0 @ 00000186a9920680] Shaper: FriBidi 1.0.16 (SIMPLE) HarfBuzz-ng 14.2.0 (COMPLEX)
+[Parsed_ass_0 @ 00000186a9920680] Using font provider directwrite (with GDI)
+[Parsed_ass_0 @ 00000186a9920680] Added subtitle file: 'D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_160345\emeritos_gameplay\compare_generic\cuts_raw\segment_3_05-37_91_06-14_94.ass' (7 styles, 19 events)
+Stream mapping:
+  Stream #0:0 -> #0:0 (h264 (native) -> h264 (libx264))
+  Stream #0:1 -> #0:1 (aac (native) -> aac (native))
+Press [q] to stop, [?] for help
+[Parsed_ass_0 @ 00000186a9921780] libass API version: 0x1704000
+[Parsed_ass_0 @ 00000186a9921780] libass source: commit: 0.17.4-27-g1cbba0a8818c83495114b3c2b5730410eecbdb2c
+[Parsed_ass_0 @ 00000186a9921780] Shaper: FriBidi 1.0.16 (SIMPLE) HarfBuzz-ng 14.2.0 (COMPLEX)
+[Parsed_ass_0 @ 00000186a9921780] Using font provider directwrite (with GDI)
+[Parsed_ass_0 @ 00000186a9921780] Added subtitle file: 'D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_160345\emeritos_gameplay\compare_generic\cuts_raw\segment_3_05-37_91_06-14_94.ass' (7 styles, 19 events)
+[Parsed_ass_0 @ 00000186a9921780] fontselect: (Arial Black, 700, 0) -> Arial-Black, 0, Arial-Black
+[libx264 @ 00000186ab756900] using SAR=1/1
+[libx264 @ 00000186ab756900] using cpu capabilities: MMX2 SSE2Fast SSSE3 SSE4.2 AVX FMA3 BMI2 AVX2 AVX512
+[libx264 @ 00000186ab756900] profile High, level 4.2, 4:2:0, 8-bit
+[libx264 @ 00000186ab756900] 264 - core 165 r3223 0480cb0 - H.264/MPEG-4 AVC codec - Copyleft 2003-2025 - http://www.videolan.org/x264.html - options: cabac=1 ref=3 deblock=1:0:0 analyse=0x3:0x113 me=hex subme=7 psy=1 psy_rd=1.00:0.00 mixed_ref=1 me_range=16 chroma_me=1 trellis=1 8x8dct=1 cqm=0 deadzone=21,11 fast_pskip=1 chroma_qp_offset=-2 threads=24 lookahead_threads=4 sliced_threads=0 nr=0 decimate=1 interlaced=0 bluray_compat=0 constrained_intra=0 bframes=3 b_pyramid=2 b_adapt=1 b_bias=0 direct=1 weightb=1 open_gop=0 weightp=2 keyint=250 keyint_min=25 scenecut=40 intra_refresh=0 rc_lookahead=40 rc=crf mbtree=1 crf=23.0 qcomp=0.60 qpmin=0 qpmax=69 qpstep=4 ip_ratio=1.40 aq=1:1.00
+Output #0, mp4, to 'D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_160345\emeritos_gameplay\compare_generic\cuts_subtitles\segment_3_05-37_91_06-14_94.mp4':
+  Metadata:
+    major_brand     : isom
+    minor_version   : 512
+    compatible_brands: isomiso2avc1mp41
+    encoder         : Lavf62.12.101
+  Stream #0:0(und): Video: h264 (avc1 / 0x31637661), yuvj420p(pc, bt470bg/unknown/unknown, progressive), 1080x1920 [SAR 1:1 DAR 9:16], q=2-31, 59.94 fps, 60k tbn (default)
+    Metadata:
+      encoder         : Lavc62.28.101 libx264
+      handler_name    : VideoHandler
+    Side data:
+      CPB properties: bitrate max/min/avg: 0/0/0 buffer size: 0 vbv_delay: N/A
+  Stream #0:1(eng): Audio: aac (LC) (mp4a / 0x6134706D), 48000 Hz, stereo, fltp, 192 kb/s (default)
+    Metadata:
+      encoder         : Lavc62.28.101 aac
+      handler_name    : SoundHandler
+[Parsed_ass_0 @ 00000186a9921780] fontselect: (Arial Black, 400, 0) -> Arial-Black, 0, Arial-Black
+frame=   51 fps=0.0 q=31.0 size=     512KiB time=00:00:00.85 bitrate=4930.0kbits/s speed=1.63x elapsed=0:00:00.52    frame=  165 fps=160 q=31.0 size=    2048KiB time=00:00:02.75 bitrate=6094.9kbits/s speed=2.67x elapsed=0:00:01.02    frame=  307 fps=198 q=31.0 size=    3072KiB time=00:00:05.12 bitrate=4913.6kbits/s speed=3.31x elapsed=0:00:01.54    frame=  437 fps=211 q=31.0 size=    4608KiB time=00:00:07.29 bitrate=5177.8kbits/s speed=3.52x elapsed=0:00:02.07    frame=  544 fps=210 q=31.0 size=    5632KiB time=00:00:09.07 bitrate=5083.6kbits/s speed=3.51x elapsed=0:00:02.58    frame=  642 fps=207 q=31.0 size=    6912KiB time=00:00:10.71 bitrate=5286.6kbits/s speed=3.45x elapsed=0:00:03.10    frame=  761 fps=209 q=31.0 size=    8192KiB time=00:00:12.69 bitrate=5285.9kbits/s speed=3.49x elapsed=0:00:03.63    frame=  876 fps=211 q=31.0 size=    9216KiB time=00:00:14.61 bitrate=5165.9kbits/s speed=3.53x elapsed=0:00:04.14    frame=  997 fps=214 q=31.0 size=   10496KiB time=00:00:16.63 bitrate=5169.4kbits/s speed=3.57x elapsed=0:00:04.65    frame= 1118 fps=216 q=31.0 size=   11264KiB time=00:00:18.65 bitrate=4947.2kbits/s speed= 3.6x elapsed=0:00:05.17    frame= 1226 fps=216 q=31.0 size=   12288KiB time=00:00:20.45 bitrate=4921.5kbits/s speed= 3.6x elapsed=0:00:05.68    frame= 1344 fps=216 q=31.0 size=   13312KiB time=00:00:22.42 bitrate=4863.5kbits/s speed=3.61x elapsed=0:00:06.21    frame= 1443 fps=215 q=31.0 size=   14592KiB time=00:00:24.07 bitrate=4965.4kbits/s speed=3.58x elapsed=0:00:06.71    frame= 1534 fps=212 q=31.0 size=   15872KiB time=00:00:25.59 bitrate=5080.6kbits/s speed=3.53x elapsed=0:00:07.24    frame= 1635 fps=211 q=31.0 size=   17408KiB time=00:00:27.27 bitrate=5228.0kbits/s speed=3.52x elapsed=0:00:07.75    frame= 1750 fps=212 q=31.0 size=   18432KiB time=00:00:29.19 bitrate=5171.8kbits/s speed=3.53x elapsed=0:00:08.26    frame= 1861 fps=212 q=31.0 size=   19712KiB time=00:00:31.04 bitrate=5201.1kbits/s speed=3.53x elapsed=0:00:08.79    frame= 1968 fps=212 q=31.0 size=   20992KiB time=00:00:32.83 bitrate=5237.7kbits/s speed=3.53x elapsed=0:00:09.29    frame= 2064 fps=210 q=31.0 size=   22272KiB time=00:00:34.43 bitrate=5298.6kbits/s speed=3.51x elapsed=0:00:09.82    frame= 2176 fps=211 q=31.0 size=   23808KiB time=N/A bitrate=N/A speed=N/A elapsed=0:00:10.33    [out#0/mp4 @ 00000186a989f6c0] video:23412KiB audio:888KiB subtitle:0KiB other streams:0KiB global headers:0KiB muxing overhead: 0.236529%
+frame= 2217 fps=212 q=-1.0 Lsize=   24358KiB time=00:00:36.98 bitrate=5394.9kbits/s speed=3.54x elapsed=0:00:10.46    
+[libx264 @ 00000186ab756900] frame I:13    Avg QP:21.90  size: 66779
+[libx264 @ 00000186ab756900] frame P:1136  Avg QP:24.77  size: 15944
+[libx264 @ 00000186ab756900] frame B:1068  Avg QP:27.24  size:  4675
+[libx264 @ 00000186ab756900] consecutive B-frames: 10.8% 73.3%  4.5% 11.4%
+[libx264 @ 00000186ab756900] mb I  I16..4: 14.1% 68.6% 17.3%
+[libx264 @ 00000186ab756900] mb P  I16..4:  7.4% 16.8%  0.5%  P16..4: 33.7%  2.9%  1.0%  0.0%  0.0%    skip:37.6%
+[libx264 @ 00000186ab756900] mb B  I16..4:  0.9%  1.6%  0.0%  B16..8: 26.2%  0.7%  0.1%  direct: 0.4%  skip:70.1%  L0:38.4% L1:60.1% BI: 1.5%
+[libx264 @ 00000186ab756900] 8x8 transform intra:67.3% inter:90.0%
+[libx264 @ 00000186ab756900] coded y,uvDC,uvAC intra: 23.5% 26.6% 2.6% inter: 4.7% 6.6% 0.1%
+[libx264 @ 00000186ab756900] i16 v,h,dc,p: 21% 43%  9% 27%
+[libx264 @ 00000186ab756900] i8 v,h,dc,ddl,ddr,vr,hd,vl,hu: 22% 27% 26%  4%  4%  4%  6%  3%  4%
+[libx264 @ 00000186ab756900] i4 v,h,dc,ddl,ddr,vr,hd,vl,hu: 22% 32% 11%  5%  7%  6%  8%  4%  5%
+[libx264 @ 00000186ab756900] i8c dc,h,v,p: 65% 19% 13%  3%
+[libx264 @ 00000186ab756900] Weighted P-Frames: Y:0.1% UV:0.0%
+[libx264 @ 00000186ab756900] ref P L0: 76.0% 11.1% 10.5%  2.4%  0.0%
+[libx264 @ 00000186ab756900] ref B L0: 92.0%  7.6%  0.4%
+[libx264 @ 00000186ab756900] ref B L1: 99.6%  0.4%
+[libx264 @ 00000186ab756900] kb/s:5185.27
+[aac @ 00000186ab7cf240] Qavg: 654.496
+ffmpeg version 8.1.1-full_build-www.gyan.dev Copyright (c) 2000-2026 the FFmpeg developers
+  built with gcc 15.2.0 (Rev13, Built by MSYS2 project)
+  configuration: --enable-gpl --enable-version3 --enable-static --disable-w32threads --disable-autodetect --enable-cairo --enable-fontconfig --enable-iconv --enable-gnutls --enable-lcms2 --enable-libxml2 --enable-gmp --enable-bzlib --enable-lzma --enable-libsnappy --enable-zlib --enable-librist --enable-libsrt --enable-libssh --enable-libzmq --enable-avisynth --enable-libbluray --enable-libcaca --enable-libdvdnav --enable-libdvdread --enable-sdl2 --enable-libaribb24 --enable-libaribcaption --enable-libdav1d --enable-libdavs2 --enable-libopenjpeg --enable-libquirc --enable-libuavs3d --enable-libxevd --enable-libzvbi --enable-liboapv --enable-libqrencode --enable-librav1e --enable-libsvtav1 --enable-libvvenc --enable-libwebp --enable-libx264 --enable-libx265 --enable-libxavs2 --enable-libxeve --enable-libxvid --enable-libaom --enable-libjxl --enable-libsvtjpegxs --enable-libvpx --enable-mediafoundation --enable-libass --enable-frei0r --enable-libfreetype --enable-libfribidi --enable-libharfbuzz --enable-liblensfun --enable-libvidstab --enable-libvmaf --enable-libzimg --enable-amf --enable-cuda-llvm --enable-cuvid --enable-dxva2 --enable-d3d11va --enable-d3d12va --enable-ffnvcodec --enable-libvpl --enable-nvdec --enable-nvenc --enable-vaapi --enable-libshaderc --enable-vulkan --enable-libplacebo --enable-opencl --enable-libcdio --enable-openal --enable-libgme --enable-libmodplug --enable-libopenmpt --enable-libopencore-amrwb --enable-libmp3lame --enable-libshine --enable-libtheora --enable-libtwolame --enable-libvo-amrwbenc --enable-libcodec2 --enable-libilbc --enable-libgsm --enable-liblc3 --enable-libopencore-amrnb --enable-libopus --enable-libspeex --enable-libvorbis --enable-ladspa --enable-libbs2b --enable-libflite --enable-libmysofa --enable-librubberband --enable-libsoxr --enable-chromaprint --enable-whisper
+  libavutil      60. 26.101 / 60. 26.101
+  libavcodec     62. 28.101 / 62. 28.101
+  libavformat    62. 12.101 / 62. 12.101
+  libavdevice    62.  3.101 / 62.  3.101
+  libavfilter    11. 14.101 / 11. 14.101
+  libswscale      9.  5.101 /  9.  5.101
+  libswresample   6.  3.101 /  6.  3.101
+Input #0, mov,mp4,m4a,3gp,3g2,mj2, from 'D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_160345\emeritos_gameplay\compare_generic\cuts_raw\segment_4_04-14_05_04-59_95.mp4':
+  Metadata:
+    major_brand     : isom
+    minor_version   : 512
+    compatible_brands: isomiso2avc1mp41
+    encoder         : Lavf62.12.101
+  Duration: 00:00:45.91, start: 0.000000, bitrate: 7178 kb/s
+  Stream #0:0[0x1](und): Video: h264 (High) (avc1 / 0x31637661), yuvj420p(pc, bt470bg/unknown/unknown, progressive), 1080x1920 [SAR 1:1 DAR 9:16], 6975 kb/s, 59.94 fps, 59.94 tbr, 60k tbn, start 0.033000 (default)
+    Metadata:
+      handler_name    : VideoHandler
+      encoder         : Lavc62.28.101 libx264
+  Stream #0:1[0x2](eng): Audio: aac (LC) (mp4a / 0x6134706D), 48000 Hz, stereo, fltp, 196 kb/s (default)
+    Metadata:
+      handler_name    : SoundHandler
+[Parsed_ass_0 @ 000002d89f62b580] libass API version: 0x1704000
+[Parsed_ass_0 @ 000002d89f62b580] libass source: commit: 0.17.4-27-g1cbba0a8818c83495114b3c2b5730410eecbdb2c
+[Parsed_ass_0 @ 000002d89f62b580] Shaper: FriBidi 1.0.16 (SIMPLE) HarfBuzz-ng 14.2.0 (COMPLEX)
+[Parsed_ass_0 @ 000002d89f62b580] Using font provider directwrite (with GDI)
+[Parsed_ass_0 @ 000002d89f62b580] Added subtitle file: 'D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_160345\emeritos_gameplay\compare_generic\cuts_raw\segment_4_04-14_05_04-59_95.ass' (7 styles, 25 events)
+Stream mapping:
+  Stream #0:0 -> #0:0 (h264 (native) -> h264 (libx264))
+  Stream #0:1 -> #0:1 (aac (native) -> aac (native))
+Press [q] to stop, [?] for help
+[Parsed_ass_0 @ 000002d89f62a7c0] libass API version: 0x1704000
+[Parsed_ass_0 @ 000002d89f62a7c0] libass source: commit: 0.17.4-27-g1cbba0a8818c83495114b3c2b5730410eecbdb2c
+[Parsed_ass_0 @ 000002d89f62a7c0] Shaper: FriBidi 1.0.16 (SIMPLE) HarfBuzz-ng 14.2.0 (COMPLEX)
+[Parsed_ass_0 @ 000002d89f62a7c0] Using font provider directwrite (with GDI)
+[Parsed_ass_0 @ 000002d89f62a7c0] Added subtitle file: 'D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_160345\emeritos_gameplay\compare_generic\cuts_raw\segment_4_04-14_05_04-59_95.ass' (7 styles, 25 events)
+[Parsed_ass_0 @ 000002d89f62a7c0] fontselect: (Arial Black, 400, 0) -> Arial-Black, 0, Arial-Black
+[Parsed_ass_0 @ 000002d89f62a7c0] fontselect: (Arial Black, 700, 0) -> Arial-Black, 0, Arial-Black
+[libx264 @ 000002d89f682b00] using SAR=1/1
+[libx264 @ 000002d89f682b00] using cpu capabilities: MMX2 SSE2Fast SSSE3 SSE4.2 AVX FMA3 BMI2 AVX2 AVX512
+[libx264 @ 000002d89f682b00] profile High, level 4.2, 4:2:0, 8-bit
+[libx264 @ 000002d89f682b00] 264 - core 165 r3223 0480cb0 - H.264/MPEG-4 AVC codec - Copyleft 2003-2025 - http://www.videolan.org/x264.html - options: cabac=1 ref=3 deblock=1:0:0 analyse=0x3:0x113 me=hex subme=7 psy=1 psy_rd=1.00:0.00 mixed_ref=1 me_range=16 chroma_me=1 trellis=1 8x8dct=1 cqm=0 deadzone=21,11 fast_pskip=1 chroma_qp_offset=-2 threads=24 lookahead_threads=4 sliced_threads=0 nr=0 decimate=1 interlaced=0 bluray_compat=0 constrained_intra=0 bframes=3 b_pyramid=2 b_adapt=1 b_bias=0 direct=1 weightb=1 open_gop=0 weightp=2 keyint=250 keyint_min=25 scenecut=40 intra_refresh=0 rc_lookahead=40 rc=crf mbtree=1 crf=23.0 qcomp=0.60 qpmin=0 qpmax=69 qpstep=4 ip_ratio=1.40 aq=1:1.00
+Output #0, mp4, to 'D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_160345\emeritos_gameplay\compare_generic\cuts_subtitles\segment_4_04-14_05_04-59_95.mp4':
+  Metadata:
+    major_brand     : isom
+    minor_version   : 512
+    compatible_brands: isomiso2avc1mp41
+    encoder         : Lavf62.12.101
+  Stream #0:0(und): Video: h264 (avc1 / 0x31637661), yuvj420p(pc, bt470bg/unknown/unknown, progressive), 1080x1920 [SAR 1:1 DAR 9:16], q=2-31, 59.94 fps, 60k tbn (default)
+    Metadata:
+      encoder         : Lavc62.28.101 libx264
+      handler_name    : VideoHandler
+    Side data:
+      CPB properties: bitrate max/min/avg: 0/0/0 buffer size: 0 vbv_delay: N/A
+  Stream #0:1(eng): Audio: aac (LC) (mp4a / 0x6134706D), 48000 Hz, stereo, fltp, 192 kb/s (default)
+    Metadata:
+      encoder         : Lavc62.28.101 aac
+      handler_name    : SoundHandler
+frame=   92 fps=0.0 q=31.0 size=     512KiB time=00:00:01.53 bitrate=2732.9kbits/s speed=2.91x elapsed=0:00:00.52    frame=  223 fps=215 q=31.0 size=    1536KiB time=00:00:03.72 bitrate=3382.3kbits/s speed=3.58x elapsed=0:00:01.03    frame=  362 fps=234 q=31.0 size=    2048KiB time=00:00:06.03 bitrate=2778.0kbits/s speed= 3.9x elapsed=0:00:01.54    frame=  453 fps=219 q=31.0 size=    3072KiB time=00:00:07.55 bitrate=3329.9kbits/s speed=3.65x elapsed=0:00:02.06    frame=  549 fps=213 q=31.0 size=    4352KiB time=00:00:09.15 bitrate=3892.5kbits/s speed=3.55x elapsed=0:00:02.57    frame=  644 fps=208 q=31.0 size=    5376KiB time=00:00:10.74 bitrate=4099.1kbits/s speed=3.46x elapsed=0:00:03.10    frame=  732 fps=202 q=31.0 size=    6656KiB time=00:00:12.21 bitrate=4464.9kbits/s speed=3.37x elapsed=0:00:03.62    frame=  834 fps=201 q=31.0 size=    7680KiB time=00:00:13.91 bitrate=4521.7kbits/s speed=3.35x elapsed=0:00:04.14    frame=  929 fps=199 q=31.0 size=    9216KiB time=00:00:15.49 bitrate=4871.2kbits/s speed=3.33x elapsed=0:00:04.65    frame= 1051 fps=203 q=31.0 size=    9984KiB time=00:00:17.53 bitrate=4664.6kbits/s speed=3.39x elapsed=0:00:05.17    frame= 1160 fps=203 q=31.0 size=   11008KiB time=00:00:19.35 bitrate=4659.7kbits/s speed=3.39x elapsed=0:00:05.70    frame= 1279 fps=206 q=31.0 size=   12032KiB time=00:00:21.33 bitrate=4619.3kbits/s speed=3.44x elapsed=0:00:06.20    frame= 1396 fps=208 q=31.0 size=   13056KiB time=00:00:23.28 bitrate=4592.3kbits/s speed=3.47x elapsed=0:00:06.71    frame= 1518 fps=210 q=31.0 size=   13824KiB time=00:00:25.32 bitrate=4471.7kbits/s speed= 3.5x elapsed=0:00:07.24    frame= 1629 fps=210 q=31.0 size=   14848KiB time=00:00:27.17 bitrate=4475.6kbits/s speed= 3.5x elapsed=0:00:07.75    frame= 1736 fps=210 q=31.0 size=   16128KiB time=00:00:28.96 bitrate=4561.8kbits/s speed= 3.5x elapsed=0:00:08.26    frame= 1835 fps=209 q=31.0 size=   17664KiB time=00:00:30.61 bitrate=4726.7kbits/s speed=3.48x elapsed=0:00:08.79    frame= 1954 fps=210 q=31.0 size=   18688KiB time=00:00:32.59 bitrate=4696.2kbits/s speed= 3.5x elapsed=0:00:09.30    frame= 2067 fps=210 q=31.0 size=   19968KiB time=00:00:34.48 bitrate=4743.5kbits/s speed=3.51x elapsed=0:00:09.82    frame= 2176 fps=211 q=31.0 size=   21248KiB time=00:00:36.30 bitrate=4794.8kbits/s speed=3.51x elapsed=0:00:10.32    frame= 2289 fps=211 q=31.0 size=   22528KiB time=00:00:38.18 bitrate=4832.6kbits/s speed=3.52x elapsed=0:00:10.85    frame= 2392 fps=210 q=31.0 size=   23808KiB time=00:00:39.90 bitrate=4887.3kbits/s speed=3.51x elapsed=0:00:11.36    frame= 2464 fps=207 q=31.0 size=   25344KiB time=00:00:41.10 bitrate=5050.6kbits/s speed=3.46x elapsed=0:00:11.87    frame= 2547 fps=206 q=31.0 size=   26624KiB time=00:00:42.49 bitrate=5132.8kbits/s speed=3.43x elapsed=0:00:12.39    frame= 2649 fps=205 q=31.0 size=   28160KiB time=00:00:44.19 bitrate=5219.9kbits/s speed=3.42x elapsed=0:00:12.91    [out#0/mp4 @ 000002d89d5d1840] video:27452KiB audio:1103KiB subtitle:0KiB other streams:0KiB global headers:0KiB muxing overhead: 0.246785%
+frame= 2749 fps=212 q=-1.0 Lsize=   28626KiB time=00:00:45.86 bitrate=5113.1kbits/s speed=3.53x elapsed=0:00:12.99    
+[libx264 @ 000002d89f682b00] frame I:19    Avg QP:21.26  size: 45264
+[libx264 @ 000002d89f682b00] frame P:1379  Avg QP:24.21  size: 15110
+[libx264 @ 000002d89f682b00] frame B:1351  Avg QP:25.35  size:  4747
+[libx264 @ 000002d89f682b00] consecutive B-frames: 13.0% 62.1%  7.3% 17.6%
+[libx264 @ 000002d89f682b00] mb I  I16..4: 23.1% 67.8%  9.1%
+[libx264 @ 000002d89f682b00] mb P  I16..4: 10.4% 24.9%  0.6%  P16..4: 26.2%  2.3%  0.7%  0.0%  0.0%    skip:35.0%
+[libx264 @ 000002d89f682b00] mb B  I16..4:  1.6%  2.4%  0.0%  B16..8: 22.6%  0.7%  0.1%  direct: 1.0%  skip:71.5%  L0:41.5% L1:56.8% BI: 1.7%
+[libx264 @ 000002d89f682b00] 8x8 transform intra:68.4% inter:91.1%
+[libx264 @ 000002d89f682b00] coded y,uvDC,uvAC intra: 16.9% 25.3% 2.8% inter: 4.0% 7.2% 0.1%
+[libx264 @ 000002d89f682b00] i16 v,h,dc,p: 22% 44%  8% 25%
+[libx264 @ 000002d89f682b00] i8 v,h,dc,ddl,ddr,vr,hd,vl,hu: 29% 27% 25%  3%  4%  3%  4%  2%  3%
+[libx264 @ 000002d89f682b00] i4 v,h,dc,ddl,ddr,vr,hd,vl,hu: 24% 33% 11%  4%  6%  6%  8%  4%  5%
+[libx264 @ 000002d89f682b00] i8c dc,h,v,p: 66% 18% 12%  3%
+[libx264 @ 000002d89f682b00] Weighted P-Frames: Y:9.2% UV:4.9%
+[libx264 @ 000002d89f682b00] ref P L0: 72.9% 11.8% 12.0%  3.2%  0.1%
+[libx264 @ 000002d89f682b00] ref B L0: 90.0%  9.4%  0.6%
+[libx264 @ 000002d89f682b00] ref B L1: 99.4%  0.6%
+[libx264 @ 000002d89f682b00] kb/s:4903.35
+[aac @ 000002d89fadca40] Qavg: 897.165
+ffmpeg version 8.1.1-full_build-www.gyan.dev Copyright (c) 2000-2026 the FFmpeg developers
+  built with gcc 15.2.0 (Rev13, Built by MSYS2 project)
+  configuration: --enable-gpl --enable-version3 --enable-static --disable-w32threads --disable-autodetect --enable-cairo --enable-fontconfig --enable-iconv --enable-gnutls --enable-lcms2 --enable-libxml2 --enable-gmp --enable-bzlib --enable-lzma --enable-libsnappy --enable-zlib --enable-librist --enable-libsrt --enable-libssh --enable-libzmq --enable-avisynth --enable-libbluray --enable-libcaca --enable-libdvdnav --enable-libdvdread --enable-sdl2 --enable-libaribb24 --enable-libaribcaption --enable-libdav1d --enable-libdavs2 --enable-libopenjpeg --enable-libquirc --enable-libuavs3d --enable-libxevd --enable-libzvbi --enable-liboapv --enable-libqrencode --enable-librav1e --enable-libsvtav1 --enable-libvvenc --enable-libwebp --enable-libx264 --enable-libx265 --enable-libxavs2 --enable-libxeve --enable-libxvid --enable-libaom --enable-libjxl --enable-libsvtjpegxs --enable-libvpx --enable-mediafoundation --enable-libass --enable-frei0r --enable-libfreetype --enable-libfribidi --enable-libharfbuzz --enable-liblensfun --enable-libvidstab --enable-libvmaf --enable-libzimg --enable-amf --enable-cuda-llvm --enable-cuvid --enable-dxva2 --enable-d3d11va --enable-d3d12va --enable-ffnvcodec --enable-libvpl --enable-nvdec --enable-nvenc --enable-vaapi --enable-libshaderc --enable-vulkan --enable-libplacebo --enable-opencl --enable-libcdio --enable-openal --enable-libgme --enable-libmodplug --enable-libopenmpt --enable-libopencore-amrwb --enable-libmp3lame --enable-libshine --enable-libtheora --enable-libtwolame --enable-libvo-amrwbenc --enable-libcodec2 --enable-libilbc --enable-libgsm --enable-liblc3 --enable-libopencore-amrnb --enable-libopus --enable-libspeex --enable-libvorbis --enable-ladspa --enable-libbs2b --enable-libflite --enable-libmysofa --enable-librubberband --enable-libsoxr --enable-chromaprint --enable-whisper
+  libavutil      60. 26.101 / 60. 26.101
+  libavcodec     62. 28.101 / 62. 28.101
+  libavformat    62. 12.101 / 62. 12.101
+  libavdevice    62.  3.101 / 62.  3.101
+  libavfilter    11. 14.101 / 11. 14.101
+  libswscale      9.  5.101 /  9.  5.101
+  libswresample   6.  3.101 /  6.  3.101
+Input #0, mov,mp4,m4a,3gp,3g2,mj2, from 'D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_160345\emeritos_gameplay\compare_generic\cuts_raw\segment_5_00-06_56_00-40_74.mp4':
+  Metadata:
+    major_brand     : isom
+    minor_version   : 512
+    compatible_brands: isomiso2avc1mp41
+    encoder         : Lavf62.12.101
+  Duration: 00:00:34.20, start: 0.000000, bitrate: 5549 kb/s
+  Stream #0:0[0x1](und): Video: h264 (High) (avc1 / 0x31637661), yuvj420p(pc, bt470bg/unknown/unknown, progressive), 1080x1920 [SAR 1:1 DAR 9:16], 5346 kb/s, 59.94 fps, 59.94 tbr, 60k tbn, start 0.033000 (default)
+    Metadata:
+      handler_name    : VideoHandler
+      encoder         : Lavc62.28.101 libx264
+  Stream #0:1[0x2](eng): Audio: aac (LC) (mp4a / 0x6134706D), 48000 Hz, stereo, fltp, 196 kb/s (default)
+    Metadata:
+      handler_name    : SoundHandler
+[Parsed_ass_0 @ 00000226c36afb00] libass API version: 0x1704000
+[Parsed_ass_0 @ 00000226c36afb00] libass source: commit: 0.17.4-27-g1cbba0a8818c83495114b3c2b5730410eecbdb2c
+[Parsed_ass_0 @ 00000226c36afb00] Shaper: FriBidi 1.0.16 (SIMPLE) HarfBuzz-ng 14.2.0 (COMPLEX)
+[Parsed_ass_0 @ 00000226c36afb00] Using font provider directwrite (with GDI)
+[Parsed_ass_0 @ 00000226c36afb00] Added subtitle file: 'D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_160345\emeritos_gameplay\compare_generic\cuts_raw\segment_5_00-06_56_00-40_74.ass' (7 styles, 9 events)
+Stream mapping:
+  Stream #0:0 -> #0:0 (h264 (native) -> h264 (libx264))
+  Stream #0:1 -> #0:1 (aac (native) -> aac (native))
+Press [q] to stop, [?] for help
+[Parsed_ass_0 @ 00000226c36ae180] libass API version: 0x1704000
+[Parsed_ass_0 @ 00000226c36ae180] libass source: commit: 0.17.4-27-g1cbba0a8818c83495114b3c2b5730410eecbdb2c
+[Parsed_ass_0 @ 00000226c36ae180] Shaper: FriBidi 1.0.16 (SIMPLE) HarfBuzz-ng 14.2.0 (COMPLEX)
+[Parsed_ass_0 @ 00000226c36ae180] Using font provider directwrite (with GDI)
+[Parsed_ass_0 @ 00000226c36ae180] Added subtitle file: 'D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_160345\emeritos_gameplay\compare_generic\cuts_raw\segment_5_00-06_56_00-40_74.ass' (7 styles, 9 events)
+[Parsed_ass_0 @ 00000226c36ae180] fontselect: (Arial Black, 400, 0) -> Arial-Black, 0, Arial-Black
+[Parsed_ass_0 @ 00000226c36ae180] fontselect: (Arial Black, 700, 0) -> Arial-Black, 0, Arial-Black
+[libx264 @ 00000226c36fea80] using SAR=1/1
+[libx264 @ 00000226c36fea80] using cpu capabilities: MMX2 SSE2Fast SSSE3 SSE4.2 AVX FMA3 BMI2 AVX2 AVX512
+[libx264 @ 00000226c36fea80] profile High, level 4.2, 4:2:0, 8-bit
+[libx264 @ 00000226c36fea80] 264 - core 165 r3223 0480cb0 - H.264/MPEG-4 AVC codec - Copyleft 2003-2025 - http://www.videolan.org/x264.html - options: cabac=1 ref=3 deblock=1:0:0 analyse=0x3:0x113 me=hex subme=7 psy=1 psy_rd=1.00:0.00 mixed_ref=1 me_range=16 chroma_me=1 trellis=1 8x8dct=1 cqm=0 deadzone=21,11 fast_pskip=1 chroma_qp_offset=-2 threads=24 lookahead_threads=4 sliced_threads=0 nr=0 decimate=1 interlaced=0 bluray_compat=0 constrained_intra=0 bframes=3 b_pyramid=2 b_adapt=1 b_bias=0 direct=1 weightb=1 open_gop=0 weightp=2 keyint=250 keyint_min=25 scenecut=40 intra_refresh=0 rc_lookahead=40 rc=crf mbtree=1 crf=23.0 qcomp=0.60 qpmin=0 qpmax=69 qpstep=4 ip_ratio=1.40 aq=1:1.00
+Output #0, mp4, to 'D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_160345\emeritos_gameplay\compare_generic\cuts_subtitles\segment_5_00-06_56_00-40_74.mp4':
+  Metadata:
+    major_brand     : isom
+    minor_version   : 512
+    compatible_brands: isomiso2avc1mp41
+    encoder         : Lavf62.12.101
+  Stream #0:0(und): Video: h264 (avc1 / 0x31637661), yuvj420p(pc, bt470bg/unknown/unknown, progressive), 1080x1920 [SAR 1:1 DAR 9:16], q=2-31, 59.94 fps, 60k tbn (default)
+    Metadata:
+      encoder         : Lavc62.28.101 libx264
+      handler_name    : VideoHandler
+    Side data:
+      CPB properties: bitrate max/min/avg: 0/0/0 buffer size: 0 vbv_delay: N/A
+  Stream #0:1(eng): Audio: aac (LC) (mp4a / 0x6134706D), 48000 Hz, stereo, fltp, 192 kb/s (default)
+    Metadata:
+      encoder         : Lavc62.28.101 aac
+      handler_name    : SoundHandler
+frame=   98 fps=0.0 q=31.0 size=     512KiB time=00:00:01.63 bitrate=2565.6kbits/s speed= 3.1x elapsed=0:00:00.52    frame=  285 fps=273 q=31.0 size=    1280KiB time=00:00:04.75 bitrate=2205.4kbits/s speed=4.56x elapsed=0:00:01.04    frame=  411 fps=265 q=31.0 size=    2304KiB time=00:00:06.85 bitrate=2752.7kbits/s speed=4.42x elapsed=0:00:01.55    frame=  530 fps=256 q=31.0 size=    3328KiB time=00:00:08.84 bitrate=3083.3kbits/s speed=4.27x elapsed=0:00:02.07    frame=  655 fps=254 q=31.0 size=    4352KiB time=00:00:10.92 bitrate=3262.6kbits/s speed=4.23x elapsed=0:00:02.58    frame=  774 fps=249 q=31.0 size=    5376KiB time=00:00:12.91 bitrate=3410.6kbits/s speed=4.16x elapsed=0:00:03.10    frame=  904 fps=250 q=31.0 size=    6400KiB time=00:00:15.08 bitrate=3476.3kbits/s speed=4.18x elapsed=0:00:03.61    frame= 1044 fps=253 q=31.0 size=    7680KiB time=00:00:17.41 bitrate=3612.2kbits/s speed=4.21x elapsed=0:00:04.13    frame= 1164 fps=251 q=31.0 size=    8704KiB time=00:00:19.41 bitrate=3671.8kbits/s speed=4.18x elapsed=0:00:04.64    frame= 1275 fps=247 q=31.0 size=    9728KiB time=00:00:21.27 bitrate=3746.5kbits/s speed=4.12x elapsed=0:00:05.16    frame= 1405 fps=247 q=31.0 size=   10752KiB time=00:00:23.44 bitrate=3757.7kbits/s speed=4.13x elapsed=0:00:05.68    frame= 1522 fps=246 q=31.0 size=   11776KiB time=00:00:25.39 bitrate=3799.2kbits/s speed= 4.1x elapsed=0:00:06.18    frame= 1655 fps=247 q=31.0 size=   12800KiB time=00:00:27.61 bitrate=3797.7kbits/s speed=4.12x elapsed=0:00:06.70    frame= 1795 fps=249 q=31.0 size=   13824KiB time=00:00:29.94 bitrate=3781.6kbits/s speed=4.15x elapsed=0:00:07.22    frame= 1921 fps=248 q=31.0 size=   14592KiB time=00:00:32.04 bitrate=3729.9kbits/s speed=4.14x elapsed=0:00:07.74    [out#0/mp4 @ 00000226c362f2c0] video:15004KiB audio:819KiB subtitle:0KiB other streams:0KiB global headers:0KiB muxing overhead: 0.339459%
+frame= 2047 fps=252 q=-1.0 Lsize=   15876KiB time=00:00:34.15 bitrate=3808.4kbits/s speed= 4.2x elapsed=0:00:08.12    
+[libx264 @ 00000226c36fea80] frame I:15    Avg QP:21.06  size: 53210
+[libx264 @ 00000226c36fea80] frame P:898   Avg QP:23.60  size: 12286
+[libx264 @ 00000226c36fea80] frame B:1134  Avg QP:26.39  size:  3114
+[libx264 @ 00000226c36fea80] consecutive B-frames:  6.9% 55.9%  5.6% 31.7%
+[libx264 @ 00000226c36fea80] mb I  I16..4: 18.4% 71.9%  9.6%
+[libx264 @ 00000226c36fea80] mb P  I16..4:  5.4% 10.1%  0.3%  P16..4: 30.7%  2.4%  1.1%  0.0%  0.0%    skip:49.9%
+[libx264 @ 00000226c36fea80] mb B  I16..4:  0.6%  0.8%  0.0%  B16..8: 19.8%  0.5%  0.0%  direct: 0.7%  skip:77.5%  L0:40.3% L1:58.0% BI: 1.7%
+[libx264 @ 00000226c36fea80] 8x8 transform intra:64.0% inter:92.0%
+[libx264 @ 00000226c36fea80] coded y,uvDC,uvAC intra: 19.7% 42.4% 6.3% inter: 2.8% 8.6% 0.0%
+[libx264 @ 00000226c36fea80] i16 v,h,dc,p: 26% 41%  7% 26%
+[libx264 @ 00000226c36fea80] i8 v,h,dc,ddl,ddr,vr,hd,vl,hu: 27% 22% 29%  3%  4%  4%  4%  3%  3%
+[libx264 @ 00000226c36fea80] i4 v,h,dc,ddl,ddr,vr,hd,vl,hu: 30% 24%  9%  4%  8%  8%  7%  5%  4%
+[libx264 @ 00000226c36fea80] i8c dc,h,v,p: 53% 24% 17%  7%
+[libx264 @ 00000226c36fea80] Weighted P-Frames: Y:0.9% UV:0.1%
+[libx264 @ 00000226c36fea80] ref P L0: 74.4%  7.5% 14.2%  3.8%  0.1%
+[libx264 @ 00000226c36fea80] ref B L0: 90.7%  8.4%  0.9%
+[libx264 @ 00000226c36fea80] ref B L1: 98.7%  1.3%
+[libx264 @ 00000226c36fea80] kb/s:3598.91
+[aac @ 00000226c51d2280] Qavg: 935.783
+Loading transcript: D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_160345\emeritos_gameplay\shared\transcript.json
+Found 5 cut videos
+
+Processing: segment_1_17-47_41_18-35_79.mp4
+Raw video already present: segment_1_17-47_41_18-35_79.mp4
+  Adding subtitles: segment_1_17-47_41_18-35_79.mp4
+Added subtitles: segment_1_17-47_41_18-35_79.mp4
+
+Processing: segment_2_16-38_20_17-19_73.mp4
+Raw video already present: segment_2_16-38_20_17-19_73.mp4
+  Adding subtitles: segment_2_16-38_20_17-19_73.mp4
+Added subtitles: segment_2_16-38_20_17-19_73.mp4
+
+Processing: segment_3_05-37_91_06-14_94.mp4
+Raw video already present: segment_3_05-37_91_06-14_94.mp4
+  Adding subtitles: segment_3_05-37_91_06-14_94.mp4
+Added subtitles: segment_3_05-37_91_06-14_94.mp4
+
+Processing: segment_4_04-14_05_04-59_95.mp4
+Raw video already present: segment_4_04-14_05_04-59_95.mp4
+  Adding subtitles: segment_4_04-14_05_04-59_95.mp4
+Added subtitles: segment_4_04-14_05_04-59_95.mp4
+
+Processing: segment_5_00-06_56_00-40_74.mp4
+Raw video already present: segment_5_00-06_56_00-40_74.mp4
+  Adding subtitles: segment_5_00-06_56_00-40_74.mp4
+Added subtitles: segment_5_00-06_56_00-40_74.mp4
+
+Done!
+  Raw videos: D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_160345\emeritos_gameplay\compare_generic\cuts_raw
+  Subtitled videos: D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_160345\emeritos_gameplay\compare_generic\cuts_subtitles
+$ D:\PythonProjects\viral-cutter-ai\.venv\Scripts\python.exe D:\PythonProjects\viral-cutter-ai\subtitler.py --transcript D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_160345\emeritos_gameplay\shared\transcript.json --input-dir D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_160345\emeritos_gameplay\compare_generic\cuts_raw --output-raw D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_160345\emeritos_gameplay\compare_generic\cuts_raw --output-subs D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_160345\emeritos_gameplay\compare_generic\cuts_subtitles
+

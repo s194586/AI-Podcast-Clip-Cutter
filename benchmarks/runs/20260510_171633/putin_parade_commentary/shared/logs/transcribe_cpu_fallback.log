@@ -1,0 +1,11 @@
+Starting local transcription...
+  Audio file: D:\PythonProjects\viral-cutter-ai\benchmarks\assets\putin_parade_commentary\input\source.mp3
+  Backend: faster_whisper
+  Whisper model: small
+  Device: cpu | Compute type: int8
+  Diarization: enabled (heuristic_cluster)
+  Transcription finished in 143.4s with 229 segments
+  Diarization status: applied | speakers: 4 | fallback: no
+Transcript saved to: D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_171633\putin_parade_commentary\shared\transcript.json
+$ D:\PythonProjects\viral-cutter-ai\.venv\Scripts\python.exe D:\PythonProjects\viral-cutter-ai\transcribe.py --file D:\PythonProjects\viral-cutter-ai\benchmarks\assets\putin_parade_commentary\input\source.mp3 --out D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_171633\putin_parade_commentary\shared\transcript.json --backend faster_whisper --whisper-model small --device cpu --compute-type int8 --diarization-backend heuristic_cluster --max-speakers 4
+

@@ -1,5 +1,4 @@
 import argparse
-import concurrent.futures
 import json
 import os
 import random
@@ -8,9 +7,27 @@ import shutil
 import ssl
 import subprocess
 import time
+import warnings
 from bisect import bisect_left
 from datetime import datetime, timezone
 from pathlib import Path
+
+from content_classifier import (
+    VALID_CONTENT_TYPE_MODES,
+    classify_content,
+    load_content_profile,
+    normalize_content_type_mode,
+    save_content_profile,
+)
+from local_scoring import score_candidates
+from pipeline_modes import (
+    AI_MODE_LOCAL_ONLY,
+    VALID_AI_MODES,
+    allows_gemini,
+    normalize_ai_mode,
+    requires_gemini,
+)
+from strategies import get_strategy
 
 SSL_CERT_ENV_VARS = (
     "SSL_CERT_FILE",
@@ -36,7 +53,9 @@ except Exception:
     load_dotenv = None
 
 try:
-    import google.generativeai as genai
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", FutureWarning)
+        import google.generativeai as genai
 except Exception:
     try:
         import google.genai as genai
@@ -571,36 +590,69 @@ def enforce_story_bounds(start, end, context, fallback, max_duration):
     return adjusted_start, adjusted_end, decisions
 
 
-def refine_window_with_ai(window, context, model_name, max_duration, request_timeout, api_key):
-    context_text = "\n".join(item["line"] for item in context)
+def build_candidate_packet(window, sentences, context_margin):
+    context = collect_context(sentences, window["start"], window["end"], margin=context_margin)
+    return {
+        "candidate_id": window["candidate_id"],
+        "local_rank": window.get("local_rank"),
+        "local_score": window.get("local_score"),
+        "heatmap_score": round(float(window.get("avg_value", 0.0)), 4),
+        "range_start": format_time(window["start"]),
+        "range_end": format_time(window["end"]),
+        "duration_seconds": round(float(window["duration"]), 2),
+        "summary": safe_excerpt(window.get("summary") or window.get("text"), limit=220),
+        "selection_reasons": window.get("selection_reasons") or [],
+        "context": [
+            {
+                "start": format_time(item["start"]),
+                "end": format_time(item["end"]),
+                "speaker": item.get("speaker"),
+                "text": item.get("text"),
+            }
+            for item in context
+        ],
+    }
+
+
+def rerank_candidates_with_ai_batch(candidate_pool, sentences, *, top_count, model_name, max_duration, context_margin, request_timeout, api_key):
+    packets = [build_candidate_packet(candidate, sentences, context_margin) for candidate in candidate_pool]
     prompt = (
         "You are a senior short-form video editor.\n"
-        "Your task is to refine a candidate clip using transcript context +/-20 seconds.\n"
-        "Pick the best Hook (start) and Punchline (end) so the clip feels like a complete story.\n"
+        "You are reranking pre-scored short video candidates for one source video.\n"
+        "The local system already filtered non-overlapping candidates.\n"
+        f"Pick the best {top_count} clips overall.\n"
         "Rules:\n"
-        "- start at a natural hook\n"
-        "- end on a payoff or resolved beat\n"
+        "- favor clear hook -> payoff story shape\n"
+        "- keep candidates in their existing order only if quality is similar\n"
+        "- you may refine boundaries inside the candidate context\n"
         "- never start or end in the middle of a sentence\n"
-        f"- the whole clip must stay under {max_duration:.0f} seconds\n\n"
-        f'ORIGINAL_HEATMAP_WINDOW: {format_time(window["start"])} - {format_time(window["end"])}\n'
-        f"TRANSCRIPT_CONTEXT:\n{context_text}\n\n"
-        "Return JSON only with keys:\n"
-        '- "hook_start": timestamp string MM:SS.ss\n'
-        '- "punchline_end": timestamp string MM:SS.ss\n'
-        '- "reason": short overall directing rationale\n'
-        '- "hook_reason": why this hook works\n'
-        '- "ending_reason": why this ending works\n'
-        "Return a valid JSON object only. No markdown, no commentary.\n"
+        f"- every returned clip must stay under {max_duration:.0f} seconds\n"
+        "- if a candidate is already strong, keep its original timestamps\n\n"
+        "Return JSON only in this shape:\n"
+        "{\n"
+        '  "overall_reason": "one short sentence",\n'
+        '  "selected": [\n'
+        "    {\n"
+        '      "candidate_id": "cand_001",\n'
+        '      "hook_start": "MM:SS.ss",\n'
+        '      "punchline_end": "MM:SS.ss",\n'
+        '      "reason": "why this clip made the final cut",\n'
+        '      "hook_reason": "why this opening works",\n'
+        '      "ending_reason": "why this ending works"\n'
+        "    }\n"
+        "  ]\n"
+        "}\n\n"
+        f"CANDIDATES_JSON:\n{json.dumps(packets, ensure_ascii=False, indent=2)}\n"
     )
 
     text = generate_gemini_text(prompt, model_name, api_key, request_timeout)
     parsed = extract_json_object(text or "")
+    selected = parsed.get("selected")
+    if not isinstance(selected, list):
+        raise ValueError("Gemini batch rerank did not return a 'selected' list.")
     return {
-        "hook_start": parse_time(parsed.get("hook_start", window["start"])),
-        "punchline_end": parse_time(parsed.get("punchline_end", window["end"])),
-        "reason": str(parsed.get("reason", "")).strip(),
-        "hook_reason": str(parsed.get("hook_reason", "")).strip(),
-        "ending_reason": str(parsed.get("ending_reason", "")).strip(),
+        "overall_reason": str(parsed.get("overall_reason", "")).strip(),
+        "selected": selected,
     }
 
 
@@ -625,10 +677,27 @@ def build_fallback_window(window, sentences, context, max_duration, error_messag
     return fallback, adjustments
 
 
-def refine_single_window(window, sentences, *, index, model_name, max_duration, context_margin, request_timeout, ai_ready, fallback_reason, api_key):
+def build_local_selection(window, sentences, *, index, max_duration, context_margin, reason):
     context = collect_context(sentences, window["start"], window["end"], margin=context_margin)
+    fallback_window, adjustments = build_fallback_window(
+        window,
+        sentences,
+        context,
+        max_duration,
+        reason,
+    )
+    fallback_window["selection_source"] = "local_ranking"
+    fallback_window["selection_reasons"] = window.get("selection_reasons") or []
+    fallback_window["local_score"] = window.get("local_score")
+    fallback_window["local_rank"] = window.get("local_rank")
+    fallback_window["fallback_reason"] = reason
     decision = {
         "index": index,
+        "candidate_id": window.get("candidate_id"),
+        "selection_source": "local_ranking",
+        "local_rank": window.get("local_rank"),
+        "local_score": window.get("local_score"),
+        "selection_reasons": window.get("selection_reasons") or [],
         "heatmap_start": window["start"],
         "heatmap_end": window["end"],
         "heatmap_start_label": format_time(window["start"]),
@@ -637,85 +706,79 @@ def refine_single_window(window, sentences, *, index, model_name, max_duration, 
         "context_end_label": format_time(context[-1]["end"]) if context else None,
         "summary_before": safe_excerpt(window.get("summary") or window.get("text")),
         "context_excerpt": safe_excerpt(" ".join(item["text"] for item in context), limit=520),
-        "request_timeout_seconds": request_timeout,
+        "status": "selected_local",
+        "error": reason,
+        "final_start": fallback_window["start"],
+        "final_end": fallback_window["end"],
+        "final_start_label": format_time(fallback_window["start"]),
+        "final_end_label": format_time(fallback_window["end"]),
+        "final_duration": fallback_window["duration"],
+        "adjustments": adjustments,
+        "summary_after": safe_excerpt(fallback_window["summary"]),
     }
+    return fallback_window, decision
 
-    try:
-        if not ai_ready:
-            raise RuntimeError(fallback_reason)
-
-        ai_choice = refine_window_with_ai(
-            window,
-            context,
-            model_name,
-            max_duration,
-            request_timeout,
-            api_key,
-        )
-        start, end, adjustments = enforce_story_bounds(
-            ai_choice["hook_start"],
-            ai_choice["punchline_end"],
-            context,
-            window,
-            max_duration,
-        )
-        text = collect_text_for_window(sentences, start, end)
-        refined_window = dict(window)
-        refined_window.update(
-            {
-                "heatmap_start": window["start"],
-                "heatmap_end": window["end"],
-                "start": start,
-                "end": end,
-                "duration": end - start,
-                "summary": summarize_text(text),
-                "text": text,
-                "ai_reason": ai_choice["reason"],
-                "hook_reason": ai_choice["hook_reason"],
-                "ending_reason": ai_choice["ending_reason"],
-                "smart_context": True,
-            }
-        )
-        decision.update(
-            {
-                "status": "success",
-                "ai_hook_start": ai_choice["hook_start"],
-                "ai_punchline_end": ai_choice["punchline_end"],
-                "final_start": start,
-                "final_end": end,
-                "final_start_label": format_time(start),
-                "final_end_label": format_time(end),
-                "final_duration": end - start,
-                "reason": ai_choice["reason"],
-                "hook_reason": ai_choice["hook_reason"],
-                "ending_reason": ai_choice["ending_reason"],
-                "adjustments": adjustments,
-                "summary_after": safe_excerpt(refined_window["summary"]),
-            }
-        )
-        return refined_window, decision, True
-    except Exception as exc:
-        fallback_window, adjustments = build_fallback_window(
-            window,
-            sentences,
-            context,
-            max_duration,
-            str(exc),
-        )
-        decision.update(
-            {
-                "status": "fallback_local_bounds",
-                "error": str(exc),
-                "final_start": fallback_window["start"],
-                "final_end": fallback_window["end"],
-                "final_start_label": format_time(fallback_window["start"]),
-                "final_end_label": format_time(fallback_window["end"]),
-                "final_duration": fallback_window["duration"],
-                "adjustments": adjustments,
-                "summary_after": safe_excerpt(fallback_window["summary"]),
-            }
-        )
-        return fallback_window, decision, False
+def apply_batch_ai_selection(window, ai_choice, sentences, *, index, max_duration, context_margin, overall_reason):
+    context = collect_context(sentences, window["start"], window["end"], margin=context_margin)
+    hook_start_raw = ai_choice.get("hook_start", format_time(window["start"]))
+    punchline_end_raw = ai_choice.get("punchline_end", format_time(window["end"]))
+    start, end, adjustments = enforce_story_bounds(
+        parse_time(hook_start_raw),
+        parse_time(punchline_end_raw),
+        context,
+        window,
+        max_duration,
+    )
+    text = collect_text_for_window(sentences, start, end)
+    refined_window = dict(window)
+    refined_window.update(
+        {
+            "heatmap_start": window["start"],
+            "heatmap_end": window["end"],
+            "start": start,
+            "end": end,
+            "duration": end - start,
+            "summary": summarize_text(text),
+            "text": text,
+            "ai_reason": str(ai_choice.get("reason", "")).strip(),
+            "hook_reason": str(ai_choice.get("hook_reason", "")).strip(),
+            "ending_reason": str(ai_choice.get("ending_reason", "")).strip(),
+            "smart_context": True,
+            "selection_source": "gemini_batch_rerank",
+            "selection_reasons": window.get("selection_reasons") or [],
+            "local_score": window.get("local_score"),
+            "local_rank": window.get("local_rank"),
+        }
+    )
+    decision = {
+        "index": index,
+        "candidate_id": window.get("candidate_id"),
+        "selection_source": "gemini_batch_rerank",
+        "local_rank": window.get("local_rank"),
+        "local_score": window.get("local_score"),
+        "selection_reasons": window.get("selection_reasons") or [],
+        "heatmap_start": window["start"],
+        "heatmap_end": window["end"],
+        "heatmap_start_label": format_time(window["start"]),
+        "heatmap_end_label": format_time(window["end"]),
+        "context_start_label": format_time(context[0]["start"]) if context else None,
+        "context_end_label": format_time(context[-1]["end"]) if context else None,
+        "status": "selected_by_ai_batch",
+        "ai_hook_start": hook_start_raw,
+        "ai_punchline_end": punchline_end_raw,
+        "final_start": start,
+        "final_end": end,
+        "final_start_label": format_time(start),
+        "final_end_label": format_time(end),
+        "final_duration": end - start,
+        "reason": refined_window.get("ai_reason"),
+        "hook_reason": refined_window.get("hook_reason"),
+        "ending_reason": refined_window.get("ending_reason"),
+        "overall_reason": overall_reason,
+        "adjustments": adjustments,
+        "summary_after": safe_excerpt(refined_window["summary"]),
+    }
+    return refined_window, decision
 
 
 def save_cutting_log(log_path, log):
@@ -724,38 +787,112 @@ def save_cutting_log(log_path, log):
         json.dump(log, file_handle, ensure_ascii=False, indent=2)
 
 
-def refine_cuts_with_ai(
-    windows,
+def resolve_content_routing(args):
+    content_mode = normalize_content_type_mode(args.content_type)
+    profile_path = Path(args.content_profile) if args.content_profile else None
+    profile_loaded = False
+    classification = None
+
+    if content_mode == "auto" and profile_path and profile_path.exists():
+        try:
+            classification = load_content_profile(profile_path)
+            profile_loaded = True
+        except Exception:
+            classification = None
+
+    if classification is None:
+        result = classify_content(
+            args.transcript,
+            args.heatmap,
+            video_path=args.video,
+            forced_content_type=content_mode,
+        )
+        classification = result.to_dict()
+        if profile_path:
+            save_content_profile(result, profile_path)
+            profile_loaded = False
+
+    strategy_name = (
+        classification.get("strategy_name")
+        or classification.get("content_type")
+        or "generic"
+    )
+    strategy = get_strategy(strategy_name)
+    routing = {
+        "content_type": classification.get("content_type", "generic"),
+        "confidence": round(float(classification.get("confidence", 0.0) or 0.0), 4),
+        "reasons": classification.get("reasons") or [],
+        "source": "cached_profile" if profile_loaded else (classification.get("source") or "heuristic_classifier"),
+        "classifier_source": classification.get("source") or "heuristic_classifier",
+        "forced_content_type": classification.get("forced_content_type"),
+        "loaded_from_profile": profile_loaded,
+        "features": classification.get("features") or {},
+        "scores": classification.get("scores") or {},
+        "strategy": strategy.to_dict(),
+    }
+    return routing, strategy
+
+
+def rerank_cuts_with_ai(
+    candidate_pool,
     sentences,
     *,
+    ai_mode,
+    top_count,
+    total_candidates,
     model_name,
     api_key,
     max_duration,
     context_margin,
     log_path,
     request_timeout,
-    parallelism,
+    selection_context=None,
 ):
+    local_candidate_snapshots = [
+        {
+            "candidate_id": candidate.get("candidate_id"),
+            "local_rank": candidate.get("local_rank"),
+            "local_score": candidate.get("local_score"),
+            "local_features": candidate.get("local_features") or {},
+            "avg_value": candidate.get("avg_value"),
+            "start": candidate.get("start"),
+            "end": candidate.get("end"),
+            "duration": candidate.get("duration"),
+            "summary": candidate.get("summary"),
+            "selection_reasons": candidate.get("selection_reasons") or [],
+        }
+        for candidate in candidate_pool
+    ]
+
     log = {
         "created_at": datetime.now(timezone.utc).isoformat(),
-        "strategy": "smart_context_cutter",
+        "strategy": "local_first_selector",
+        "ai_mode": ai_mode,
         "model": model_name,
         "context_margin_seconds": context_margin,
         "max_duration_seconds": max_duration,
         "request_timeout_seconds": request_timeout,
-        "parallelism": parallelism,
-        "clips_requested": len(windows),
+        "clips_requested": top_count,
+        "total_candidates_generated": total_candidates,
+        "local_candidate_pool_size": len(candidate_pool),
+        "local_candidate_ids": [candidate.get("candidate_id") for candidate in candidate_pool],
+        "local_candidate_pool": local_candidate_snapshots,
         "decisions": [],
     }
-    if not windows:
+    if selection_context:
+        log["content_routing"] = selection_context
+    if not candidate_pool:
         log["status"] = "no_windows"
         save_cutting_log(log_path, log)
-        return windows, log
+        return candidate_pool, log
 
     curl_available = bool(shutil.which("curl.exe") or shutil.which("curl"))
     ai_ready = bool(api_key and (genai is not None or curl_available))
     transport = os.environ.get("GEMINI_TRANSPORT", "").strip().lower()
-    if ai_ready:
+    if not allows_gemini(ai_mode):
+        log["ai_status"] = "skipped"
+        log["ai_reason"] = "AI mode is local_only."
+    elif ai_ready:
         configure_gemini(api_key)
         log["ai_status"] = "ready"
         log["ai_transport"] = transport or ("curl" if os.name == "nt" else "sdk")
@@ -766,77 +903,92 @@ def refine_cuts_with_ai(
         else:
             log["ai_reason"] = "Gemini API key is missing."
 
-    refined_windows = [None] * len(windows)
-    decisions = [None] * len(windows)
+    if requires_gemini(ai_mode) and not ai_ready:
+        raise RuntimeError(log.get("ai_reason", "Gemini is required but unavailable."))
+
+    local_top = candidate_pool[:top_count]
+    final_windows = []
+    decisions = []
     refined_count = 0
-    max_workers = max(1, min(parallelism, len(windows)))
-    fallback_reason = log.get("ai_reason", "AI refinement unavailable.")
+    batch_reason = ""
 
-    print(f"  Smart Context Cutter: analyzing {len(windows)} selected scenes with Gemini (parallelism={max_workers}, timeout={request_timeout}s)")
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_map = {
-            executor.submit(
-                refine_single_window,
-                window,
+    if allows_gemini(ai_mode) and ai_ready:
+        print(
+            f"  Gemini batch rerank: evaluating {len(candidate_pool)} local candidates "
+            f"(timeout={request_timeout}s)"
+        )
+        try:
+            ai_result = rerank_candidates_with_ai_batch(
+                candidate_pool,
                 sentences,
-                index=index,
+                top_count=top_count,
                 model_name=model_name,
                 max_duration=max_duration,
                 context_margin=context_margin,
                 request_timeout=request_timeout,
-                ai_ready=ai_ready,
-                fallback_reason=fallback_reason,
                 api_key=api_key,
-            ): index - 1
-            for index, window in enumerate(windows, start=1)
-        }
+            )
+            batch_reason = ai_result.get("overall_reason", "")
+            selected_by_id = {}
+            for item in ai_result.get("selected", []):
+                candidate_id = str(item.get("candidate_id") or "").strip()
+                if candidate_id and candidate_id not in selected_by_id:
+                    selected_by_id[candidate_id] = item
 
-        for future in concurrent.futures.as_completed(future_map):
-            result_index = future_map[future]
-            try:
-                refined_window, decision, ai_success = future.result()
-            except Exception as exc:
-                window = windows[result_index]
-                context = collect_context(sentences, window["start"], window["end"], margin=context_margin)
-                refined_window, adjustments = build_fallback_window(
-                    window,
+            if not selected_by_id:
+                raise ValueError("Gemini batch rerank returned no valid candidate ids.")
+
+            for candidate in candidate_pool:
+                choice = selected_by_id.get(candidate.get("candidate_id"))
+                if not choice:
+                    continue
+                refined_window, decision = apply_batch_ai_selection(
+                    candidate,
+                    choice,
                     sentences,
-                    context,
-                    max_duration,
-                    str(exc),
+                    index=len(final_windows) + 1,
+                    max_duration=max_duration,
+                    context_margin=context_margin,
+                    overall_reason=batch_reason,
                 )
-                decision = {
-                    "index": result_index + 1,
-                    "heatmap_start": window["start"],
-                    "heatmap_end": window["end"],
-                    "heatmap_start_label": format_time(window["start"]),
-                    "heatmap_end_label": format_time(window["end"]),
-                    "status": "fallback_local_bounds",
-                    "error": str(exc),
-                    "final_start": refined_window["start"],
-                    "final_end": refined_window["end"],
-                    "final_start_label": format_time(refined_window["start"]),
-                    "final_end_label": format_time(refined_window["end"]),
-                    "final_duration": refined_window["duration"],
-                    "adjustments": adjustments,
-                    "summary_after": safe_excerpt(refined_window["summary"]),
-                    "request_timeout_seconds": request_timeout,
-                }
-                ai_success = False
-
-            refined_windows[result_index] = refined_window
-            decisions[result_index] = decision
-            if ai_success:
+                final_windows.append(refined_window)
+                decisions.append(decision)
                 refined_count += 1
+                if len(final_windows) == top_count:
+                    break
+        except Exception as exc:
+            log["ai_status"] = "fallback_local_only"
+            log["ai_reason"] = str(exc)
+            print(f"  Warning: Gemini batch rerank failed, using local ranking only. Reason: {exc}")
 
+    if len(final_windows) < top_count:
+        fallback_reason = log.get("ai_reason", "Using local ranking.")
+        used_ids = {window.get("candidate_id") for window in final_windows}
+        for candidate in local_top:
+            if candidate.get("candidate_id") in used_ids:
+                continue
+            local_window, decision = build_local_selection(
+                candidate,
+                sentences,
+                index=len(final_windows) + 1,
+                max_duration=max_duration,
+                context_margin=context_margin,
+                reason=fallback_reason,
+            )
+            final_windows.append(local_window)
+            decisions.append(decision)
+            if len(final_windows) == top_count:
+                break
+
+    decisions.sort(key=lambda item: item["index"])
     log["decisions"] = decisions
-
     log["status"] = "completed"
+    log["batch_rerank_used"] = refined_count > 0
+    log["batch_rerank_reason"] = batch_reason
     log["clips_refined_with_ai"] = refined_count
-    log["clips_with_local_fallback"] = len(refined_windows) - refined_count
+    log["clips_with_local_fallback"] = max(0, len(final_windows) - refined_count)
     save_cutting_log(log_path, log)
-    return refined_windows, log
+    return final_windows, log
 
 
 def build_candidates(sentences, heatmap, starts, min_duration, max_duration):
@@ -869,9 +1021,17 @@ def build_candidates(sentences, heatmap, starts, min_duration, max_duration):
     return candidates
 
 
-def select_non_overlapping(candidates, count=5):
+def select_non_overlapping(candidates, count=5, score_key="avg_value"):
     selected = []
-    for candidate in sorted(candidates, key=lambda item: item["avg_value"], reverse=True):
+    for candidate in sorted(
+        candidates,
+        key=lambda item: (
+            float(item.get(score_key, 0.0)),
+            float(item.get("avg_value", 0.0)),
+            -float(item.get("duration", 0.0)),
+        ),
+        reverse=True,
+    ):
         overlaps = any(
             not (candidate["end"] <= chosen["start"] or candidate["start"] >= chosen["end"])
             for chosen in selected
@@ -893,14 +1053,23 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Analyze viral fragments using transcript and heatmap.")
     parser.add_argument("--transcript", default="transcripts/final_transcript.json", help="Transcript JSON path")
     parser.add_argument("--heatmap", default="metadata/heatmap.json", help="Heatmap JSON path")
+    parser.add_argument("--video", default=None, help="Optional video path for content classification")
+    parser.add_argument("--content-profile", default=None, help="Optional cached content profile JSON path")
+    parser.add_argument(
+        "--content-type",
+        default="auto",
+        choices=VALID_CONTENT_TYPE_MODES,
+        help="auto, podcast, gameplay, tutorial or generic",
+    )
     parser.add_argument("--min-duration", type=float, default=30.0, help="Minimum window duration in seconds")
     parser.add_argument("--max-duration", type=float, default=60.0, help="Maximum window duration in seconds")
     parser.add_argument("--top", type=int, default=5, help="How many clips to export")
     parser.add_argument("--save-json", default=None, help="Output JSON path for selected windows")
     parser.add_argument("--model", default="models/gemini-2.5-flash", help="Gemini model for Smart Context Cutter")
+    parser.add_argument("--ai-mode", default="gemini_optional", choices=VALID_AI_MODES, help="Selection mode: local_only, gemini_optional, gemini_enabled")
     parser.add_argument("--context-margin", type=float, default=20.0, help="Transcript margin around each window")
     parser.add_argument("--request-timeout", type=float, default=75.0, help="Gemini timeout in seconds per selected scene")
-    parser.add_argument("--parallelism", type=int, default=2, help="How many Gemini scene analyses to run in parallel")
+    parser.add_argument("--rerank-pool-size", type=int, default=0, help="How many locally ranked non-overlapping candidates to expose to Gemini batch rerank")
     parser.add_argument("--cutting-log", default="metadata/cutting_logic.json", help="Output log for cutting logic")
     parser.add_argument("--skip-smart-context", action="store_true", help="Skip Gemini refinement and keep local windows")
     return parser.parse_args()
@@ -919,49 +1088,91 @@ def main():
     heatmap = load_heatmap(args.heatmap)
     sentences = build_sentence_boundaries(transcript)
     heatmap_index, heatmap_starts = build_heatmap_index(heatmap)
+    ai_mode = AI_MODE_LOCAL_ONLY if args.skip_smart_context else normalize_ai_mode(args.ai_mode)
+    content_routing, strategy = resolve_content_routing(args)
+
+    print(
+        f"  Content classification: {content_routing['content_type']} "
+        f"(confidence={content_routing['confidence']:.2f}, source={content_routing['source']})"
+    )
+    if content_routing["reasons"]:
+        print(f"  Routing reasons: {', '.join(content_routing['reasons'])}")
+    print(
+        f"  Strategy selected: {strategy.name} | "
+        f"weights={json.dumps(strategy.score_weights, ensure_ascii=False, sort_keys=True)}"
+    )
 
     candidates = build_candidates(sentences, heatmap_index, heatmap_starts, args.min_duration, args.max_duration)
     if not candidates:
         raise SystemExit("No candidate windows were found in the 30-60 second range.")
 
-    top_windows = select_non_overlapping(candidates, count=args.top)
-    if not top_windows:
+    scored_candidates = score_candidates(
+        candidates,
+        transcript,
+        heatmap_index,
+        score_weights=strategy.score_weights,
+        strategy_name=strategy.name,
+    )
+    for index, candidate in enumerate(scored_candidates, start=1):
+        candidate["candidate_id"] = f"cand_{index:03d}"
+
+    rerank_pool_size = args.rerank_pool_size or max(args.top, args.top * 3)
+    rerank_pool_size = max(args.top, rerank_pool_size)
+    candidate_pool = select_non_overlapping(scored_candidates, count=rerank_pool_size, score_key="local_score")
+    if not candidate_pool:
         raise SystemExit("Could not select non-overlapping windows.")
 
-    if not args.skip_smart_context:
+    print(f"  Local candidate generation: {len(candidates)} windows")
+    print(f"  Local scoring ready: top pool {len(candidate_pool)} / requested clips {args.top}")
+
+    if allows_gemini(ai_mode):
         api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY") or os.environ.get("API_KEY")
-        top_windows, cutting_log = refine_cuts_with_ai(
-            top_windows,
+        top_windows, cutting_log = rerank_cuts_with_ai(
+            candidate_pool,
             sentences,
+            ai_mode=ai_mode,
+            top_count=args.top,
+            total_candidates=len(candidates),
             model_name=args.model,
             api_key=api_key,
             max_duration=args.max_duration,
             context_margin=args.context_margin,
             log_path=Path(args.cutting_log),
             request_timeout=args.request_timeout,
-            parallelism=args.parallelism,
+            selection_context=content_routing,
         )
         fallback_count = cutting_log.get("clips_with_local_fallback", 0)
         if fallback_count:
-            print(f"  Warning: {fallback_count} clip(s) used local fallback after AI refinement failed.")
+            print(f"  Selection fallback: {fallback_count} clip(s) kept from the local ranking.")
     else:
-        save_cutting_log(
-            Path(args.cutting_log),
-            {
-                "created_at": datetime.now(timezone.utc).isoformat(),
-                "strategy": "smart_context_cutter",
-                "status": "skipped",
-                "reason": "User requested --skip-smart-context.",
-                "decisions": [],
-            },
+        top_windows, cutting_log = rerank_cuts_with_ai(
+            candidate_pool,
+            sentences,
+            ai_mode=ai_mode,
+            top_count=args.top,
+            total_candidates=len(candidates),
+            model_name=args.model,
+            api_key="",
+            max_duration=args.max_duration,
+            context_margin=args.context_margin,
+            log_path=Path(args.cutting_log),
+            request_timeout=args.request_timeout,
+            selection_context=content_routing,
         )
+        print("  AI rerank skipped: local_only mode is active.")
 
     print(f"\nTop {len(top_windows)} moments for Shorts:")
     for index, window in enumerate(top_windows, start=1):
         print(f"Clip {index}:")
         print(f'  Range: {format_time(window["start"])} - {format_time(window["end"])}')
         print(f'  Avg heatmap score: {window["avg_value"]:.4f}')
+        print(f'  Local score: {window.get("local_score", 0):.2f}')
         print(f'  Duration: {window["duration"]:.1f}s')
+        reasons = ", ".join(window.get("selection_reasons") or [])
+        if reasons:
+            print(f"  Why selected: {reasons}")
+        if window.get("selection_source") == "gemini_batch_rerank":
+            print(f'  Gemini reason: {window.get("ai_reason") or "batch rerank selected this clip"}')
         print(f'  Summary: {window["summary"]}')
         print()
 

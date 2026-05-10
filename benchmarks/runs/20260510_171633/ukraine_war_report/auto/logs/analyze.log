@@ -1,0 +1,53 @@
+INFO: Created TensorFlow Lite XNNPACK delegate for CPU.
+W0000 00:00:1778435275.642718   14232 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+  Content classification: podcast (confidence=0.76, source=heuristic_classifier)
+  Routing reasons: High speech coverage across the material., Multiple recurring speakers are present., No single speaker dominates the full transcript.
+  Strategy selected: podcast | weights={"chaos_score": 0.1, "duration_fit_score": 0.04, "emotion_score": 0.05, "heatmap_avg": 0.12, "heatmap_peak": 0.06, "hook_score": 0.12, "importance_score": 0.1, "payoff_score": 0.12, "punchiness_score": 0.05, "repetition_penalty": 0.08, "speaker_turn_score": 0.14, "speech_density_score": 0.16}
+  Local candidate generation: 36673 windows
+  Local scoring ready: top pool 15 / requested clips 5
+  AI rerank skipped: local_only mode is active.
+
+Top 5 moments for Shorts:
+Clip 1:
+  Range: 17:40.72 - 18:16.46
+  Avg heatmap score: 0.5000
+  Local score: 84.96
+  Duration: 35.7s
+  Why selected: good speech density for a short clip, has speaker dynamics or conversational turns, starts with a stronger hook signal
+  Summary: Co z tego zrealizowano? Nic, nul, na fink, tak. Mamy obecnoœæ Finlandii i Szwecji. W NATO, NATO jest jeszcze mocniejsze na granicach Ukrainy. Mamy gwa³towne zbrojenia pañstw ba³tywskich, Polski....
+
+Clip 2:
+  Range: 11:56.88 - 12:27.68
+  Avg heatmap score: 0.5000
+  Local score: 82.58
+  Duration: 30.8s
+  Why selected: has speaker dynamics or conversational turns, good speech density for a short clip, starts with a stronger hook signal
+  Summary: I teraz, co nam ucieka i gdzie jest du¿a czarna liczba, która zani¿a faktycznie z t¹ liczbê poleg³ych Rosjan? No wiêc tak, nie mamy tutaj ujêtych najemników, którzy nie maj¹ rosyjskiego bywatelska....
+
+Clip 3:
+  Range: 22:37.76 - 23:08.12
+  Avg heatmap score: 0.5000
+  Local score: 80.80
+  Duration: 30.4s
+  Why selected: has speaker dynamics or conversational turns, good speech density for a short clip, starts with a stronger hook signal
+  Summary: wiem, ¿e to brzmi przera¿aj¹co, ale jak jakiœ opornik ukraiñski wpada rosyjska tonówka czy pó³tonówka no to niestety identyfikacja szcz¹tek ¿o³nierzy jest mo¿liwa ju¿ tylko podena, tak? Wiêc jest 56 tysiêcy zaginionych i...
+
+Clip 4:
+  Range: 10:12.83 - 10:48.78
+  Avg heatmap score: 0.5000
+  Local score: 80.66
+  Duration: 35.9s
+  Why selected: has speaker dynamics or conversational turns, good speech density for a short clip, ends with a clearer payoff signal
+  Summary: Koniec koñcika czytelniczego przechodzimy do tego, co wszyscy robimy najbardziej, czyli ponad miliona gruzu 200 i gruzu 300....
+
+Clip 5:
+  Range: 13:06.56 - 13:44.74
+  Avg heatmap score: 0.5000
+  Local score: 80.18
+  Duration: 38.2s
+  Why selected: has speaker dynamics or conversational turns, good speech density for a short clip, starts with a stronger hook signal
+  Summary: przez ca³¹ papierologiê, po co? po to, ¿eby oczywiœcie schowaæ sobie do kieszeni rz¹d poleg³ego ¿o³nierza....
+
+Saved selected windows to: D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_171633\ukraine_war_report\auto\top_windows.json
+$ D:\PythonProjects\viral-cutter-ai\.venv\Scripts\python.exe D:\PythonProjects\viral-cutter-ai\analyze_virals.py --transcript D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_171633\ukraine_war_report\shared\transcript.json --heatmap D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_171633\ukraine_war_report\shared\heatmap.json --video D:\PythonProjects\viral-cutter-ai\benchmarks\assets\ukraine_war_report\input\source.mp4 --save-json D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_171633\ukraine_war_report\auto\top_windows.json --cutting-log D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_171633\ukraine_war_report\auto\cutting_logic.json --content-profile D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_171633\ukraine_war_report\auto\content_profile.json --content-type auto --ai-mode local_only --top 5
+

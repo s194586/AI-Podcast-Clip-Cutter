@@ -1,0 +1,53 @@
+INFO: Created TensorFlow Lite XNNPACK delegate for CPU.
+W0000 00:00:1778434553.401145    3280 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+  Content classification: generic (confidence=1.00, source=manual_override)
+  Routing reasons: Content type manually forced to generic.
+  Strategy selected: generic | weights={"chaos_score": 0.04, "duration_fit_score": 0.05, "emotion_score": 0.1, "heatmap_avg": 0.34, "heatmap_peak": 0.12, "hook_score": 0.08, "importance_score": 0.12, "payoff_score": 0.08, "punchiness_score": 0.08, "repetition_penalty": 0.06, "speaker_turn_score": 0.05, "speech_density_score": 0.1}
+  Local candidate generation: 40661 windows
+  Local scoring ready: top pool 15 / requested clips 5
+  AI rerank skipped: local_only mode is active.
+
+Top 5 moments for Shorts:
+Clip 1:
+  Range: 17:47.41 - 18:35.79
+  Avg heatmap score: 0.5241
+  Local score: 89.45
+  Duration: 48.4s
+  Why selected: strong heatmap support, contains punchy or emotional language, good speech density for a short clip
+  Summary: Co to nie s¹ d³ugo jest to? Ta, bajtu i po prostu d³ugi. Ja pik³em o serpody info i tofa. Mi widzê. Nie widzia³em m¹ stara w ogóle. I do dole wej. Kl¹k, kliwy. Jaka le¿y. Ja jeszcze jeden fantana, jeden. Dobra....
+
+Clip 2:
+  Range: 16:38.20 - 17:19.73
+  Avg heatmap score: 0.5042
+  Local score: 88.83
+  Duration: 41.5s
+  Why selected: strong heatmap support, contains punchy or emotional language, contains high-importance transcript moments
+  Summary: Dlaczego mnie ¿yjemy? Ja ci powiedzia³em, ¿ebyœ tylko ciê rzuci³. Tylko ciê rzuci³ i wracamy. Mog¹ dojechaæ. to jest zajebiœcie, ¿e... ¿e wy dojechali A. My mo¿emy za... PaŸdŸ do B, wejœæ w drugiej tempo....
+
+Clip 3:
+  Range: 05:37.91 - 06:14.94
+  Avg heatmap score: 0.5078
+  Local score: 88.78
+  Duration: 37.0s
+  Why selected: strong heatmap support, contains punchy or emotional language, good speech density for a short clip
+  Summary: Jak graæ na sm¹³? By³aœ mi d³opowiedŸ. Mo¿e byæ fontan na uwa¿a i saj¹. Czekaj, nie, ale... tyœ gra³y w tej zagiazie, g³upiedŸ. No, sm¹³ka, no. Trzeci czas mnie. No, kupi³em, bo zdaniem sobie muszê. Dobrze....
+
+Clip 4:
+  Range: 04:14.05 - 04:59.95
+  Avg heatmap score: 0.5020
+  Local score: 87.60
+  Duration: 45.9s
+  Why selected: strong heatmap support, contains punchy or emotional language, contains high-importance transcript moments
+  Summary: Trzymam co? Zawaæ, wyschowam. Zaszujê. Zobacz, bangle¿. Ja nie wiem, czy ja mam. Ja oni ch³oplecy s¹ albo nie, no chow³aœ niechowaj¹. To do. Gaj to nie jakoœ. To jest wiek, nie widzê. Przez szyjê pod bal¹....
+
+Clip 5:
+  Range: 00:06.56 - 00:40.74
+  Avg heatmap score: 0.5408
+  Local score: 86.68
+  Duration: 34.2s
+  Why selected: strong heatmap support, contains punchy or emotional language, good speech density for a short clip
+  Summary: Mhm. Co zaznaczy³? No nie wiem, czyta³em i tak nie odpierw, ale no. ¯e m¹czy, ¿e m¹czy, No to ty, chcia³em. Nie chcia³em tego s³owa u¿ywaæ, m¹czy, bo by by³y zaraz potrzebki bójki. Ja tam zawsze myœlê, ¿e m¹czy....
+
+Saved selected windows to: D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_171633\emeritos_gameplay\compare_generic\top_windows.json
+$ D:\PythonProjects\viral-cutter-ai\.venv\Scripts\python.exe D:\PythonProjects\viral-cutter-ai\analyze_virals.py --transcript D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_171633\emeritos_gameplay\shared\transcript.json --heatmap D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_171633\emeritos_gameplay\shared\heatmap.json --video "D:\PythonProjects\viral-cutter-ai\input\EMERITOS BANDITOS BEZ MVP MAJORA W ESEA INTERMEDIATE!.mp4" --save-json D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_171633\emeritos_gameplay\compare_generic\top_windows.json --cutting-log D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_171633\emeritos_gameplay\compare_generic\cutting_logic.json --content-profile D:\PythonProjects\viral-cutter-ai\benchmarks\runs\20260510_171633\emeritos_gameplay\compare_generic\content_profile.json --content-type generic --ai-mode local_only --top 5
+
