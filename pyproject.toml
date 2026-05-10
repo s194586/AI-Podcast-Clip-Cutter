@@ -8,6 +8,8 @@ dependencies = [
     "certifi>=2026.4.22",
     "ffmpeg-python>=0.2.0",
     "google-generativeai>=0.8.6",
+    "mediapipe>=0.10.35",
+    "opencv-python-headless>=4.13.0.92",
     "python-dotenv>=1.2.2",
     "yt-dlp>=2026.3.17",
 ]

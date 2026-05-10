@@ -2,3 +2,6 @@ yt-dlp
 python-dotenv
 google-generativeai
 tqdm
+mediapipe
+opencv-python-headless
+certifi

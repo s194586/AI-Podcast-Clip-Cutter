@@ -14,6 +14,7 @@ __pycache__/
 *.json
 !config.json
 .tools/
+models/
 
 # Tajne klucze (API KEY!) - NIGDY nie wysyłaj tego na GitHub
 .env

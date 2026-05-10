@@ -8,12 +8,12 @@ import subprocess
 from pathlib import Path
 from typing import Dict, List, Tuple
 
-SPEAKER_COLORS: Dict[str, str] = {
-    "Speaker A": "&H00FFFFFF",
-    "Speaker B": "&H0000A5FF",
-    "Speaker C": "&H00FFFF00",
-    "Speaker D": "&H00FFCC66",
-    "Speaker E": "&H0088FF88",
+SPEAKER_STYLES: Dict[str, Dict[str, str]] = {
+    "Speaker 0": {"primary": "&H00FFFFFF", "outline": "&H0000FFFF"},
+    "Speaker 1": {"primary": "&H00FFCC00", "outline": "&H00000000"},
+    "Speaker 2": {"primary": "&H0000A5FF", "outline": "&H00000000"},
+    "Speaker 3": {"primary": "&H00FFCC66", "outline": "&H00000000"},
+    "Speaker 4": {"primary": "&H0088FF88", "outline": "&H00000000"},
 }
 DEFAULT_STYLE_NAME = "Default"
 CHAOS_EMPHASIS_STYLE = "ChaosEmphasis"
@@ -64,9 +64,14 @@ def normalize_speaker(segment: Dict) -> str:
     )
     normalized = " ".join(str(raw).strip().split())
     if normalized.lower().startswith("speaker "):
-        suffix = normalized.split()[-1].upper()
-        normalized = f"Speaker {suffix}"
-    return normalized if normalized in SPEAKER_COLORS else DEFAULT_STYLE_NAME
+        suffix = normalized.split()[-1]
+        if suffix.isdigit():
+            normalized = f"Speaker {int(suffix)}"
+        else:
+            suffix = suffix.upper()
+            if len(suffix) == 1 and "A" <= suffix <= "Z":
+                normalized = f"Speaker {ord(suffix) - ord('A')}"
+    return normalized if normalized in SPEAKER_STYLES else DEFAULT_STYLE_NAME
 
 
 def ass_color(color_value: str) -> str:
@@ -75,7 +80,10 @@ def ass_color(color_value: str) -> str:
 
 def apply_emphasis(text: str, speaker_color: str) -> str:
     color_tag = f"\\c{EMPHASIS_COLOR}&"
-    reset_style = next((name for name, color in SPEAKER_COLORS.items() if color == speaker_color), DEFAULT_STYLE_NAME)
+    reset_style = next(
+        (name for name, style in SPEAKER_STYLES.items() if style["primary"] == speaker_color),
+        DEFAULT_STYLE_NAME,
+    )
 
     def repl(match):
         word = match.group(0)
@@ -125,7 +133,7 @@ def build_subtitle_events(transcript: List[Dict], segment_start: float, segment_
         if not should_display_subtitle(item, rel_end - rel_start):
             continue
 
-        speaker_color = SPEAKER_COLORS.get(speaker, SPEAKER_COLORS["Speaker A"])
+        speaker_color = SPEAKER_STYLES.get(speaker, SPEAKER_STYLES["Speaker 0"])["primary"]
         display_text = text if importance >= 5 else (apply_emphasis(text, speaker_color) if importance >= 4 else text)
         events.append(
             {
@@ -152,9 +160,17 @@ def format_ass_time(seconds: float) -> str:
     return f"{hours}:{minutes:02d}:{secs:02d}.{centisecs:02d}"
 
 
-def create_style_line(name: str, color: str, font_size: int, *, bold: int = 0, alignment: int = 2) -> str:
+def create_style_line(
+    name: str,
+    color: str,
+    font_size: int,
+    *,
+    outline_color: str = "&H00000000",
+    bold: int = 0,
+    alignment: int = 2,
+) -> str:
     return (
-        f"Style: {name},{DEFAULT_FONT},{font_size},{color},&H00000000,&H00000000,&H00000000,"
+        f"Style: {name},{DEFAULT_FONT},{font_size},{color},&H00000000,{outline_color},&H00000000,"
         f"{bold},0,0,0,100,100,0,0,1,{OUTLINE_WIDTH},{SHADOW_SIZE},{alignment},70,70,{MARGIN_V},1"
     )
 
@@ -172,11 +188,18 @@ def create_ass_file(events: List[Dict]) -> str:
         "",
         "[V4+ Styles]",
         "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
-        create_style_line(DEFAULT_STYLE_NAME, SPEAKER_COLORS["Speaker A"], BASE_FONT_SIZE),
+        create_style_line(DEFAULT_STYLE_NAME, SPEAKER_STYLES["Speaker 0"]["primary"], BASE_FONT_SIZE),
     ]
 
-    for speaker_name, color in SPEAKER_COLORS.items():
-        lines.append(create_style_line(speaker_name, color, BASE_FONT_SIZE))
+    for speaker_name, style in SPEAKER_STYLES.items():
+        lines.append(
+            create_style_line(
+                speaker_name,
+                style["primary"],
+                BASE_FONT_SIZE,
+                outline_color=style["outline"],
+            )
+        )
 
     lines.append(create_style_line(CHAOS_EMPHASIS_STYLE, CHAOS_EMPHASIS_COLOR, CHAOS_FONT_SIZE, bold=1, alignment=5))
     lines.extend(["", "[Events]", "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text"])

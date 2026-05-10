@@ -174,6 +174,23 @@ def parse_time_to_seconds(value: str) -> float:
     return parts[0]
 
 
+def normalize_speaker_label(value) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "Speaker 0"
+
+    match = re.search(r"(\d+)", text)
+    if match:
+        return f"Speaker {int(match.group(1))}"
+
+    if text.lower().startswith("speaker "):
+        suffix = text.split()[-1].strip().upper()
+        if len(suffix) == 1 and "A" <= suffix <= "Z":
+            return f"Speaker {ord(suffix) - ord('A')}"
+
+    return f"Speaker {text}"
+
+
 def extract_json(text: str):
     if not text:
         raise ValueError("Empty response from model")
@@ -239,9 +256,8 @@ def normalize_segment_item(item, offset=0.0):
         "text": str(item.get("text", "")).strip(),
     }
 
-    speaker = str(item.get("speaker", "")).strip()
-    if speaker:
-        normalized["speaker"] = speaker
+    speaker = normalize_speaker_label(item.get("speaker") or item.get("speaker_id") or item.get("speakerId"))
+    normalized["speaker"] = speaker
 
     importance = item.get("importance")
     if importance is not None:
@@ -312,12 +328,12 @@ def transcribe_chunk(chunk_path: Path, model_name: str, api_key: str, max_retrie
         '- "start": MM:SS.ss\n'
         '- "end": MM:SS.ss\n'
         '- "text": transcript text\n'
-        '- "speaker": stable diarization label like "Speaker A", "Speaker B"\n'
+        '- "speaker": stable diarization label like "Speaker 0", "Speaker 1"\n'
         '- "importance": integer 1-5\n'
         '- "chaos": boolean\n'
         '- "words": array of word-level timestamps, each with "start", "end", "text" in MM:SS.ss\n\n'
         "Rules:\n"
-        "1. Keep speaker labels consistent across the chunk.\n"
+        "1. Keep speaker labels consistent across the chunk and always use numeric labels: Speaker 0, Speaker 1, Speaker 2...\n"
         "2. importance=5 means emotionally charged, punchy, vulgar, shouted, or key narrative words.\n"
         "3. chaos=true when multiple people overlap, the audio is messy, or words are hard to isolate.\n"
         '4. "words" is required for every segment whenever possible. Be as precise as you can.\n'
