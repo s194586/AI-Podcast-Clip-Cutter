@@ -9,10 +9,12 @@ from datetime import datetime, timezone
 import hashlib
 import html
 import json
+import os
 from pathlib import Path
 import re
 import sys
 from typing import Any
+from urllib.parse import quote
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -29,6 +31,11 @@ REVIEW_FIELDS = (
     "no_payoff",
     "too_context_dependent",
     "notes",
+)
+HUMAN_TEMPLATE_SCORE_FIELDS = (
+    "human_relevance_score",
+    "human_boundary_score",
+    "human_crop_score",
 )
 
 
@@ -93,6 +100,39 @@ def normalize_project_path(path_text: str) -> str:
     return str(path_text or "").replace("\\", "/")
 
 
+def resolve_video_path(video_path: str) -> Path:
+    path = Path(normalize_project_path(video_path))
+    if path.is_absolute():
+        return path
+    return PROJECT_ROOT / path
+
+
+def make_video_src(video_path: str, html_output_path: Path) -> str:
+    """Return a browser-friendly video src relative to the generated HTML file."""
+    if not video_path:
+        return ""
+    resolved = resolve_video_path(video_path)
+    if not resolved.exists():
+        return ""
+    output_dir = html_output_path.parent.resolve()
+    relative = os.path.relpath(resolved.resolve(), output_dir)
+    normalized = normalize_project_path(relative)
+    return quote(normalized, safe="/:._-~")
+
+
+def video_mime_type(video_path: str) -> str:
+    suffix = Path(normalize_project_path(video_path)).suffix.lower()
+    if suffix == ".mp4":
+        return "video/mp4"
+    if suffix == ".webm":
+        return "video/webm"
+    if suffix == ".mov":
+        return "video/quicktime"
+    if suffix == ".mkv":
+        return "video/x-matroska"
+    return "video/mp4"
+
+
 def stable_clip_id(case_id: str, scenario_id: str, start: Any, end: Any) -> str:
     start_label = format_time_value(start)
     end_label = format_time_value(end)
@@ -147,6 +187,20 @@ def summarize_reviews_by_clip(reviews: list[dict[str, Any]]) -> dict[str, dict[s
         current["count"] += 1
         current["latest"] = review
     return grouped
+
+
+def template_review_payload(row: dict[str, str] | None) -> dict[str, Any] | None:
+    if not row:
+        return None
+    payload: dict[str, Any] = {"source": "human_review_template.csv"}
+    for field_name in HUMAN_TEMPLATE_SCORE_FIELDS:
+        value = str(row.get(field_name, "") or "").strip()
+        if value:
+            payload[field_name] = value
+    notes = str(row.get("notes", "") or "").strip()
+    if notes:
+        payload["notes"] = notes
+    return payload if len(payload) > 1 else None
 
 
 def _clip_video_path(
@@ -213,6 +267,7 @@ def collect_clips(
                 clip_id = stable_clip_id(case_id, scenario_id, start_label, end_label)
                 template_row = template_lookup.get((case_id, scenario_id, start_label, end_label))
                 review_summary = reviews_by_clip.get(clip_id) or {"count": 0, "latest": None}
+                template_review = template_review_payload(template_row)
                 clips.append(
                     ReviewClip(
                         clip_id=clip_id,
@@ -233,8 +288,8 @@ def collect_clips(
                         transcript_excerpt=_extract_clip_text(clip),
                         video_path=_clip_video_path(clip, scenario, template_row),
                         human_template=template_row or {},
-                        latest_review=review_summary.get("latest"),
-                        review_count=int(review_summary.get("count") or 0),
+                        latest_review=review_summary.get("latest") or template_review,
+                        review_count=int(review_summary.get("count") or 0) + (1 if template_review else 0),
                     )
                 )
     return clips
@@ -292,47 +347,146 @@ def print_clip_list(clips: list[ReviewClip], *, limit: int | None = None) -> Non
     print(f"clips_shown={len(shown)} total_clips={len(clips)}")
 
 
-def _html_path(path_text: str, output_path: Path) -> str:
-    if not path_text:
-        return ""
-    path = Path(normalize_project_path(path_text))
-    if not path.is_absolute():
-        path = PROJECT_ROOT / path
-    try:
-        return html.escape(str(path.relative_to(output_path.parent)))
-    except ValueError:
-        return html.escape(str(path))
-
-
 def render_html(clips: list[ReviewClip], output_path: Path) -> str:
+    total_count = len(clips)
+    reviewed_count = sum(1 for clip in clips if clip.latest_review)
+    missing_video_count = sum(
+        1 for clip in clips
+        if not clip.video_path or not resolve_video_path(clip.video_path).exists()
+    )
+    case_counts: dict[str, int] = {}
+    scenario_counts: dict[str, int] = {}
+    for clip in clips:
+        case_counts[clip.case_id] = case_counts.get(clip.case_id, 0) + 1
+        scenario_label = f"{clip.scenario_id} / {clip.content_type or '-'}"
+        scenario_counts[scenario_label] = scenario_counts.get(scenario_label, 0) + 1
+
+    case_options = "\n".join(
+        f'<option value="{html.escape(case_id)}">{html.escape(case_id)} ({count})</option>'
+        for case_id, count in sorted(case_counts.items())
+    )
+    scenario_options = "\n".join(
+        f'<option value="{html.escape(label)}">{html.escape(label)} ({count})</option>'
+        for label, count in sorted(scenario_counts.items())
+    )
+    case_summary = ", ".join(f"{case_id}: {count}" for case_id, count in sorted(case_counts.items()))
+    scenario_summary = ", ".join(f"{label}: {count}" for label, count in sorted(scenario_counts.items()))
+
     rows = []
     for clip in clips:
         latest = clip.latest_review or {}
         penalties = _penalty_summary(clip.local_features)
-        video_src = _html_path(clip.video_path, output_path)
-        video_html = (
-            f'<video controls preload="metadata" src="{video_src}"></video>'
+        resolved_video_path = resolve_video_path(clip.video_path) if clip.video_path else None
+        video_exists = bool(resolved_video_path and resolved_video_path.exists())
+        video_src = make_video_src(clip.video_path, output_path)
+        mime_type = video_mime_type(clip.video_path)
+        video_path_display = clip.video_path or "-"
+        open_video_link = (
+            f'<a href="{html.escape(video_src)}">open video file</a>'
             if video_src
-            else '<div class="missing">No video file path</div>'
+            else ""
         )
+        if video_src:
+            video_html = (
+                '<video controls preload="metadata">'
+                f'<source src="{html.escape(video_src)}" type="{html.escape(mime_type)}">'
+                "Your browser cannot play this video format."
+                "</video>"
+            )
+        else:
+            missing_detail = clip.video_path or "No video path was recorded for this clip."
+            video_html = (
+                '<div class="missing-video">'
+                "<strong>missing video file</strong>"
+                f"<span>Expected: {html.escape(missing_detail)}</span>"
+                "</div>"
+            )
+
+        search_text = " ".join(
+            [
+                clip.clip_id,
+                clip.case_id,
+                clip.scenario_id,
+                clip.content_type,
+                clip.expected_content_type,
+                clip.transcript_excerpt,
+                " ".join(clip.selection_reasons),
+                clip.video_path,
+            ]
+        )
+        scenario_label = f"{clip.scenario_id} / {clip.content_type or '-'}"
+        score_value = float(clip.final_score or 0.0)
+        start_value = float(clip.start or 0.0)
+        duration_value = float(clip.duration or 0.0)
+        review_status = "reviewed" if clip.latest_review else "unreviewed"
         rows.append(
             f"""
-            <article class="clip">
-              <div class="meta">
-                <code>{html.escape(clip.clip_id)}</code>
-                <span>{html.escape(clip.case_id)} / {html.escape(clip.scenario_id)}</span>
-                <span>{html.escape(clip.start_label)} - {html.escape(clip.end_label)}</span>
+            <article class="clip"
+              data-clip-id="{html.escape(clip.clip_id)}"
+              data-case="{html.escape(clip.case_id)}"
+              data-scenario-label="{html.escape(scenario_label)}"
+              data-status="{review_status}"
+              data-score="{score_value:.6f}"
+              data-start="{start_value:.6f}"
+              data-duration="{duration_value:.6f}"
+              data-search="{html.escape(search_text.lower())}">
+              <div class="clip-header">
+                <div>
+                  <code>{html.escape(clip.clip_id)}</code>
+                  <button type="button" class="copy-btn" data-copy="{html.escape(clip.clip_id)}">copy id</button>
+                </div>
+                <span>{html.escape(clip.case_id)}</span>
+                <span>{html.escape(scenario_label)}</span>
+                <span>{html.escape(clip.start_label)} - {html.escape(clip.end_label)} ({duration_value:.1f}s)</span>
                 <span>score: {html.escape(str(clip.final_score or ""))}</span>
-                <span class="status">{'reviewed' if clip.latest_review else 'unreviewed'}</span>
+                <span class="status">{review_status}</span>
               </div>
-              {video_html}
-              <p>{html.escape(clip.transcript_excerpt or '')}</p>
-              <dl>
-                <dt>Reasons</dt><dd>{html.escape(', '.join(clip.selection_reasons) or '-')}</dd>
-                <dt>Features</dt><dd><pre>{html.escape(json.dumps(penalties, ensure_ascii=False, indent=2))}</pre></dd>
-                <dt>Video path</dt><dd>{html.escape(clip.video_path or '-')}</dd>
-                <dt>Latest review</dt><dd><pre>{html.escape(json.dumps(latest, ensure_ascii=False, indent=2))}</pre></dd>
-              </dl>
+              <div class="clip-body">
+                <section class="preview">
+                  {video_html}
+                  <div class="video-path">
+                    <span>{html.escape(video_path_display)}</span>
+                    <button type="button" class="copy-btn" data-copy="{html.escape(video_path_display)}">copy path</button>
+                    {open_video_link}
+                  </div>
+                </section>
+                <section class="details">
+                  <p class="excerpt">{html.escape(clip.transcript_excerpt or '')}</p>
+                  <p><strong>Reasons:</strong> {html.escape(', '.join(clip.selection_reasons) or '-')}</p>
+                  <details>
+                    <summary>features / penalties</summary>
+                    <pre>{html.escape(json.dumps(penalties, ensure_ascii=False, indent=2))}</pre>
+                  </details>
+                  <details {'open' if latest else ''}>
+                    <summary>latest review ({clip.review_count})</summary>
+                    <pre>{html.escape(json.dumps(latest, ensure_ascii=False, indent=2) if latest else 'No JSONL review yet.')}</pre>
+                  </details>
+                  <section class="review-form" data-clip-id="{html.escape(clip.clip_id)}">
+                    <h3>Review</h3>
+                    <label>rating
+                      <select class="review-rating" aria-label="rating">
+                        <option value="1">1</option>
+                        <option value="2">2</option>
+                        <option value="3" selected>3</option>
+                        <option value="4">4</option>
+                        <option value="5">5</option>
+                      </select>
+                    </label>
+                    <label><input type="checkbox" class="review-good-clip"> good_clip</label>
+                    <label><input type="checkbox" class="review-boundary-issue"> boundary_issue</label>
+                    <label><input type="checkbox" class="review-boring-setup"> boring_setup</label>
+                    <label><input type="checkbox" class="review-no-payoff"> no_payoff</label>
+                    <label><input type="checkbox" class="review-too-context-dependent"> too_context_dependent</label>
+                    <label>notes
+                      <textarea class="review-notes" rows="3" placeholder="What worked or failed?"></textarea>
+                    </label>
+                    <label>command preview
+                      <textarea class="review-command" rows="4" readonly></textarea>
+                    </label>
+                    <button type="button" class="copy-review-command">Copy review command</button>
+                  </section>
+                </section>
+              </div>
             </article>
             """
         )
@@ -345,16 +499,30 @@ def render_html(clips: list[ReviewClip], output_path: Path) -> str:
   <title>AI Virtual Cutter Review Dashboard</title>
   <style>
     body {{ font-family: system-ui, sans-serif; margin: 24px; background: #f6f7f9; color: #1f2933; }}
-    header {{ max-width: 1100px; margin: 0 auto 20px; }}
-    .clip {{ max-width: 1100px; margin: 0 auto 16px; padding: 16px; background: white; border: 1px solid #d8dee8; border-radius: 8px; }}
-    .meta {{ display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; }}
-    .meta span, code {{ background: #eef2f7; padding: 3px 6px; border-radius: 4px; }}
+    header, .toolbar, .summary {{ max-width: 1240px; margin: 0 auto 16px; }}
+    .toolbar, .summary {{ background: white; border: 1px solid #d8dee8; border-radius: 8px; padding: 14px; }}
+    .toolbar-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; }}
+    label {{ display: grid; gap: 4px; font-size: 0.92rem; }}
+    input[type="search"], select, textarea {{ font: inherit; padding: 7px; border: 1px solid #cbd5e1; border-radius: 6px; }}
+    button {{ font: inherit; padding: 6px 9px; border: 1px solid #b8c2d1; border-radius: 6px; background: #f8fafc; cursor: pointer; }}
+    button:hover {{ background: #eef2f7; }}
+    .clip {{ max-width: 1240px; margin: 0 auto 16px; padding: 16px; background: white; border: 1px solid #d8dee8; border-radius: 8px; }}
+    .clip[hidden] {{ display: none; }}
+    .clip-header {{ display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; }}
+    .clip-header span, code {{ background: #eef2f7; padding: 3px 6px; border-radius: 4px; }}
+    .clip-body {{ display: grid; grid-template-columns: minmax(220px, 300px) 1fr; gap: 16px; align-items: start; }}
+    @media (max-width: 760px) {{ .clip-body {{ grid-template-columns: 1fr; }} }}
     .status {{ font-weight: 700; }}
-    video {{ width: min(260px, 100%); max-height: 460px; display: block; margin: 8px 0 12px; background: #111827; }}
-    dt {{ font-weight: 700; margin-top: 8px; }}
-    dd {{ margin-left: 0; }}
+    video {{ width: min(280px, 100%); max-height: 500px; display: block; margin: 8px 0 12px; background: #111827; }}
+    .missing-video {{ display: grid; gap: 6px; margin: 8px 0 12px; padding: 12px; background: #fff7ed; color: #8a3b12; border: 1px solid #fed7aa; border-radius: 8px; }}
+    .video-path {{ display: grid; gap: 6px; font-size: 0.9rem; word-break: break-word; }}
+    .excerpt {{ line-height: 1.45; }}
+    .review-form {{ margin-top: 14px; padding-top: 12px; border-top: 1px solid #e2e8f0; display: grid; gap: 8px; }}
+    .review-form h3 {{ margin: 0; }}
+    .review-form label:has(input[type="checkbox"]) {{ display: inline-flex; gap: 6px; align-items: center; margin-right: 12px; }}
     pre {{ white-space: pre-wrap; background: #f3f4f6; padding: 8px; border-radius: 6px; overflow-x: auto; }}
-    .missing {{ color: #7b8794; margin: 8px 0 12px; }}
+    .counts {{ display: flex; gap: 10px; flex-wrap: wrap; }}
+    .counts span {{ background: #eef2f7; padding: 4px 7px; border-radius: 4px; }}
   </style>
 </head>
 <body>
@@ -362,7 +530,172 @@ def render_html(clips: list[ReviewClip], output_path: Path) -> str:
     <h1>AI Virtual Cutter Review Dashboard</h1>
     <p>Use <code>python review_dashboard.py add-review --clip-id CLIP_ID --rating 4 --good-clip true --notes "..."</code> to append feedback to <code>benchmarks/human_reviews.jsonl</code>.</p>
   </header>
+  <section class="summary">
+    <div class="counts">
+      <span>total clips: <strong id="visibleCount">{total_count}</strong> / {total_count}</span>
+      <span>reviewed clips: {reviewed_count}</span>
+      <span>unreviewed clips: {total_count - reviewed_count}</span>
+      <span>missing video files: {missing_video_count}</span>
+    </div>
+    <p><strong>case_id counts:</strong> {html.escape(case_summary or '-')}</p>
+    <p><strong>scenario/content_type counts:</strong> {html.escape(scenario_summary or '-')}</p>
+  </section>
+  <section class="toolbar">
+    <div class="toolbar-grid">
+      <label>Search
+        <input id="searchInput" type="search" placeholder="clip_id, transcript, reasons, video path">
+      </label>
+      <label>Status
+        <select id="statusFilter">
+          <option value="all">all</option>
+          <option value="reviewed">reviewed</option>
+          <option value="unreviewed">unreviewed</option>
+        </select>
+      </label>
+      <label>Case
+        <select id="caseFilter">
+          <option value="all">all cases</option>
+          {case_options}
+        </select>
+      </label>
+      <label>Scenario / content type
+        <select id="scenarioFilter">
+          <option value="all">all scenarios</option>
+          {scenario_options}
+        </select>
+      </label>
+      <label>Sort
+        <select id="sortControl">
+          <option value="score_desc">score descending</option>
+          <option value="score_asc">score ascending</option>
+          <option value="start_asc">start time ascending</option>
+          <option value="start_desc">start time descending</option>
+          <option value="duration_desc">duration</option>
+          <option value="reviewed_first">reviewed/unreviewed</option>
+          <option value="unreviewed_first">unreviewed/reviewed</option>
+        </select>
+      </label>
+    </div>
+  </section>
+  <main id="clipList">
   {body}
+  </main>
+  <script>
+    const clipList = document.getElementById('clipList');
+    const clips = Array.from(document.querySelectorAll('.clip'));
+    const searchInput = document.getElementById('searchInput');
+    const statusFilter = document.getElementById('statusFilter');
+    const caseFilter = document.getElementById('caseFilter');
+    const scenarioFilter = document.getElementById('scenarioFilter');
+    const sortControl = document.getElementById('sortControl');
+    const visibleCount = document.getElementById('visibleCount');
+
+    function shellQuote(value) {{
+      const text = String(value || '');
+      if (/^[a-zA-Z0-9_./:@=-]+$/.test(text)) return text;
+      return JSON.stringify(text);
+    }}
+
+    function boolText(value) {{
+      return value ? 'true' : 'false';
+    }}
+
+    function buildReviewCommand(form) {{
+      const clipId = form.dataset.clipId;
+      const rating = form.querySelector('.review-rating').value;
+      const goodClip = form.querySelector('.review-good-clip').checked;
+      const boundaryIssue = form.querySelector('.review-boundary-issue').checked;
+      const boringSetup = form.querySelector('.review-boring-setup').checked;
+      const noPayoff = form.querySelector('.review-no-payoff').checked;
+      const tooContextDependent = form.querySelector('.review-too-context-dependent').checked;
+      const notes = form.querySelector('.review-notes').value;
+      return [
+        'python review_dashboard.py add-review',
+        '--clip-id ' + shellQuote(clipId),
+        '--rating ' + shellQuote(rating),
+        '--good-clip ' + boolText(goodClip),
+        '--boundary-issue ' + boolText(boundaryIssue),
+        '--boring-setup ' + boolText(boringSetup),
+        '--no-payoff ' + boolText(noPayoff),
+        '--too-context-dependent ' + boolText(tooContextDependent),
+        '--notes ' + shellQuote(notes)
+      ].join(' ');
+    }}
+
+    function updateReviewCommand(form) {{
+      form.querySelector('.review-command').value = buildReviewCommand(form);
+    }}
+
+    document.querySelectorAll('.review-form').forEach((form) => {{
+      form.addEventListener('input', () => updateReviewCommand(form));
+      form.addEventListener('change', () => updateReviewCommand(form));
+      updateReviewCommand(form);
+    }});
+
+    function copyText(text) {{
+      if (navigator.clipboard && navigator.clipboard.writeText) {{
+        navigator.clipboard.writeText(text);
+      }} else {{
+        const textarea = document.createElement('textarea');
+        textarea.value = text;
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        textarea.remove();
+      }}
+    }}
+
+    document.addEventListener('click', (event) => {{
+      const copyButton = event.target.closest('[data-copy]');
+      if (copyButton) {{
+        copyText(copyButton.dataset.copy || '');
+      }}
+      const commandButton = event.target.closest('.copy-review-command');
+      if (commandButton) {{
+        const form = commandButton.closest('.review-form');
+        updateReviewCommand(form);
+        copyText(form.querySelector('.review-command').value);
+      }}
+    }});
+
+    function applyFiltersAndSort() {{
+      const query = searchInput.value.trim().toLowerCase();
+      const status = statusFilter.value;
+      const caseValue = caseFilter.value;
+      const scenarioValue = scenarioFilter.value;
+      let visible = 0;
+
+      clips.forEach((clip) => {{
+        const matchesQuery = !query || clip.dataset.search.includes(query);
+        const matchesStatus = status === 'all' || clip.dataset.status === status;
+        const matchesCase = caseValue === 'all' || clip.dataset.case === caseValue;
+        const matchesScenario = scenarioValue === 'all' || clip.dataset.scenarioLabel === scenarioValue;
+        const show = matchesQuery && matchesStatus && matchesCase && matchesScenario;
+        clip.hidden = !show;
+        if (show) visible += 1;
+      }});
+
+      const sorted = [...clips].sort((left, right) => {{
+        const sort = sortControl.value;
+        if (sort === 'score_asc') return Number(left.dataset.score) - Number(right.dataset.score);
+        if (sort === 'score_desc') return Number(right.dataset.score) - Number(left.dataset.score);
+        if (sort === 'start_asc') return Number(left.dataset.start) - Number(right.dataset.start);
+        if (sort === 'start_desc') return Number(right.dataset.start) - Number(left.dataset.start);
+        if (sort === 'duration_desc') return Number(right.dataset.duration) - Number(left.dataset.duration);
+        if (sort === 'reviewed_first') return left.dataset.status.localeCompare(right.dataset.status);
+        if (sort === 'unreviewed_first') return right.dataset.status.localeCompare(left.dataset.status);
+        return 0;
+      }});
+      sorted.forEach((clip) => clipList.appendChild(clip));
+      visibleCount.textContent = String(visible);
+    }}
+
+    [searchInput, statusFilter, caseFilter, scenarioFilter, sortControl].forEach((control) => {{
+      control.addEventListener('input', applyFiltersAndSort);
+      control.addEventListener('change', applyFiltersAndSort);
+    }});
+    applyFiltersAndSort();
+  </script>
 </body>
 </html>
 """
