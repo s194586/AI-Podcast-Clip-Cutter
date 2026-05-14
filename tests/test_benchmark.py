@@ -8,7 +8,9 @@ from unittest.mock import patch
 
 from benchmark import (
     BenchmarkCase,
+    build_next_human_review_targets,
     count_overlapping_windows,
+    extract_human_review_rows_from_results,
     load_cases,
     merge_human_review_rows,
     summarize_human_review,
@@ -357,6 +359,79 @@ class BenchmarkHelpersTests(unittest.TestCase):
         self.assertEqual(len(archived), 1)
         self.assertEqual(archived[0]["case_id"], "case_b")
         self.assertEqual(archived[0]["human_crop_score"], "5")
+
+    def test_extract_human_review_rows_from_results_recovers_scored_rows(self):
+        payload = {
+            "human_review": {
+                "scored_rows": [
+                    {
+                        "case_id": "case_old",
+                        "case_label": "Old Case",
+                        "expected_content_type": "gameplay",
+                        "scenario_id": "auto",
+                        "scenario_label": "auto classification",
+                        "clip_index": 1,
+                        "clip_start": "00:10.00",
+                        "clip_end": "00:40.00",
+                        "local_score": 91.2,
+                        "clip_file": "benchmarks/runs/old/case_old/auto/clip.mp4",
+                        "human_relevance_score": 4,
+                        "human_boundary_score": 3,
+                        "human_crop_score": 5,
+                        "notes": "historical score",
+                        "local_features": {"ignored": True},
+                    }
+                ]
+            }
+        }
+        rows = extract_human_review_rows_from_results(payload)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["case_id"], "case_old")
+        self.assertEqual(rows[0]["human_relevance_score"], 4)
+        self.assertNotIn("local_features", rows[0])
+
+    def test_next_human_review_targets_prioritize_auto_core_cases(self):
+        rows = [
+            {
+                "case_id": "roman_giertych_commentary",
+                "expected_content_type": "commentary",
+                "scenario_id": "auto",
+                "clip_index": "1",
+                "clip_start": "00:10.00",
+                "clip_end": "00:40.00",
+                "local_score": "90",
+                "human_relevance_score": "",
+                "human_boundary_score": "",
+                "human_crop_score": "",
+            },
+            {
+                "case_id": "emeritos_gameplay",
+                "expected_content_type": "gameplay",
+                "scenario_id": "auto",
+                "clip_index": "1",
+                "clip_start": "00:10.00",
+                "clip_end": "00:40.00",
+                "local_score": "88",
+                "human_relevance_score": "",
+                "human_boundary_score": "",
+                "human_crop_score": "",
+            },
+            {
+                "case_id": "canva_presentation_tutorial",
+                "expected_content_type": "tutorial",
+                "scenario_id": "manual_tutorial",
+                "clip_index": "1",
+                "clip_start": "00:10.00",
+                "clip_end": "00:40.00",
+                "local_score": "95",
+                "human_relevance_score": "",
+                "human_boundary_score": "",
+                "human_crop_score": "",
+            },
+        ]
+        targets = build_next_human_review_targets(rows)
+        self.assertEqual(targets[0]["case_id"], "emeritos_gameplay")
+        self.assertEqual(targets[0]["scenario_id"], "auto")
 
     def test_summarize_human_review_ignores_blank_rows_and_counts_auto(self):
         review_rows = [

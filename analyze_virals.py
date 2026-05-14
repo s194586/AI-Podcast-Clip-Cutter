@@ -551,15 +551,114 @@ def boundary_end_for_time(sentences, value):
     return min(ends, key=lambda item: abs(item - value))
 
 
-def enforce_story_bounds(start, end, context, fallback, max_duration):
+GAMEPLAY_LOW_VALUE_LEAD_TOKENS = {
+    "buy",
+    "case",
+    "changer",
+    "czekam",
+    "czekamy",
+    "czekania",
+    "chodze",
+    "chodzę",
+    "chodzenie",
+    "eco",
+    "ide",
+    "idę",
+    "menu",
+    "promo",
+    "reklama",
+    "rotate",
+    "rotacja",
+    "setup",
+    "skin",
+    "skiny",
+    "skrzynie",
+    "smoke",
+    "sponsor",
+    "utility",
+    "walk",
+}
+
+GAMEPLAY_PAYOFF_TOKENS = {
+    "ace",
+    "boom",
+    "clutch",
+    "dead",
+    "defuse",
+    "frag",
+    "headshot",
+    "hit",
+    "kill",
+    "lezy",
+    "nice",
+    "padl",
+    "plant",
+    "strzela",
+    "trafilem",
+    "trafiony",
+    "win",
+    "zabil",
+    "zabilem",
+}
+
+
+def _words(text):
+    return re.findall(r"[^\W_]+(?:['-][^\W_]+)*", str(text or "").lower(), flags=re.UNICODE)
+
+
+def _contains_any_token(text, tokens):
+    return bool(set(_words(text)).intersection(tokens))
+
+
+def _contains_any_phrase(text, phrases):
+    lower_text = str(text or "").lower()
+    return any(phrase in lower_text for phrase in phrases)
+
+
+def _is_low_value_gameplay_lead(text):
+    return _contains_any_token(text, GAMEPLAY_LOW_VALUE_LEAD_TOKENS) or _contains_any_phrase(
+        text,
+        (
+            "buy menu",
+            "full buy",
+            "kod promo",
+            "link w opisie",
+            "materiał sponsorowany",
+            "material sponsorowany",
+            "x changer",
+            "x-changer",
+        ),
+    )
+
+
+def _has_gameplay_payoff(text):
+    return _contains_any_token(text, GAMEPLAY_PAYOFF_TOKENS) or _contains_any_phrase(
+        text,
+        (
+            "enemy down",
+            "round win",
+            "round won",
+            "zabijam go",
+            "zabili go",
+        ),
+    )
+
+
+def enforce_story_bounds_with_metadata(start, end, context, fallback, max_duration):
     if not context:
-        return fallback["start"], fallback["end"], ["No transcript context found, keeping heatmap window."]
+        return (
+            fallback["start"],
+            fallback["end"],
+            ["No transcript context found, keeping heatmap window."],
+            {"max_duration_clamped": False},
+        )
 
     context_start = context[0]["start"]
     context_end = context[-1]["end"]
     adjusted_start = boundary_start_for_time(context, clamp(start, context_start, context_end))
     adjusted_end = boundary_end_for_time(context, clamp(end, context_start, context_end))
     decisions = []
+    max_duration_clamped = False
 
     if adjusted_start != start:
         decisions.append(f"Moved hook to sentence start: {format_time(adjusted_start)}.")
@@ -572,6 +671,7 @@ def enforce_story_bounds(start, end, context, fallback, max_duration):
         decisions.append("AI returned invalid bounds, fallback to original heatmap window.")
 
     if adjusted_end - adjusted_start > max_duration:
+        max_duration_clamped = True
         limit = adjusted_start + max_duration
         safe_ends = [item["end"] for item in context if adjusted_start < item["end"] <= limit]
         if safe_ends:
@@ -588,7 +688,95 @@ def enforce_story_bounds(start, end, context, fallback, max_duration):
                 f"Moved hook from {format_time(old_start)} to {format_time(adjusted_start)} to respect {max_duration:.0f}s."
             )
 
+    return adjusted_start, adjusted_end, decisions, {"max_duration_clamped": max_duration_clamped}
+
+
+def enforce_story_bounds(start, end, context, fallback, max_duration):
+    adjusted_start, adjusted_end, decisions, _metadata = enforce_story_bounds_with_metadata(
+        start,
+        end,
+        context,
+        fallback,
+        max_duration,
+    )
     return adjusted_start, adjusted_end, decisions
+
+
+def trim_gameplay_low_value_lead(start, end, context, *, min_duration):
+    if not context:
+        return start, []
+    inside = [item for item in context if item["end"] > start and item["start"] < end]
+    if len(inside) < 2:
+        return start, []
+
+    first_payoff = None
+    low_value_prefix = []
+    for item in inside:
+        if item["end"] <= start:
+            continue
+        if _has_gameplay_payoff(item.get("text", "")):
+            first_payoff = item
+            break
+        if _is_low_value_gameplay_lead(item.get("text", "")):
+            low_value_prefix.append(item)
+            continue
+        break
+
+    if first_payoff is None or not low_value_prefix:
+        return start, []
+
+    pre_roll_seconds = 2.0
+    proposed_start = max(start, float(first_payoff["start"]) - pre_roll_seconds)
+    if end - proposed_start < min_duration:
+        proposed_start = max(start, end - min_duration)
+
+    if proposed_start <= start + 0.5:
+        return start, []
+    return proposed_start, [
+        (
+            "Trimmed low-value gameplay setup before the action while keeping a short pre-roll "
+            f"from {format_time(start)} to {format_time(proposed_start)}."
+        )
+    ]
+
+
+def refine_story_bounds_for_strategy(
+    start,
+    end,
+    context,
+    fallback,
+    max_duration,
+    *,
+    min_duration=20.0,
+    strategy_name="generic",
+):
+    adjusted_start, adjusted_end, decisions, metadata = enforce_story_bounds_with_metadata(
+        start,
+        end,
+        context,
+        fallback,
+        max_duration,
+    )
+    if strategy_name == "gameplay":
+        trimmed_start, trim_decisions = trim_gameplay_low_value_lead(
+            adjusted_start,
+            adjusted_end,
+            context,
+            min_duration=min_duration,
+        )
+        if trim_decisions:
+            adjusted_start = trimmed_start
+            decisions.extend(trim_decisions)
+
+    if adjusted_end - adjusted_start > max_duration:
+        metadata["max_duration_clamped"] = True
+        adjusted_end = adjusted_start + max_duration
+        adjusted_end = boundary_end_for_time(context, adjusted_end) if context else adjusted_end
+        if adjusted_end - adjusted_start > max_duration:
+            adjusted_end = adjusted_start + max_duration
+        decisions.append(f"Clamped refined clip to {max_duration:.0f}s maximum duration.")
+
+    return adjusted_start, adjusted_end, decisions, metadata
 
 
 def build_candidate_packet(window, sentences, context_margin):
@@ -657,8 +845,25 @@ def rerank_candidates_with_ai_batch(candidate_pool, sentences, *, top_count, mod
     }
 
 
-def build_fallback_window(window, sentences, context, max_duration, error_message):
-    start, end, adjustments = enforce_story_bounds(window["start"], window["end"], context, window, max_duration)
+def build_fallback_window(
+    window,
+    sentences,
+    context,
+    max_duration,
+    error_message,
+    *,
+    min_duration=20.0,
+    strategy_name="generic",
+):
+    start, end, adjustments, boundary_metadata = refine_story_bounds_for_strategy(
+        window["start"],
+        window["end"],
+        context,
+        window,
+        max_duration,
+        min_duration=min_duration,
+        strategy_name=strategy_name,
+    )
     text = collect_text_for_window(sentences, start, end)
     fallback = dict(window)
     fallback.update(
@@ -675,10 +880,47 @@ def build_fallback_window(window, sentences, context, max_duration, error_messag
             "fallback_reason": "Used local transcript bounds after AI refinement failed.",
         }
     )
+    fallback["_boundary_refinement_metadata"] = boundary_metadata
     return fallback, adjustments
 
 
-def build_local_selection(window, sentences, *, index, max_duration, context_margin, reason):
+def _matches_context_boundary(context, value):
+    return any(
+        abs(float(item["start"]) - float(value)) <= 0.02
+        or abs(float(item["end"]) - float(value)) <= 0.02
+        for item in context
+    )
+
+
+def _speaker_turn_boundary_used(context, start, end):
+    if not context:
+        return False
+    start_matches = [
+        item
+        for item in context
+        if abs(float(item["start"]) - float(start)) <= 0.02
+        or abs(float(item["end"]) - float(start)) <= 0.02
+    ]
+    end_matches = [
+        item
+        for item in context
+        if abs(float(item["start"]) - float(end)) <= 0.02
+        or abs(float(item["end"]) - float(end)) <= 0.02
+    ]
+    return bool(start_matches or end_matches)
+
+
+def build_local_selection(
+    window,
+    sentences,
+    *,
+    index,
+    max_duration,
+    context_margin,
+    reason,
+    min_duration=20.0,
+    strategy_name="generic",
+):
     context = collect_context(sentences, window["start"], window["end"], margin=context_margin)
     fallback_window, adjustments = build_fallback_window(
         window,
@@ -686,15 +928,25 @@ def build_local_selection(window, sentences, *, index, max_duration, context_mar
         context,
         max_duration,
         reason,
+        min_duration=min_duration,
+        strategy_name=strategy_name,
     )
+    boundary_extra = fallback_window.pop("_boundary_refinement_metadata", {}) or {}
     boundary_metadata = {
         "original_start": round(float(window["start"]), 4),
         "original_end": round(float(window["end"]), 4),
         "refined_start": round(float(fallback_window["start"]), 4),
         "refined_end": round(float(fallback_window["end"]), 4),
         "boundary_adjustment_reason": adjustments,
-        "sentence_boundary_used": True,
-        "speaker_turn_boundary_used": False,
+        "sentence_boundary_used": bool(
+            context
+            and (
+                _matches_context_boundary(context, fallback_window["start"])
+                or _matches_context_boundary(context, fallback_window["end"])
+            )
+        ),
+        "speaker_turn_boundary_used": _speaker_turn_boundary_used(context, fallback_window["start"], fallback_window["end"]),
+        "max_duration_clamped": bool(boundary_extra.get("max_duration_clamped", False)),
     }
     fallback_window["selection_source"] = "local_ranking"
     fallback_window["selection_reasons"] = window.get("selection_reasons") or []
@@ -730,16 +982,29 @@ def build_local_selection(window, sentences, *, index, max_duration, context_mar
     }
     return fallback_window, decision
 
-def apply_batch_ai_selection(window, ai_choice, sentences, *, index, max_duration, context_margin, overall_reason):
+def apply_batch_ai_selection(
+    window,
+    ai_choice,
+    sentences,
+    *,
+    index,
+    max_duration,
+    context_margin,
+    overall_reason,
+    min_duration=20.0,
+    strategy_name="generic",
+):
     context = collect_context(sentences, window["start"], window["end"], margin=context_margin)
     hook_start_raw = ai_choice.get("hook_start", format_time(window["start"]))
     punchline_end_raw = ai_choice.get("punchline_end", format_time(window["end"]))
-    start, end, adjustments = enforce_story_bounds(
+    start, end, adjustments, boundary_extra = refine_story_bounds_for_strategy(
         parse_time(hook_start_raw),
         parse_time(punchline_end_raw),
         context,
         window,
         max_duration,
+        min_duration=min_duration,
+        strategy_name=strategy_name,
     )
     boundary_metadata = {
         "original_start": round(float(window["start"]), 4),
@@ -747,8 +1012,15 @@ def apply_batch_ai_selection(window, ai_choice, sentences, *, index, max_duratio
         "refined_start": round(float(start), 4),
         "refined_end": round(float(end), 4),
         "boundary_adjustment_reason": adjustments,
-        "sentence_boundary_used": True,
-        "speaker_turn_boundary_used": False,
+        "sentence_boundary_used": bool(
+            context
+            and (
+                _matches_context_boundary(context, start)
+                or _matches_context_boundary(context, end)
+            )
+        ),
+        "speaker_turn_boundary_used": _speaker_turn_boundary_used(context, start, end),
+        "max_duration_clamped": bool(boundary_extra.get("max_duration_clamped", False)),
     }
     text = collect_text_for_window(sentences, start, end)
     refined_window = dict(window)
@@ -880,6 +1152,7 @@ def rerank_cuts_with_ai(
     log_path,
     request_timeout,
     selection_context=None,
+    min_duration=20.0,
 ):
     local_candidate_snapshots = [
         {
@@ -914,6 +1187,11 @@ def rerank_cuts_with_ai(
     }
     if selection_context:
         log["content_routing"] = selection_context
+    strategy_name = (
+        ((selection_context or {}).get("strategy") or {}).get("name")
+        or (selection_context or {}).get("content_type")
+        or "generic"
+    )
     if not candidate_pool:
         log["status"] = "no_windows"
         save_cutting_log(log_path, log)
@@ -983,6 +1261,8 @@ def rerank_cuts_with_ai(
                     max_duration=max_duration,
                     context_margin=context_margin,
                     overall_reason=batch_reason,
+                    min_duration=min_duration,
+                    strategy_name=strategy_name,
                 )
                 final_windows.append(refined_window)
                 decisions.append(decision)
@@ -1007,6 +1287,8 @@ def rerank_cuts_with_ai(
                 max_duration=max_duration,
                 context_margin=context_margin,
                 reason=fallback_reason,
+                min_duration=min_duration,
+                strategy_name=strategy_name,
             )
             final_windows.append(local_window)
             decisions.append(decision)
@@ -1179,6 +1461,7 @@ def main():
             log_path=Path(args.cutting_log),
             request_timeout=args.request_timeout,
             selection_context=content_routing,
+            min_duration=args.min_duration,
         )
         fallback_count = cutting_log.get("clips_with_local_fallback", 0)
         if fallback_count:
@@ -1197,6 +1480,7 @@ def main():
             log_path=Path(args.cutting_log),
             request_timeout=args.request_timeout,
             selection_context=content_routing,
+            min_duration=args.min_duration,
         )
         print("  AI rerank skipped: local_only mode is active.")
 

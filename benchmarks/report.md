@@ -688,29 +688,31 @@
 - `canva_presentation_tutorial/manual_tutorial` -> layout `{'full_frame_blur_background': 5}`, output `1080x1920`, aspect `9:16`, vertical_9_16 `True`
 - `canva_presentation_tutorial/compare_generic` -> layout `{'safe_center_crop': 5}`, output `1080x1920`, aspect `9:16`, vertical_9_16 `True`
 
-## Human Review Findings
+## Human Review / Selection Quality
 
 - Records with complete human scores: `5`
+- Minimum recommended complete records before weight tuning: `10`
+- Human-review signal is still small, so this iteration uses conservative rules and diagnostics rather than aggressive weight tuning.
 - Auto records with complete human scores: `5`
+- Current template complete records: `1` / `110`; archive complete records: `4` / `4`
 - Average human scores: relevance `2.60`, boundary `2.80`, crop `3.80`
-- Reviewed rows currently come from run ids: `20260511_152536, 20260513_235701`
 
 ### Reviewed Averages
 
-- Content type `gameplay`: relevance `2.60`, boundary `2.80`, crop `3.80`
-- Scenario `auto`: relevance `2.60`, boundary `2.80`, crop `3.80`
+- Content type `gameplay` (`n=5`): relevance `2.60`, boundary `2.80`, crop `3.80`
+- Scenario `auto` (`n=5`): relevance `2.60`, boundary `2.80`, crop `3.80`
 
 ### Note Issues
 
-- `boundary too early / too long`: `3`
+- `bad boundary`: `3`
 - `buy menu`: `2`
 - `weak payoff`: `2`
 - `setup / waiting`: `2`
-- `ad / sponsor-like segment`: `1`
+- `smoke / utility`: `2`
 
 ### Data-Backed Top Problems
 
-- Scoring chooses setup / ad-like / weak-payoff clips too often. (`score=9.40`)
+- Scoring chooses setup / ad-like / weak-payoff clips too often. (`score=11.40`)
 - Clip boundaries still start too early or end too weakly. (`score=5.20`)
 - Crop / framing still hurts readability on reviewed clips. (`score=1.20`)
 
@@ -722,16 +724,52 @@
 
 ### Iteration Changes
 
-- Benchmark now preserves existing human review rows when regenerating `benchmarks/human_review_template.csv` and includes reviewed rows from earlier runs instead of wiping them.
-- Human review is now merged into `benchmarks/results.json` and `benchmarks/report.md`, including averages, reviewed outliers, note issue counts and data-backed top problems.
-- Gameplay local scoring now lightly penalizes sponsor-like clips, setup/waiting windows and weak-payoff segments instead of rewarding them mostly on heatmap plus chatter.
-- Selection outputs now carry boundary metadata, and cutter logs now record whether sentence-boundary refinement was used for each clip.
-- Rendering is now content-aware per material type: tutorial uses a 9:16 full-frame blur-background layout, gameplay uses a safer gameplay-priority crop, podcast keeps face-driven framing, commentary stays stable and generic falls back to safe center crop.
+- Human review preservation now also recovers complete scored rows from the previous `benchmarks/results.json`, so historical manual scores are archived even if the CSV archive file is missing.
+- The report now marks small human-review samples explicitly and lists the next clips to review instead of presenting low-N tuning as statistically strong.
+- Local scoring adds conservative penalties for ad/sponsor-like text, gameplay setup/waiting/smoke/utility, weak payoff, too much preamble and contextless talk-led clips.
+- Local scoring adds small positive signals for gameplay action/payoff, tutorial instructions, podcast question-response shape and complete commentary thoughts.
+- Boundary refinement now records `max_duration_clamped` and can trim a low-value gameplay opening when a later action/payoff remains inside the clip.
+
+### Ranking Movement
+
+- Not enough complete human review exists to claim a statistically strong ranking improvement. Use the next review pass to verify whether the new penalties demote setup/ad-like/weak-payoff clips.
+
+### Next Human Review Targets
+
+- `emeritos_gameplay/auto` clip `1` (18:03.49 - 18:35.79) | expected `gameplay` | local `95.95`
+- `canva_presentation_tutorial/auto` clip `1` (07:31.31 - 08:07.91) | expected `tutorial` | local `67.14`
+- `magenta_team_podcast/auto` clip `1` (02:10.86 - 02:46.86) | expected `podcast` | local `85.58`
+- `ukraine_war_report/auto` clip `1` (17:40.72 - 18:16.46) | expected `commentary` | local `83.0`
+- `putin_parade_commentary/auto` clip `1` (06:57.53 - 07:47.13) | expected `commentary` | local `73.9`
+- `roman_giertych_commentary/auto` clip `1` (19:54.36 - 20:31.18) | expected `commentary` | local `80.4`
+- `emeritos_gameplay/auto` clip `2` (05:37.91 - 06:14.94) | expected `gameplay` | local `94.29`
+- `emeritos_gameplay/auto` clip `4` (04:14.05 - 04:59.95) | expected `gameplay` | local `92.7`
+- `emeritos_gameplay/auto` clip `5` (15:02.36 - 15:33.76) | expected `gameplay` | local `92.36`
+- `canva_presentation_tutorial/auto` clip `2` (25:46.46 - 26:22.20) | expected `tutorial` | local `66.87`
+- `canva_presentation_tutorial/auto` clip `3` (09:56.17 - 10:31.10) | expected `tutorial` | local `66.6`
+- `canva_presentation_tutorial/auto` clip `4` (17:25.96 - 18:01.94) | expected `tutorial` | local `66.07`
 
 - Biggest remaining problem after this iteration: `scoring` (Scoring chooses setup / ad-like / weak-payoff clips too often.)
 
+## Selection Quality Tuning
+
+- Complete human-review records available: `5`
+- Tuning basis: defensive heuristics plus the existing human-review notes; the scored sample is too small for aggressive weight tuning.
+- Scoring changes: ad/sponsor, buy-menu, setup/waiting, smoke/utility, weak-payoff, long-preamble and contextless-fragment penalties; small boosts for gameplay action/payoff, tutorial instruction language, podcast dialogue shape and complete commentary thoughts.
+- Boundary metadata: `original_start`, `original_end`, `refined_start`, `refined_end`, `boundary_adjustment_reason`, `sentence_boundary_used`, `speaker_turn_boundary_used`, `max_duration_clamped`.
+- Boundary behavior: talk-led clips are aligned to transcript sentence/segment boundaries; gameplay clips can trim low-value setup while keeping a short pre-roll before action.
+- Fresh human review should prioritize:
+  - `emeritos_gameplay/auto` clip `1` (18:03.49 - 18:35.79) | expected `gameplay` | local `95.95`
+  - `canva_presentation_tutorial/auto` clip `1` (07:31.31 - 08:07.91) | expected `tutorial` | local `67.14`
+  - `magenta_team_podcast/auto` clip `1` (02:10.86 - 02:46.86) | expected `podcast` | local `85.58`
+  - `ukraine_war_report/auto` clip `1` (17:40.72 - 18:16.46) | expected `commentary` | local `83.0`
+  - `putin_parade_commentary/auto` clip `1` (06:57.53 - 07:47.13) | expected `commentary` | local `73.9`
+  - `roman_giertych_commentary/auto` clip `1` (19:54.36 - 20:31.18) | expected `commentary` | local `80.4`
+  - `emeritos_gameplay/auto` clip `2` (05:37.91 - 06:14.94) | expected `gameplay` | local `94.29`
+  - `emeritos_gameplay/auto` clip `4` (04:14.05 - 04:59.95) | expected `gameplay` | local `92.7`
+
 ## Recommendation
 
-- Next step: `scoring`
-- Title: Keep tuning local scoring against low-payoff selections
-- Why: Human review still shows more relevance problems than routing or rendering problems.
+- Next step: `more_human_review`
+- Title: Score more benchmark clips before stronger tuning
+- Why: Only 5 complete human-review records are available; at least 10 are recommended before larger scoring changes.

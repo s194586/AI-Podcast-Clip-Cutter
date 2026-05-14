@@ -53,13 +53,25 @@ HUMAN_REVIEW_KEY_FIELDS = (
     "clip_start",
     "clip_end",
 )
+MIN_HUMAN_REVIEW_RECORDS_FOR_TUNING = 10
+HUMAN_REVIEW_TARGET_CASE_PRIORITY = {
+    "emeritos_gameplay": 0,
+    "canva_presentation_tutorial": 1,
+    "magenta_team_podcast": 2,
+    "ukraine_war_report": 3,
+    "putin_parade_commentary": 4,
+    "roman_giertych_commentary": 5,
+}
 HUMAN_REVIEW_NOTE_PATTERNS = {
-    "buy menu": ("buy menu",),
-    "setup / waiting": ("setup", "czekania", "waiting", "smoke", "chodzenia", "chodzenie", "utility"),
     "ad / sponsor-like segment": ("reklama", "sponsor", "skin", "skiny", "skrzynie", "promo"),
+    "buy menu": ("buy menu",),
+    "setup / waiting": ("setup", "czekania", "waiting", "chodzenia", "chodzenie", "czekamy"),
+    "smoke / utility": ("smoke", "utility"),
     "weak payoff": ("brak payoffu", "mało wyraźnego payoffu", "payoff nie jest bardzo mocny", "bez payoffu"),
-    "boundary too early / too long": ("za wczesny", "trochę długi", "start/koniec", "ciaśniej", "bez kontekstu"),
-    "crop / framing issue": (
+    "missing context": ("bez kontekstu", "brak kontekstu"),
+    "cut mid-sentence": ("ucięte zdanie", "w środku zdania", "polowie zdania", "połowie zdania"),
+    "bad boundary": ("źle pocięte", "zle pocięte", "start/koniec", "za wczesny", "trochę długi", "ciaśniej"),
+    "fatal crop": (
         "fatalny crop",
         "źle wykadrow",
         "nie widać co się dzieje",
@@ -68,26 +80,28 @@ HUMAN_REVIEW_NOTE_PATTERNS = {
         "ucięty ekran",
     ),
     "too many speakers": ("więcej speakerów niż jest",),
-    "subtitle readability": ("napisy", "subtitles", "czytelność"),
+    "unreadable subtitles": ("nieczytelne napisy", "napisy", "subtitles", "czytelność"),
 }
 HUMAN_REVIEW_CATEGORY_PATTERNS = {
     "scoring": (
+        "ad / sponsor-like segment",
         "buy menu",
         "setup / waiting",
-        "ad / sponsor-like segment",
+        "smoke / utility",
         "weak payoff",
+        "missing context",
     ),
-    "boundary": ("boundary too early / too long",),
-    "crop": ("crop / framing issue",),
+    "boundary": ("missing context", "cut mid-sentence", "bad boundary"),
+    "crop": ("fatal crop",),
     "diarization": ("too many speakers",),
-    "subtitles": ("subtitle readability",),
+    "subtitles": ("unreadable subtitles",),
 }
 ITERATION_CHANGES = [
-    "Benchmark now preserves existing human review rows when regenerating `benchmarks/human_review_template.csv` and includes reviewed rows from earlier runs instead of wiping them.",
-    "Human review is now merged into `benchmarks/results.json` and `benchmarks/report.md`, including averages, reviewed outliers, note issue counts and data-backed top problems.",
-    "Gameplay local scoring now lightly penalizes sponsor-like clips, setup/waiting windows and weak-payoff segments instead of rewarding them mostly on heatmap plus chatter.",
-    "Selection outputs now carry boundary metadata, and cutter logs now record whether sentence-boundary refinement was used for each clip.",
-    "Rendering is now content-aware per material type: tutorial uses a 9:16 full-frame blur-background layout, gameplay uses a safer gameplay-priority crop, podcast keeps face-driven framing, commentary stays stable and generic falls back to safe center crop.",
+    "Human review preservation now also recovers complete scored rows from the previous `benchmarks/results.json`, so historical manual scores are archived even if the CSV archive file is missing.",
+    "The report now marks small human-review samples explicitly and lists the next clips to review instead of presenting low-N tuning as statistically strong.",
+    "Local scoring adds conservative penalties for ad/sponsor-like text, gameplay setup/waiting/smoke/utility, weak payoff, too much preamble and contextless talk-led clips.",
+    "Local scoring adds small positive signals for gameplay action/payoff, tutorial instructions, podcast question-response shape and complete commentary thoughts.",
+    "Boundary refinement now records `max_duration_clamped` and can trim a low-value gameplay opening when a later action/payoff remains inside the clip.",
 ]
 
 
@@ -978,6 +992,42 @@ def row_has_human_input(row: dict[str, Any]) -> bool:
     return bool(str(row.get("notes", "") or "").strip())
 
 
+def row_has_complete_human_scores(row: dict[str, Any]) -> bool:
+    return all(parse_optional_review_score(row.get(field)) is not None for field in HUMAN_REVIEW_SCORE_FIELDS)
+
+
+def extract_human_review_rows_from_results(results_payload: dict[str, Any]) -> list[dict[str, Any]]:
+    human_review = results_payload.get("human_review") if isinstance(results_payload, dict) else None
+    scored_rows = human_review.get("scored_rows", []) if isinstance(human_review, dict) else []
+    rows: list[dict[str, Any]] = []
+    if not isinstance(scored_rows, list):
+        return rows
+
+    fieldnames = [
+        "case_id",
+        "case_label",
+        "expected_content_type",
+        "scenario_id",
+        "scenario_label",
+        "clip_index",
+        "clip_start",
+        "clip_end",
+        "local_score",
+        "clip_file",
+        "human_relevance_score",
+        "human_boundary_score",
+        "human_crop_score",
+        "notes",
+    ]
+    for row in scored_rows:
+        if not isinstance(row, dict):
+            continue
+        preserved = {field: row.get(field, "") for field in fieldnames}
+        if row_has_human_input(preserved):
+            rows.append(preserved)
+    return rows
+
+
 def merge_human_review_rows(
     generated_rows: list[dict[str, Any]],
     existing_rows: list[dict[str, Any]],
@@ -1134,6 +1184,74 @@ def _average_triplet(rows: list[dict[str, Any]]) -> dict[str, float]:
     }
 
 
+def _scenario_review_priority(row: dict[str, Any]) -> int:
+    scenario_id = str(row.get("scenario_id", "") or "")
+    expected_type = str(row.get("expected_content_type", "") or "")
+    if scenario_id == "auto":
+        return 0
+    if scenario_id == f"manual_{expected_type}":
+        return 1
+    if scenario_id.startswith("compare_"):
+        return 2
+    return 3
+
+
+def build_next_human_review_targets(review_rows: list[dict[str, Any]], *, limit: int = 12) -> list[dict[str, Any]]:
+    candidates = [row for row in review_rows if not row_has_complete_human_scores(row)]
+    candidates.sort(
+        key=lambda row: (
+            _scenario_review_priority(row),
+            HUMAN_REVIEW_TARGET_CASE_PRIORITY.get(str(row.get("case_id", "") or ""), 99),
+            str(row.get("case_id", "")),
+            -float(parse_optional_review_score(row.get("local_score")) or 0.0),
+            int(row.get("clip_index", 0) or 0),
+        )
+    )
+
+    ordered_rows = []
+    used_keys = set()
+    for case_id in HUMAN_REVIEW_TARGET_CASE_PRIORITY:
+        row = next(
+            (
+                candidate
+                for candidate in candidates
+                if str(candidate.get("case_id", "") or "") == case_id
+                and str(candidate.get("scenario_id", "") or "") == "auto"
+            ),
+            None,
+        )
+        if row is None:
+            continue
+        key = human_review_row_key(row)
+        used_keys.add(key)
+        ordered_rows.append(row)
+
+    for row in candidates:
+        key = human_review_row_key(row)
+        if key in used_keys:
+            continue
+        used_keys.add(key)
+        ordered_rows.append(row)
+        if len(ordered_rows) >= limit:
+            break
+
+    targets = []
+    for row in ordered_rows[:limit]:
+        targets.append(
+            {
+                "case_id": row.get("case_id", ""),
+                "expected_content_type": row.get("expected_content_type", ""),
+                "scenario_id": row.get("scenario_id", ""),
+                "clip_index": row.get("clip_index", ""),
+                "clip_start": row.get("clip_start", ""),
+                "clip_end": row.get("clip_end", ""),
+                "local_score": row.get("local_score", ""),
+                "clip_file": row.get("clip_file", ""),
+            }
+        )
+    return targets
+
+
 def summarize_human_review(
     review_rows: list[dict[str, Any]],
     current_cases: list[dict[str, Any]],
@@ -1184,6 +1302,11 @@ def summarize_human_review(
         return {
             "scored_record_count": 0,
             "auto_scored_record_count": 0,
+            "minimum_records_for_tuning": MIN_HUMAN_REVIEW_RECORDS_FOR_TUNING,
+            "insufficient_for_weight_tuning": True,
+            "scored_record_count_by_content_type": {},
+            "scored_record_count_by_scenario": {},
+            "scored_record_count_by_expected_content_type": {},
             "averages": {
                 "overall": {"relevance": 0.0, "boundary": 0.0, "crop": 0.0},
                 "by_content_type": {},
@@ -1196,6 +1319,7 @@ def summarize_human_review(
             "largest_remaining_issue": None,
             "review_run_ids": [],
             "matched_clip_metadata_count": 0,
+            "next_review_targets": build_next_human_review_targets(review_rows),
         }
 
     grouped_by_content_type: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -1209,6 +1333,14 @@ def summarize_human_review(
     }
     averages_by_scenario = {
         key: _average_triplet(items)
+        for key, items in sorted(grouped_by_scenario.items())
+    }
+    scored_counts_by_content_type = {
+        key: len(items)
+        for key, items in sorted(grouped_by_content_type.items())
+    }
+    scored_counts_by_scenario = {
+        key: len(items)
         for key, items in sorted(grouped_by_scenario.items())
     }
 
@@ -1263,6 +1395,11 @@ def summarize_human_review(
     return {
         "scored_record_count": len(scored_rows),
         "auto_scored_record_count": sum(1 for row in scored_rows if row["scenario_id"] == "auto"),
+        "minimum_records_for_tuning": MIN_HUMAN_REVIEW_RECORDS_FOR_TUNING,
+        "insufficient_for_weight_tuning": len(scored_rows) < MIN_HUMAN_REVIEW_RECORDS_FOR_TUNING,
+        "scored_record_count_by_content_type": scored_counts_by_content_type,
+        "scored_record_count_by_scenario": scored_counts_by_scenario,
+        "scored_record_count_by_expected_content_type": scored_counts_by_content_type,
         "averages": {
             "overall": overall_avg,
             "by_content_type": averages_by_content_type,
@@ -1278,6 +1415,7 @@ def summarize_human_review(
         "largest_remaining_issue": top_quality_issues[0] if top_quality_issues else None,
         "review_run_ids": sorted({run_id for run_id in (row["review_run_id"] for row in scored_rows) if run_id}),
         "matched_clip_metadata_count": sum(1 for row in scored_rows if row["matched_clip_metadata"]),
+        "next_review_targets": build_next_human_review_targets(review_rows),
     }
 
 
@@ -1636,6 +1774,15 @@ def determine_recommendation(report_payload: dict[str, Any]) -> dict[str, str]:
             "title": "Improve diarization quality on multi-speaker material",
             "reason": "Transcript diagnostics still show suspicious speaker attribution patterns in benchmark cases.",
         }
+    if human_review.get("insufficient_for_weight_tuning"):
+        return {
+            "next_step": "more_human_review",
+            "title": "Score more benchmark clips before stronger tuning",
+            "reason": (
+                f"Only {human_review.get('scored_record_count', 0)} complete human-review records are available; "
+                f"at least {human_review.get('minimum_records_for_tuning', MIN_HUMAN_REVIEW_RECORDS_FOR_TUNING)} are recommended before larger scoring changes."
+            ),
+        }
     if human_review.get("scored_record_count", 0) > 0:
         largest_issue = (human_review.get("largest_remaining_issue") or {}).get("key")
         if largest_issue == "crop":
@@ -1969,20 +2116,38 @@ def build_markdown_report(report_payload: dict[str, Any]) -> str:
             )
     lines.append("")
 
-    lines.append("## Human Review Findings")
+    lines.append("## Human Review / Selection Quality")
     lines.append("")
     human_review = report_payload.get("human_review") or {}
     scored_record_count = int(human_review.get("scored_record_count", 0) or 0)
+    minimum_records = int(human_review.get("minimum_records_for_tuning", MIN_HUMAN_REVIEW_RECORDS_FOR_TUNING) or MIN_HUMAN_REVIEW_RECORDS_FOR_TUNING)
     if scored_record_count <= 0:
         lines.append(
             f"- Fill in `{report_payload['human_review_template']}` with `human_relevance_score`, "
             "`human_boundary_score`, `human_crop_score` and notes for each rendered clip."
         )
+        lines.append(f"- Minimum recommended complete records before weight tuning: `{minimum_records}`")
+        targets = human_review.get("next_review_targets") or []
+        if targets:
+            lines.append("- Suggested next clips to review:")
+            for target in targets[:10]:
+                lines.append(
+                    f"  - `{target['case_id']}/{target['scenario_id']}` clip `{target['clip_index']}` "
+                    f"({target['clip_start']} - {target['clip_end']}) | local `{target['local_score']}`"
+                )
         lines.append("")
     else:
         overall = human_review.get("averages", {}).get("overall", {})
         lines.append(f"- Records with complete human scores: `{scored_record_count}`")
+        lines.append(f"- Minimum recommended complete records before weight tuning: `{minimum_records}`")
+        if human_review.get("insufficient_for_weight_tuning"):
+            lines.append("- Human-review signal is still small, so this iteration uses conservative rules and diagnostics rather than aggressive weight tuning.")
         lines.append(f"- Auto records with complete human scores: `{human_review.get('auto_scored_record_count', 0)}`")
+        lines.append(
+            f"- Current template complete records: `{human_review.get('template_complete_record_count', 0)}` / "
+            f"`{human_review.get('template_record_count', 0)}`; archive complete records: "
+            f"`{human_review.get('archive_complete_record_count', 0)}` / `{human_review.get('archive_record_count', 0)}`"
+        )
         lines.append(
             f"- Average human scores: relevance `{overall.get('relevance', 0.0):.2f}`, "
             f"boundary `{overall.get('boundary', 0.0):.2f}`, crop `{overall.get('crop', 0.0):.2f}`"
@@ -1994,13 +2159,15 @@ def build_markdown_report(report_payload: dict[str, Any]) -> str:
         lines.append("### Reviewed Averages")
         lines.append("")
         for content_type, averages in (human_review.get("averages", {}).get("by_content_type") or {}).items():
+            count = (human_review.get("scored_record_count_by_content_type") or {}).get(content_type, 0)
             lines.append(
-                f"- Content type `{content_type}`: relevance `{averages['relevance']:.2f}`, "
+                f"- Content type `{content_type}` (`n={count}`): relevance `{averages['relevance']:.2f}`, "
                 f"boundary `{averages['boundary']:.2f}`, crop `{averages['crop']:.2f}`"
             )
         for scenario_id, averages in (human_review.get("averages", {}).get("by_scenario") or {}).items():
+            count = (human_review.get("scored_record_count_by_scenario") or {}).get(scenario_id, 0)
             lines.append(
-                f"- Scenario `{scenario_id}`: relevance `{averages['relevance']:.2f}`, "
+                f"- Scenario `{scenario_id}` (`n={count}`): relevance `{averages['relevance']:.2f}`, "
                 f"boundary `{averages['boundary']:.2f}`, crop `{averages['crop']:.2f}`"
             )
         lines.append("")
@@ -2046,6 +2213,29 @@ def build_markdown_report(report_payload: dict[str, Any]) -> str:
         for change in report_payload.get("iteration_changes") or []:
             lines.append(f"- {change}")
         lines.append("")
+        lines.append("### Ranking Movement")
+        lines.append("")
+        if human_review.get("insufficient_for_weight_tuning"):
+            lines.append(
+                "- Not enough complete human review exists to claim a statistically strong ranking improvement. "
+                "Use the next review pass to verify whether the new penalties demote setup/ad-like/weak-payoff clips."
+            )
+        elif human_review.get("high_local_low_relevance"):
+            lines.append("- Some high-local-score clips still have low human relevance, so ranking quality remains the main tuning target.")
+        else:
+            lines.append("- Reviewed high-score clips no longer show a high-local/low-relevance pattern in the available scored sample.")
+        lines.append("")
+        targets = human_review.get("next_review_targets") or []
+        if targets:
+            lines.append("### Next Human Review Targets")
+            lines.append("")
+            for target in targets[:12]:
+                lines.append(
+                    f"- `{target['case_id']}/{target['scenario_id']}` clip `{target['clip_index']}` "
+                    f"({target['clip_start']} - {target['clip_end']}) | expected `{target['expected_content_type']}` | "
+                    f"local `{target['local_score']}`"
+                )
+            lines.append("")
         largest_issue = human_review.get("largest_remaining_issue") or {}
         if largest_issue:
             lines.append(
@@ -2053,6 +2243,43 @@ def build_markdown_report(report_payload: dict[str, Any]) -> str:
                 f"({largest_issue.get('label')})"
             )
             lines.append("")
+
+    lines.append("## Selection Quality Tuning")
+    lines.append("")
+    lines.append(f"- Complete human-review records available: `{scored_record_count}`")
+    if scored_record_count < minimum_records:
+        lines.append(
+            "- Tuning basis: defensive heuristics plus the existing human-review notes; "
+            "the scored sample is too small for aggressive weight tuning."
+        )
+    else:
+        lines.append("- Tuning basis: complete human-review rows plus defensive heuristics.")
+    lines.append(
+        "- Scoring changes: ad/sponsor, buy-menu, setup/waiting, smoke/utility, weak-payoff, "
+        "long-preamble and contextless-fragment penalties; small boosts for gameplay action/payoff, "
+        "tutorial instruction language, podcast dialogue shape and complete commentary thoughts."
+    )
+    lines.append(
+        "- Boundary metadata: `original_start`, `original_end`, `refined_start`, `refined_end`, "
+        "`boundary_adjustment_reason`, `sentence_boundary_used`, `speaker_turn_boundary_used`, "
+        "`max_duration_clamped`."
+    )
+    lines.append(
+        "- Boundary behavior: talk-led clips are aligned to transcript sentence/segment boundaries; "
+        "gameplay clips can trim low-value setup while keeping a short pre-roll before action."
+    )
+    targets = human_review.get("next_review_targets") or []
+    if targets:
+        lines.append("- Fresh human review should prioritize:")
+        for target in targets[:8]:
+            lines.append(
+                f"  - `{target['case_id']}/{target['scenario_id']}` clip `{target['clip_index']}` "
+                f"({target['clip_start']} - {target['clip_end']}) | expected `{target['expected_content_type']}` | "
+                f"local `{target['local_score']}`"
+            )
+    else:
+        lines.append("- Fresh human review target list will be populated after the next benchmark run.")
+    lines.append("")
     lines.append("## Recommendation")
     lines.append("")
     recommendation = report_payload["recommendation"]
@@ -2077,6 +2304,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
     existing_results_payload = load_json(latest_results_path, default={}) or {}
     existing_human_review_rows = load_human_review_rows(latest_human_review_path)
     existing_human_review_archive_rows = load_human_review_rows(latest_human_review_archive_path)
+    existing_results_human_review_rows = extract_human_review_rows_from_results(existing_results_payload)
 
     run_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     run_dir = (PROJECT_ROOT / args.output_dir / "runs" / run_id).resolve()
@@ -2211,7 +2439,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
     }
     merged_human_review_rows, archived_human_review_rows = merge_human_review_rows(
         human_review_rows,
-        existing_human_review_rows + existing_human_review_archive_rows,
+        existing_human_review_rows + existing_human_review_archive_rows + existing_results_human_review_rows,
     )
     report_payload["human_review_template"] = str(latest_human_review_path.relative_to(PROJECT_ROOT))
     report_payload["human_review_archive"] = str(latest_human_review_archive_path.relative_to(PROJECT_ROOT))
@@ -2219,6 +2447,14 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
         merged_human_review_rows + archived_human_review_rows,
         report_cases,
         historical_cases=existing_results_payload.get("cases") or [],
+    )
+    report_payload["human_review"]["template_record_count"] = len(merged_human_review_rows)
+    report_payload["human_review"]["archive_record_count"] = len(archived_human_review_rows)
+    report_payload["human_review"]["template_complete_record_count"] = sum(
+        1 for row in merged_human_review_rows if row_has_complete_human_scores(row)
+    )
+    report_payload["human_review"]["archive_complete_record_count"] = sum(
+        1 for row in archived_human_review_rows if row_has_complete_human_scores(row)
     )
     report_payload["iteration_changes"] = list(ITERATION_CHANGES)
     report_payload["recommendation"] = determine_recommendation(report_payload)

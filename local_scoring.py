@@ -66,10 +66,32 @@ PAYOFF_TOKENS = {
     "kurwa",
     "lezy",
     "nice",
-    "no",
     "padl",
     "trafiony",
     "win",
+}
+
+GAMEPLAY_ACTION_TOKENS = {
+    "ace",
+    "awp",
+    "clutch",
+    "defuse",
+    "dead",
+    "frag",
+    "headshot",
+    "hit",
+    "kill",
+    "lezy",
+    "padl",
+    "plant",
+    "push",
+    "strzela",
+    "strzelam",
+    "strzal",
+    "trafilem",
+    "trafiony",
+    "zabil",
+    "zabilem",
 }
 
 BOUNDARY_CONTINUATION_TOKENS = {
@@ -87,10 +109,34 @@ BOUNDARY_CONTINUATION_TOKENS = {
     "że",
 }
 
+CONTEXTLESS_START_TOKENS = {
+    "a",
+    "ale",
+    "bo",
+    "czyli",
+    "i",
+    "no",
+    "ona",
+    "one",
+    "oni",
+    "on",
+    "tam",
+    "ta",
+    "takze",
+    "także",
+    "ten",
+    "to",
+    "wtedy",
+    "wiec",
+    "więc",
+}
+
 AD_LIKE_TOKENS = {
     "case",
     "changer",
     "gift",
+    "kod",
+    "partner",
     "promo",
     "promokod",
     "reklama",
@@ -99,21 +145,98 @@ AD_LIKE_TOKENS = {
     "skrzynie",
     "skrzynie",
     "sponsor",
+    "sponsorowany",
     "wymiana",
     "wymiany",
 }
 
 GAMEPLAY_SETUP_TOKENS = {
     "buy",
+    "czekam",
+    "czekamy",
+    "czekanie",
+    "czekania",
     "chodze",
+    "chodzę",
     "chodzenie",
+    "eco",
+    "idę",
+    "ide",
     "menu",
+    "pauza",
+    "pause",
     "rotate",
     "rotacja",
     "setup",
     "smoke",
     "utility",
     "walk",
+    "waiting",
+}
+
+COMMENTARY_THESIS_TOKENS = {
+    "dlatego",
+    "istotne",
+    "kluczowe",
+    "oznacza",
+    "pokazuje",
+    "powod",
+    "problem",
+    "sedno",
+    "teza",
+    "wniosek",
+    "wynika",
+    "wlasnie",
+    "właśnie",
+}
+
+PODCAST_DIALOGUE_TOKENS = {
+    "czemu",
+    "dlaczego",
+    "dokladnie",
+    "dokładnie",
+    "haha",
+    "mhm",
+    "odpowiedz",
+    "powiedz",
+    "pytanie",
+    "serio",
+    "tak",
+    "wlasnie",
+    "właśnie",
+}
+
+TUTORIAL_INSTRUCTION_TOKENS = {
+    "dodaj",
+    "klikamy",
+    "kliknij",
+    "krok",
+    "otworz",
+    "otwórz",
+    "pokaze",
+    "pokaże",
+    "pokażę",
+    "przejdz",
+    "przejdź",
+    "przechodzimy",
+    "ustaw",
+    "ustawiamy",
+    "wybierz",
+    "wybieramy",
+    "wpisz",
+    "zaznacz",
+    "zrob",
+    "zrób",
+}
+
+TRANSITION_ONLY_TOKENS = {
+    "dalej",
+    "kolejny",
+    "nastepnie",
+    "następnie",
+    "potem",
+    "teraz",
+    "zaraz",
 }
 
 FILLER_TOKENS = {
@@ -382,12 +505,26 @@ def _boundary_completeness_score(sentences):
 def _ad_like_penalty(words, text):
     lower_text = str(text or "").lower()
     token_hits = sum(1 for word in set(words) if word in AD_LIKE_TOKENS)
-    phrase_hits = sum(1 for phrase in ("x changer", "x-changer", "kod", "promo") if phrase in lower_text)
+    phrase_hits = sum(
+        1
+        for phrase in (
+            "x changer",
+            "x-changer",
+            "kod",
+            "kod promo",
+            "link w opisie",
+            "materiał sponsorowany",
+            "material sponsorowany",
+            "partnerem odcinka",
+            "promo",
+        )
+        if phrase in lower_text
+    )
     penalty = clamp(token_hits * 0.3 + phrase_hits * 0.15)
     return penalty, token_hits + phrase_hits
 
 
-def _gameplay_setup_penalty(words, sentences, *, payoff_score, importance_score, duration):
+def _gameplay_setup_penalty(words, sentences, *, payoff_score, importance_score, duration, action_score=0.0):
     if not sentences:
         return 0.0, 0
 
@@ -397,18 +534,140 @@ def _gameplay_setup_penalty(words, sentences, *, payoff_score, importance_score,
     first_sentence_hits = sum(1 for word in first_words if word in GAMEPLAY_SETUP_TOKENS)
     phrase_hits = sum(
         1
-        for phrase in ("buy menu", "full buy", "chodzenie", "smoke", "utility")
+        for phrase in (
+            "buy menu",
+            "full buy",
+            "czekamy",
+            "duzo chodzenia",
+            "dużo chodzenia",
+            "chodzenie",
+            "smoke",
+            "utility",
+        )
         if phrase in lower_text
     )
 
     penalty = token_hits * 0.08 + first_sentence_hits * 0.22 + phrase_hits * 0.18
-    if payoff_score < 0.25:
+    if payoff_score < 0.25 and action_score < 0.35:
         penalty += 0.18
     if importance_score < 0.4:
         penalty += 0.12
     if duration > 40.0:
         penalty += 0.08
     return clamp(penalty), token_hits + first_sentence_hits + phrase_hits
+
+
+def _token_score(words, text, tokens, phrases=(), divisor=3.0):
+    lower_text = str(text or "").lower()
+    token_hits = sum(1 for word in words if word in tokens)
+    phrase_hits = sum(1 for phrase in phrases if phrase in lower_text)
+    hits = token_hits + phrase_hits
+    return clamp(hits / max(1.0, divisor)), hits
+
+
+def _gameplay_action_score(words, text):
+    return _token_score(
+        words,
+        text,
+        GAMEPLAY_ACTION_TOKENS,
+        phrases=("enemy down", "bomb planted", "round win", "round won", "zabijam go", "zabili go"),
+        divisor=3.0,
+    )
+
+
+def _tutorial_instruction_score(words, text):
+    return _token_score(
+        words,
+        text,
+        TUTORIAL_INSTRUCTION_TOKENS,
+        phrases=("teraz poka", "kliknij", "wybierz", "ustaw", "zrób", "zrob"),
+        divisor=4.0,
+    )
+
+
+def _commentary_complete_thought_score(sentences, words, *, boundary_completeness_score, payoff_score):
+    thesis_hits = sum(1 for word in words if word in COMMENTARY_THESIS_TOKENS)
+    sentence_shape = 1.0 if 2 <= len(sentences) <= 16 else 0.55
+    score = (
+        boundary_completeness_score * 0.35
+        + clamp(thesis_hits / 2.0) * 0.30
+        + payoff_score * 0.20
+        + sentence_shape * 0.15
+    )
+    return clamp(score), thesis_hits
+
+
+def _podcast_dialogue_payoff_score(sentences, words, *, speaker_switches, hook_score, payoff_score):
+    question_present = any("?" in sentence for sentence in sentences[:3])
+    dialogue_hits = sum(1 for word in words if word in PODCAST_DIALOGUE_TOKENS)
+    score = (
+        (0.30 if question_present else 0.0)
+        + clamp(speaker_switches / 2.0) * 0.25
+        + clamp(dialogue_hits / 3.0) * 0.20
+        + hook_score * 0.10
+        + payoff_score * 0.15
+    )
+    return clamp(score), dialogue_hits, int(question_present)
+
+
+def _contextless_penalty(strategy_name, sentences, words, *, hook_score, payoff_score, boundary_start_penalty, speaker_switches):
+    if strategy_name not in {"commentary", "podcast", "tutorial"} or not sentences:
+        return 0.0
+    first_words = tokenize(sentences[0])
+    first_word = first_words[0] if first_words else ""
+    penalty = 0.0
+    if first_word in CONTEXTLESS_START_TOKENS and hook_score < 0.45:
+        penalty += 0.22
+    if boundary_start_penalty >= 0.3 and hook_score < 0.45:
+        penalty += 0.18
+    if strategy_name in {"commentary", "podcast"} and payoff_score < 0.25:
+        penalty += 0.10
+    if strategy_name == "podcast" and speaker_switches <= 0 and len(sentences) >= 3:
+        penalty += 0.08
+    return clamp(penalty)
+
+
+def _preamble_penalty(strategy_name, sentences, words, *, hook_score, gameplay_setup_hits):
+    if not sentences:
+        return 0.0
+    first_words = tokenize(sentences[0])
+    penalty = 0.0
+    if first_words and first_words[0] in TRANSITION_ONLY_TOKENS and hook_score < 0.35:
+        penalty += 0.14
+    if strategy_name == "gameplay" and gameplay_setup_hits > 0 and hook_score < 0.45:
+        penalty += 0.18
+    return clamp(penalty)
+
+
+def _low_payoff_penalty(
+    strategy_name,
+    *,
+    payoff_score,
+    gameplay_action_score,
+    tutorial_instruction_score,
+    commentary_complete_thought_score,
+    podcast_dialogue_payoff_score,
+    emotion_score,
+    speaker_turn_score,
+):
+    penalty = 0.0
+    if strategy_name == "gameplay":
+        if gameplay_action_score < 0.25 and payoff_score < 0.35:
+            penalty += 0.30
+        if gameplay_action_score < 0.25 and (emotion_score >= 0.55 or speaker_turn_score >= 0.55):
+            penalty += 0.10
+    elif strategy_name == "commentary":
+        if commentary_complete_thought_score < 0.40 and payoff_score < 0.35:
+            penalty += 0.24
+    elif strategy_name == "podcast":
+        if podcast_dialogue_payoff_score < 0.40 and payoff_score < 0.35:
+            penalty += 0.24
+    elif strategy_name == "tutorial":
+        if tutorial_instruction_score < 0.25:
+            penalty += 0.22
+        if tutorial_instruction_score < 0.35 and payoff_score < 0.25:
+            penalty += 0.10
+    return clamp(penalty)
 
 
 def _build_reasons(features, score_weights):
@@ -432,10 +691,30 @@ def _build_reasons(features, score_weights):
         if len(reasons) >= 3:
             break
 
+    positive_feature_reasons = [
+        ("gameplay_action_score", "contains a clearer gameplay action/payoff signal", 0.45),
+        ("tutorial_instruction_score", "contains concrete tutorial instructions", 0.45),
+        ("commentary_complete_thought_score", "contains a more complete commentary thought", 0.55),
+        ("podcast_dialogue_payoff_score", "contains stronger dialogue question/response shape", 0.55),
+    ]
+    for feature_key, label, threshold in positive_feature_reasons:
+        if len(reasons) >= 3:
+            break
+        if features.get(feature_key, 0.0) >= threshold and label not in reasons:
+            reasons.append(label)
+
     if len(reasons) < 3 and features.get("heatmap_peak", 0.0) >= 0.75 and "strong heatmap support" not in reasons:
         reasons.append("high local heatmap peak")
     if features.get("repetition_penalty", 0.0) >= 0.45 and score_weights.get("repetition_penalty", 0.0) > 0:
         reasons.append("penalized for repetitive or filler-heavy wording")
+    if features.get("ad_like_penalty", 0.0) >= 0.25:
+        reasons.append("penalized for ad/sponsor-like wording")
+    if features.get("gameplay_setup_penalty", 0.0) >= 0.25:
+        reasons.append("penalized for gameplay setup/waiting")
+    if features.get("low_payoff_penalty", 0.0) >= 0.25:
+        reasons.append("penalized for weak payoff")
+    if features.get("contextless_penalty", 0.0) >= 0.20:
+        reasons.append("penalized for weak context")
     return reasons
 
 
@@ -464,6 +743,21 @@ def score_candidate(candidate, transcript_segments, heatmap, *, score_weights=No
     repetition_penalty, filler_ratio = _repetition_penalty(words)
     boundary_completeness_score, boundary_start_penalty, boundary_end_penalty = _boundary_completeness_score(sentences)
     ad_like_penalty, ad_like_hits = _ad_like_penalty(words, text)
+    gameplay_action_score, gameplay_action_hits = _gameplay_action_score(words, text)
+    tutorial_instruction_score, tutorial_instruction_hits = _tutorial_instruction_score(words, text)
+    commentary_complete_thought_score, commentary_thesis_hits = _commentary_complete_thought_score(
+        sentences,
+        words,
+        boundary_completeness_score=boundary_completeness_score,
+        payoff_score=payoff_score,
+    )
+    podcast_dialogue_payoff_score, podcast_dialogue_hits, podcast_question_present = _podcast_dialogue_payoff_score(
+        sentences,
+        words,
+        speaker_switches=speaker_switches,
+        hook_score=hook_score,
+        payoff_score=payoff_score,
+    )
     gameplay_setup_penalty = 0.0
     gameplay_setup_hits = 0
     if strategy_name == "gameplay":
@@ -473,7 +767,34 @@ def score_candidate(candidate, transcript_segments, heatmap, *, score_weights=No
             payoff_score=payoff_score,
             importance_score=importance_score,
             duration=duration,
+            action_score=gameplay_action_score,
         )
+    preamble_penalty = _preamble_penalty(
+        strategy_name,
+        sentences,
+        words,
+        hook_score=hook_score,
+        gameplay_setup_hits=gameplay_setup_hits,
+    )
+    contextless_penalty = _contextless_penalty(
+        strategy_name,
+        sentences,
+        words,
+        hook_score=hook_score,
+        payoff_score=payoff_score,
+        boundary_start_penalty=boundary_start_penalty,
+        speaker_switches=speaker_switches,
+    )
+    low_payoff_penalty = _low_payoff_penalty(
+        strategy_name,
+        payoff_score=payoff_score,
+        gameplay_action_score=gameplay_action_score,
+        tutorial_instruction_score=tutorial_instruction_score,
+        commentary_complete_thought_score=commentary_complete_thought_score,
+        podcast_dialogue_payoff_score=podcast_dialogue_payoff_score,
+        emotion_score=emotion_score,
+        speaker_turn_score=speaker_turn_score,
+    )
 
     weighted_score = (
         heatmap_avg * score_weights["heatmap_avg"]
@@ -491,9 +812,22 @@ def score_candidate(candidate, transcript_segments, heatmap, *, score_weights=No
     )
     boundary_weight = 0.08 if strategy_name in {"podcast", "tutorial", "commentary"} else 0.05
     weighted_score += (boundary_completeness_score - 0.5) * boundary_weight
-    weighted_score -= ad_like_penalty * 0.12
     if strategy_name == "gameplay":
-        weighted_score -= gameplay_setup_penalty * 0.14
+        weighted_score += gameplay_action_score * 0.05
+    elif strategy_name == "tutorial":
+        weighted_score += tutorial_instruction_score * 0.06
+    elif strategy_name == "commentary":
+        weighted_score += commentary_complete_thought_score * 0.05
+    elif strategy_name == "podcast":
+        weighted_score += podcast_dialogue_payoff_score * 0.05
+
+    ad_penalty_weight = 0.18 if strategy_name == "gameplay" else 0.12
+    weighted_score -= ad_like_penalty * ad_penalty_weight
+    if strategy_name == "gameplay":
+        weighted_score -= gameplay_setup_penalty * 0.20
+    weighted_score -= low_payoff_penalty * 0.12
+    weighted_score -= contextless_penalty * 0.10
+    weighted_score -= preamble_penalty * 0.08
     local_score = round(clamp(weighted_score, 0.0, 1.0) * 100.0, 2)
 
     features = {
@@ -524,8 +858,20 @@ def score_candidate(candidate, transcript_segments, heatmap, *, score_weights=No
         "boundary_end_penalty": round(boundary_end_penalty, 4),
         "ad_like_penalty": round(ad_like_penalty, 4),
         "ad_like_hits": ad_like_hits,
+        "gameplay_action_score": round(gameplay_action_score, 4),
+        "gameplay_action_hits": gameplay_action_hits,
+        "tutorial_instruction_score": round(tutorial_instruction_score, 4),
+        "tutorial_instruction_hits": tutorial_instruction_hits,
+        "commentary_complete_thought_score": round(commentary_complete_thought_score, 4),
+        "commentary_thesis_hits": commentary_thesis_hits,
+        "podcast_dialogue_payoff_score": round(podcast_dialogue_payoff_score, 4),
+        "podcast_dialogue_hits": podcast_dialogue_hits,
+        "podcast_question_present": podcast_question_present,
         "gameplay_setup_penalty": round(gameplay_setup_penalty, 4),
         "gameplay_setup_hits": gameplay_setup_hits,
+        "preamble_penalty": round(preamble_penalty, 4),
+        "contextless_penalty": round(contextless_penalty, 4),
+        "low_payoff_penalty": round(low_payoff_penalty, 4),
         "segment_count": len(window_segments),
     }
 
