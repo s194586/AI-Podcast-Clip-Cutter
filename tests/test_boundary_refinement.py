@@ -110,6 +110,73 @@ class BoundaryRefinementTests(unittest.TestCase):
         self.assertGreaterEqual(metadata["postroll_added"], 0.0)
         self.assertIn(metadata["context_padding_reason"], {"", "podcast_context_padding"})
 
+    def test_tutorial_prefers_segment_boundaries_when_possible(self):
+        context = [
+            {
+                "start": 0.0,
+                "end": 4.0,
+                "segment_start": 0.0,
+                "segment_end": 12.0,
+                "sentence_index_in_segment": 0,
+                "segment_piece_count": 3,
+                "text": "Najpierw pokażę panel boczny.",
+                "speaker": "Speaker 0",
+            },
+            {
+                "start": 4.0,
+                "end": 8.0,
+                "segment_start": 0.0,
+                "segment_end": 12.0,
+                "sentence_index_in_segment": 1,
+                "segment_piece_count": 3,
+                "text": "Potem klikamy przycisk eksportu.",
+                "speaker": "Speaker 0",
+            },
+            {
+                "start": 8.0,
+                "end": 12.0,
+                "segment_start": 0.0,
+                "segment_end": 12.0,
+                "sentence_index_in_segment": 2,
+                "segment_piece_count": 3,
+                "text": "Na końcu sprawdzamy podgląd.",
+                "speaker": "Speaker 0",
+            },
+        ]
+        window = {"start": 4.2, "end": 7.8, "duration": 3.6, "summary": "", "text": ""}
+        start, end, _decisions, metadata = refine_story_bounds_for_strategy(
+            4.2,
+            7.8,
+            context,
+            window,
+            max_duration=15.0,
+            min_duration=3.0,
+            strategy_name="tutorial",
+        )
+
+        self.assertEqual(start, 0.0)
+        self.assertEqual(end, 12.0)
+        self.assertTrue(metadata["segment_boundary_aligned"])
+        self.assertTrue(metadata["sentence_boundary_aligned"])
+
+    def test_boundary_fallback_marks_missing_context(self):
+        window = {"start": 12.0, "end": 22.0, "duration": 10.0, "summary": "", "text": ""}
+        start, end, _decisions, metadata = refine_story_bounds_for_strategy(
+            12.0,
+            22.0,
+            [],
+            window,
+            max_duration=30.0,
+            min_duration=8.0,
+            strategy_name="commentary",
+        )
+
+        self.assertEqual(start, 12.0)
+        self.assertEqual(end, 22.0)
+        self.assertFalse(metadata["segment_boundary_aligned"])
+        self.assertFalse(metadata["sentence_boundary_aligned"])
+        self.assertEqual(metadata["fallback_alignment_reason"], "no_transcript_context")
+
 
 if __name__ == "__main__":
     unittest.main()

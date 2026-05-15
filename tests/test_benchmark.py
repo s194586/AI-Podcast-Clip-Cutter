@@ -19,6 +19,7 @@ from benchmark import (
     summarize_rendering_metrics,
     summarize_transcript_metrics,
     summarize_selection_metrics,
+    summarize_subtitle_styles,
     validate_case_inputs,
     write_human_review_template,
     write_json,
@@ -180,6 +181,25 @@ class BenchmarkHelpersTests(unittest.TestCase):
         self.assertEqual(summary["raw_cluster_count"], 4)
         self.assertEqual(summary["final_speaker_count"], 2)
         self.assertEqual(summary["decision_reason"], "kept_multi_speaker_clusters")
+
+    def test_summarize_subtitle_styles_reports_smoothing_metadata(self):
+        transcript_payload = {
+            "segments": [
+                {"start": 0.0, "end": 2.0, "text": "part one", "speaker": "Speaker 0"},
+                {"start": 2.0, "end": 2.6, "text": "short flip", "speaker": "Speaker 1"},
+                {"start": 2.6, "end": 5.0, "text": "speaker zero again", "speaker": "Speaker 0"},
+            ]
+        }
+        windows = [{"start": 0.0, "duration": 5.0}]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            transcript_path = Path(temp_dir) / "transcript.json"
+            transcript_path.write_text(json.dumps(transcript_payload), encoding="utf-8")
+            summary = summarize_subtitle_styles(transcript_path, windows)
+
+        self.assertEqual(summary["speaker_flips_smoothed"], 1)
+        self.assertTrue(summary["speaker_smoothing_enabled"])
+        self.assertGreaterEqual(summary["effective_speaker_count"], 1)
+        self.assertIn("Speaker 0", summary["speaker_color_map"])
 
     def test_write_outputs_create_files(self):
         rows = [

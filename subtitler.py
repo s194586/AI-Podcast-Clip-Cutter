@@ -96,12 +96,34 @@ def speaker_segment_duration(segment: Dict) -> float:
         return 0.0
 
 
-def smooth_speaker_labels(transcript: List[Dict], *, max_flip_duration: float = DEFAULT_SPEAKER_SMOOTHING_WINDOW) -> List[Dict]:
+def _normalized_speaker_sequence(transcript: List[Dict]) -> List[str]:
+    return [normalize_speaker(item) for item in transcript]
+
+
+def smooth_speaker_labels(
+    transcript: List[Dict],
+    *,
+    max_flip_duration: float = DEFAULT_SPEAKER_SMOOTHING_WINDOW,
+    return_metadata: bool = False,
+) -> List[Dict] | Tuple[List[Dict], Dict[str, object]]:
     if max_flip_duration <= 0 or len(transcript) < 3:
-        return [dict(item) for item in transcript]
+        passthrough = [dict(item) for item in transcript]
+        if return_metadata:
+            labels = _normalized_speaker_sequence(passthrough)
+            metadata = {
+                "speaker_flips_smoothed": 0,
+                "detected_speaker_count": len({label for label in labels if label != DEFAULT_STYLE_NAME}),
+                "effective_speaker_count": len({label for label in labels if label != DEFAULT_STYLE_NAME}),
+                "speaker_smoothing_enabled": max_flip_duration > 0,
+                "speaker_smoothing_window": float(max_flip_duration),
+            }
+            return passthrough, metadata
+        return passthrough
 
     smoothed = [dict(item) for item in transcript]
-    normalized = [normalize_speaker(item) for item in smoothed]
+    normalized_before = _normalized_speaker_sequence(smoothed)
+    normalized = list(normalized_before)
+    flips_smoothed = 0
     for index in range(1, len(smoothed) - 1):
         previous_speaker = normalized[index - 1]
         current_speaker = normalized[index]
@@ -112,7 +134,19 @@ def smooth_speaker_labels(transcript: List[Dict], *, max_flip_duration: float = 
             continue
         smoothed[index]["speaker"] = previous_speaker
         normalized[index] = previous_speaker
-    return smoothed
+        flips_smoothed += 1
+    if not return_metadata:
+        return smoothed
+    detected_speakers = {label for label in normalized_before if label != DEFAULT_STYLE_NAME}
+    effective_speakers = {label for label in normalized if label != DEFAULT_STYLE_NAME}
+    metadata = {
+        "speaker_flips_smoothed": flips_smoothed,
+        "detected_speaker_count": len(detected_speakers),
+        "effective_speaker_count": len(effective_speakers),
+        "speaker_smoothing_enabled": max_flip_duration > 0,
+        "speaker_smoothing_window": float(max_flip_duration),
+    }
+    return smoothed, metadata
 
 
 def collect_speaker_styles(events: List[Dict]) -> List[str]:
@@ -125,6 +159,17 @@ def collect_speaker_styles(events: List[Dict]) -> List[str]:
         speaker_names,
         key=lambda name: (-1 if name == DEFAULT_STYLE_NAME else int(re.search(r"(\d+)", name).group(1))),
     )
+
+
+def speaker_color_map(speaker_names: List[str]) -> Dict[str, Dict[str, str]]:
+    mapping: Dict[str, Dict[str, str]] = {}
+    for speaker_name in speaker_names:
+        style = speaker_style(speaker_name)
+        mapping[speaker_name] = {
+            "primary": style["primary"],
+            "outline": style["outline"],
+        }
+    return mapping
 
 
 def ass_color(color_value: str) -> str:
@@ -166,11 +211,28 @@ def build_subtitle_events(
     *,
     speaker_smoothing_window: float = DEFAULT_SPEAKER_SMOOTHING_WINDOW,
 ) -> List[Dict]:
+    events, _metadata = build_subtitle_events_with_metadata(
+        transcript,
+        segment_start,
+        segment_duration,
+        speaker_smoothing_window=speaker_smoothing_window,
+    )
+    return events
+
+
+def build_subtitle_events_with_metadata(
+    transcript: List[Dict],
+    segment_start: float,
+    segment_duration: float,
+    *,
+    speaker_smoothing_window: float = DEFAULT_SPEAKER_SMOOTHING_WINDOW,
+) -> Tuple[List[Dict], Dict[str, object]]:
     events: List[Dict] = []
     segment_end = segment_start + segment_duration
-    transcript_for_events = smooth_speaker_labels(
+    transcript_for_events, smoothing_metadata = smooth_speaker_labels(
         transcript,
         max_flip_duration=speaker_smoothing_window,
+        return_metadata=True,
     )
 
     for item in transcript_for_events:
@@ -205,7 +267,14 @@ def build_subtitle_events(
             }
         )
 
-    return events
+    speaker_names = collect_speaker_styles(events)
+    metadata: Dict[str, object] = {
+        **smoothing_metadata,
+        "speaker_color_map": speaker_color_map(speaker_names),
+        "speaker_smoothing_enabled": bool(smoothing_metadata.get("speaker_smoothing_enabled", False)),
+        "speaker_smoothing_window": float(smoothing_metadata.get("speaker_smoothing_window", speaker_smoothing_window)),
+    }
+    return events, metadata
 
 
 def format_ass_time(seconds: float) -> str:
@@ -316,9 +385,14 @@ def process_cut_file(cut_file: Path, transcript: List[Dict], output_raw: Path, o
 
     segment_start, segment_end = extract_segment_time_from_filename(cut_file.name)
     segment_duration = segment_end - segment_start
-    events = build_subtitle_events(transcript, segment_start, segment_duration)
+    events, subtitle_debug = build_subtitle_events_with_metadata(transcript, segment_start, segment_duration)
     if not events:
         print(f"  Warning: no subtitle events for {cut_file.name}")
+    if subtitle_debug.get("speaker_flips_smoothed"):
+        print(
+            f"  Speaker smoothing merged {subtitle_debug['speaker_flips_smoothed']} short flip(s) "
+            f"for {cut_file.name}"
+        )
 
     raw_output = output_raw / cut_file.name
     if cut_file.resolve() != raw_output.resolve():

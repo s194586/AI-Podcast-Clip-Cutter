@@ -1039,16 +1039,24 @@ def summarize_subtitle_styles(
     style_counter = Counter()
     multi_speaker_clips = 0
     empty_event_clips = 0
+    speaker_flips_smoothed = 0
+    detected_speaker_counts = []
+    effective_speaker_counts = []
+    speaker_color_map: dict[str, Any] = {}
     clip_summaries = []
 
     for index, window in enumerate(windows, start=1):
-        events = subtitler.build_subtitle_events(
+        events, subtitle_debug = subtitler.build_subtitle_events_with_metadata(
             transcript,
             float(window["start"]),
             float(window["duration"]),
         )
         speaker_names = sorted({event.get("speaker", "Speaker 0") for event in events})
         style_counter.update(speaker_names)
+        speaker_flips_smoothed += int(subtitle_debug.get("speaker_flips_smoothed") or 0)
+        detected_speaker_counts.append(int(subtitle_debug.get("detected_speaker_count") or 0))
+        effective_speaker_counts.append(int(subtitle_debug.get("effective_speaker_count") or 0))
+        speaker_color_map.update(subtitle_debug.get("speaker_color_map") or {})
         if len(speaker_names) >= 2:
             multi_speaker_clips += 1
         if not events:
@@ -1058,6 +1066,12 @@ def summarize_subtitle_styles(
                 "index": index,
                 "event_count": len(events),
                 "speakers": speaker_names,
+                "speaker_flips_smoothed": int(subtitle_debug.get("speaker_flips_smoothed") or 0),
+                "detected_speaker_count": int(subtitle_debug.get("detected_speaker_count") or 0),
+                "effective_speaker_count": int(subtitle_debug.get("effective_speaker_count") or 0),
+                "speaker_smoothing_enabled": bool(subtitle_debug.get("speaker_smoothing_enabled", False)),
+                "speaker_smoothing_window": float(subtitle_debug.get("speaker_smoothing_window") or 0.0),
+                "speaker_color_map": subtitle_debug.get("speaker_color_map") or {},
             }
         )
 
@@ -1065,6 +1079,12 @@ def summarize_subtitle_styles(
         "speaker_styles_used": dict(style_counter),
         "multi_speaker_clips": multi_speaker_clips,
         "empty_event_clips": empty_event_clips,
+        "speaker_flips_smoothed": speaker_flips_smoothed,
+        "detected_speaker_count": max(detected_speaker_counts) if detected_speaker_counts else 0,
+        "effective_speaker_count": max(effective_speaker_counts) if effective_speaker_counts else 0,
+        "speaker_color_map": speaker_color_map,
+        "speaker_smoothing_enabled": True,
+        "speaker_smoothing_window": float(getattr(subtitler, "DEFAULT_SPEAKER_SMOOTHING_WINDOW", 0.0)),
         "clip_event_summary": clip_summaries,
     }
 

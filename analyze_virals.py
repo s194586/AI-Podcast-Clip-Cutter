@@ -422,23 +422,67 @@ def build_sentence_boundaries(transcript):
 
         pieces = split_sentences(text)
         if len(pieces) == 1:
-            sentences.append({"start": start, "end": end, "text": pieces[0], "speaker": speaker})
+            sentences.append(
+                {
+                    "start": start,
+                    "end": end,
+                    "text": pieces[0],
+                    "speaker": speaker,
+                    "segment_start": start,
+                    "segment_end": end,
+                    "sentence_index_in_segment": 0,
+                    "segment_piece_count": 1,
+                }
+            )
             continue
 
         total_chars = sum(len(piece) for piece in pieces)
         if total_chars == 0:
-            sentences.append({"start": start, "end": end, "text": text, "speaker": speaker})
+            sentences.append(
+                {
+                    "start": start,
+                    "end": end,
+                    "text": text,
+                    "speaker": speaker,
+                    "segment_start": start,
+                    "segment_end": end,
+                    "sentence_index_in_segment": 0,
+                    "segment_piece_count": 1,
+                }
+            )
             continue
 
         cursor = start
         consumed = 0
-        for piece in pieces[:-1]:
+        for piece_index, piece in enumerate(pieces[:-1]):
             consumed += len(piece)
             portion = consumed / total_chars
             boundary = start + (end - start) * portion
-            sentences.append({"start": cursor, "end": boundary, "text": piece, "speaker": speaker})
+            sentences.append(
+                {
+                    "start": cursor,
+                    "end": boundary,
+                    "text": piece,
+                    "speaker": speaker,
+                    "segment_start": start,
+                    "segment_end": end,
+                    "sentence_index_in_segment": piece_index,
+                    "segment_piece_count": len(pieces),
+                }
+            )
             cursor = boundary
-        sentences.append({"start": cursor, "end": end, "text": pieces[-1], "speaker": speaker})
+        sentences.append(
+            {
+                "start": cursor,
+                "end": end,
+                "text": pieces[-1],
+                "speaker": speaker,
+                "segment_start": start,
+                "segment_end": end,
+                "sentence_index_in_segment": len(pieces) - 1,
+                "segment_piece_count": len(pieces),
+            }
+        )
     return sentences
 
 
@@ -519,6 +563,10 @@ def collect_context(sentences, window_start, window_end, margin=20.0):
             {
                 "start": sentence["start"],
                 "end": sentence["end"],
+                "segment_start": sentence.get("segment_start", sentence["start"]),
+                "segment_end": sentence.get("segment_end", sentence["end"]),
+                "sentence_index_in_segment": sentence.get("sentence_index_in_segment", 0),
+                "segment_piece_count": sentence.get("segment_piece_count", 1),
                 "text": sentence["text"],
                 "speaker": speaker,
                 "line": f'{format_time(sentence["start"])} - {format_time(sentence["end"])}{label}: {sentence["text"]}',
@@ -546,6 +594,26 @@ def boundary_end_for_time(sentences, value):
         if sentence["start"] < value <= sentence["end"]:
             return sentence["end"]
     ends = [sentence["end"] for sentence in sentences]
+    if not ends:
+        return value
+    return min(ends, key=lambda item: abs(item - value))
+
+
+def segment_boundary_start_for_time(sentences, value):
+    for sentence in sentences:
+        if sentence["start"] <= value <= sentence["end"]:
+            return float(sentence.get("segment_start", sentence["start"]))
+    starts = [float(sentence.get("segment_start", sentence["start"])) for sentence in sentences]
+    if not starts:
+        return value
+    return min(starts, key=lambda item: abs(item - value))
+
+
+def segment_boundary_end_for_time(sentences, value):
+    for sentence in sentences:
+        if sentence["start"] <= value <= sentence["end"]:
+            return float(sentence.get("segment_end", sentence["end"]))
+    ends = [float(sentence.get("segment_end", sentence["end"])) for sentence in sentences]
     if not ends:
         return value
     return min(ends, key=lambda item: abs(item - value))
@@ -650,7 +718,13 @@ def enforce_story_bounds_with_metadata(start, end, context, fallback, max_durati
             fallback["start"],
             fallback["end"],
             ["No transcript context found, keeping heatmap window."],
-            {"max_duration_clamped": False},
+            {
+                "max_duration_clamped": False,
+                "segment_boundary_aligned": False,
+                "sentence_boundary_aligned": False,
+                "no_transcript_context": True,
+                "fallback_alignment_reason": "no_transcript_context",
+            },
         )
 
     context_start = context[0]["start"]
@@ -688,7 +762,13 @@ def enforce_story_bounds_with_metadata(start, end, context, fallback, max_durati
                 f"Moved hook from {format_time(old_start)} to {format_time(adjusted_start)} to respect {max_duration:.0f}s."
             )
 
-    return adjusted_start, adjusted_end, decisions, {"max_duration_clamped": max_duration_clamped}
+    return adjusted_start, adjusted_end, decisions, {
+        "max_duration_clamped": max_duration_clamped,
+        "segment_boundary_aligned": False,
+        "sentence_boundary_aligned": False,
+        "no_transcript_context": False,
+        "fallback_alignment_reason": "",
+    }
 
 
 def enforce_story_bounds(start, end, context, fallback, max_duration):
@@ -741,11 +821,18 @@ def trim_gameplay_low_value_lead(start, end, context, *, min_duration):
 
 
 def apply_context_padding(start, end, context, *, strategy_name, max_duration):
-    if strategy_name not in {"commentary", "podcast"}:
+    if strategy_name not in {"commentary", "podcast", "tutorial"} or not context:
         return start, end, [], {"preroll_added": 0.0, "postroll_added": 0.0, "context_padding_reason": ""}
 
-    target_preroll = 1.5 if strategy_name == "commentary" else 1.2
-    target_postroll = 1.2 if strategy_name == "commentary" else 1.5
+    if strategy_name == "commentary":
+        target_preroll = 1.5
+        target_postroll = 1.2
+    elif strategy_name == "podcast":
+        target_preroll = 1.2
+        target_postroll = 1.5
+    else:
+        target_preroll = 0.8
+        target_postroll = 1.0
     current_duration = max(0.0, end - start)
     available_budget = max(0.0, max_duration - current_duration)
     if available_budget <= 0.0:
@@ -785,6 +872,50 @@ def apply_context_padding(start, end, context, *, strategy_name, max_duration):
     }
 
 
+def align_to_transcript_segment_bounds(start, end, context, *, strategy_name, max_duration):
+    if not context:
+        return start, end, [], {
+            "segment_boundary_aligned": False,
+            "sentence_boundary_aligned": False,
+            "fallback_alignment_reason": "no_transcript_context",
+        }
+    if strategy_name not in {"commentary", "podcast", "tutorial"}:
+        return start, end, [], {
+            "segment_boundary_aligned": False,
+            "sentence_boundary_aligned": False,
+            "fallback_alignment_reason": "",
+        }
+
+    aligned_start = start
+    aligned_end = end
+    decisions: list[str] = []
+
+    proposed_start = segment_boundary_start_for_time(context, start)
+    if proposed_start < aligned_start and (aligned_end - proposed_start) <= max_duration:
+        aligned_start = proposed_start
+        decisions.append(f"Expanded start to transcript segment boundary: {format_time(aligned_start)}.")
+
+    proposed_end = segment_boundary_end_for_time(context, end)
+    if proposed_end > aligned_end and (proposed_end - aligned_start) <= max_duration:
+        aligned_end = proposed_end
+        decisions.append(f"Expanded end to transcript segment boundary: {format_time(aligned_end)}.")
+
+    segment_aligned = (
+        any(abs(float(item.get("segment_start", item["start"])) - float(aligned_start)) <= 0.02 for item in context)
+        or any(abs(float(item.get("segment_end", item["end"])) - float(aligned_end)) <= 0.02 for item in context)
+    )
+    sentence_aligned = (
+        any(abs(float(item["start"]) - float(aligned_start)) <= 0.02 for item in context)
+        or any(abs(float(item["end"]) - float(aligned_end)) <= 0.02 for item in context)
+    )
+
+    return aligned_start, aligned_end, decisions, {
+        "segment_boundary_aligned": bool(segment_aligned),
+        "sentence_boundary_aligned": bool(sentence_aligned),
+        "fallback_alignment_reason": "" if decisions or segment_aligned or sentence_aligned else "nearest_sentence_boundary_only",
+    }
+
+
 def refine_story_bounds_for_strategy(
     start,
     end,
@@ -813,6 +944,16 @@ def refine_story_bounds_for_strategy(
             adjusted_start = trimmed_start
             decisions.extend(trim_decisions)
 
+    adjusted_start, adjusted_end, segment_decisions, segment_metadata = align_to_transcript_segment_bounds(
+        adjusted_start,
+        adjusted_end,
+        context,
+        strategy_name=strategy_name,
+        max_duration=max_duration,
+    )
+    if segment_decisions:
+        decisions.extend(segment_decisions)
+
     adjusted_start, adjusted_end, padding_decisions, padding_metadata = apply_context_padding(
         adjusted_start,
         adjusted_end,
@@ -832,10 +973,14 @@ def refine_story_bounds_for_strategy(
         decisions.append(f"Clamped refined clip to {max_duration:.0f}s maximum duration.")
 
     metadata.update(padding_metadata)
+    metadata.update(segment_metadata)
     metadata["boundary_refined"] = bool(abs(float(adjusted_start) - float(start)) > 0.02 or abs(float(adjusted_end) - float(end)) > 0.02)
     metadata["preroll_added"] = round(max(0.0, float(start) - float(adjusted_start)), 4)
     metadata["postroll_added"] = round(max(0.0, float(adjusted_end) - float(end)), 4)
     metadata.setdefault("context_padding_reason", "")
+    metadata.setdefault("segment_boundary_aligned", False)
+    metadata.setdefault("sentence_boundary_aligned", False)
+    metadata.setdefault("fallback_alignment_reason", "")
     return adjusted_start, adjusted_end, decisions, metadata
 
 
@@ -1005,12 +1150,15 @@ def build_local_selection(
                 or _matches_context_boundary(context, fallback_window["end"])
             )
         ),
+        "sentence_boundary_aligned": bool(boundary_extra.get("sentence_boundary_aligned", False)),
+        "segment_boundary_aligned": bool(boundary_extra.get("segment_boundary_aligned", False)),
         "speaker_turn_boundary_used": _speaker_turn_boundary_used(context, fallback_window["start"], fallback_window["end"]),
         "max_duration_clamped": bool(boundary_extra.get("max_duration_clamped", False)),
         "boundary_refined": bool(boundary_extra.get("boundary_refined", False)),
         "preroll_added": round(float(boundary_extra.get("preroll_added", 0.0) or 0.0), 4),
         "postroll_added": round(float(boundary_extra.get("postroll_added", 0.0) or 0.0), 4),
         "context_padding_reason": str(boundary_extra.get("context_padding_reason") or ""),
+        "fallback_alignment_reason": str(boundary_extra.get("fallback_alignment_reason") or ""),
     }
     fallback_window["selection_source"] = "local_ranking"
     fallback_window["selection_reasons"] = window.get("selection_reasons") or []
@@ -1083,12 +1231,15 @@ def apply_batch_ai_selection(
                 or _matches_context_boundary(context, end)
             )
         ),
+        "sentence_boundary_aligned": bool(boundary_extra.get("sentence_boundary_aligned", False)),
+        "segment_boundary_aligned": bool(boundary_extra.get("segment_boundary_aligned", False)),
         "speaker_turn_boundary_used": _speaker_turn_boundary_used(context, start, end),
         "max_duration_clamped": bool(boundary_extra.get("max_duration_clamped", False)),
         "boundary_refined": bool(boundary_extra.get("boundary_refined", False)),
         "preroll_added": round(float(boundary_extra.get("preroll_added", 0.0) or 0.0), 4),
         "postroll_added": round(float(boundary_extra.get("postroll_added", 0.0) or 0.0), 4),
         "context_padding_reason": str(boundary_extra.get("context_padding_reason") or ""),
+        "fallback_alignment_reason": str(boundary_extra.get("fallback_alignment_reason") or ""),
     }
     text = collect_text_for_window(sentences, start, end)
     refined_window = dict(window)
