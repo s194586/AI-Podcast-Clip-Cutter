@@ -19,12 +19,20 @@ class CleanReviewArtifactsTests(unittest.TestCase):
         (benchmarks / "results.json").write_text("{}", encoding="utf-8")
         (benchmarks / "report.md").write_text("# report", encoding="utf-8")
         (benchmarks / "human_reviews.jsonl").write_text('{"clip_id":"a"}\n', encoding="utf-8")
-        (benchmarks / "cases.json").write_text("{}", encoding="utf-8")
+        (benchmarks / "cases.json").write_text('{"cases":[{"id":"old_case","video":"benchmarks/assets/old_case/input/source.mp4"}]}', encoding="utf-8")
+        (benchmarks / "cases.example.json").write_text("{}", encoding="utf-8")
+        (benchmarks / "REVIEW_RESET.md").write_text("# Reset", encoding="utf-8")
         (benchmarks / "README.md").write_text("# Benchmarks", encoding="utf-8")
         (benchmarks / "assets" / "clip.mp4").write_bytes(b"asset")
+        (benchmarks / "archive").mkdir()
+        (benchmarks / "archive" / "old_review.jsonl").write_text("{}", encoding="utf-8")
         outputs = base / "outputs" / "gui_runs"
         outputs.mkdir(parents=True)
         (outputs / "run_1").mkdir()
+        (base / "input").mkdir()
+        (base / "input" / "source.mp4").write_bytes(b"video")
+        (base / "transcripts").mkdir()
+        (base / "transcripts" / "final_transcript.json").write_text("{}", encoding="utf-8")
 
     def test_dry_run_does_not_delete_files(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -50,6 +58,7 @@ class CleanReviewArtifactsTests(unittest.TestCase):
             self.assertFalse((base / "outputs" / "gui_runs" / "run_1").exists())
             self.assertTrue((base / "benchmarks" / "assets" / "clip.mp4").exists())
             self.assertTrue((base / "benchmarks" / "cases.json").exists())
+            self.assertTrue((base / "input" / "source.mp4").exists())
 
     def test_archive_reviews_creates_backup_and_resets_live_file(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -83,6 +92,53 @@ class CleanReviewArtifactsTests(unittest.TestCase):
             self.assertTrue((base / "benchmarks" / "review_dashboard.html").exists())
             self.assertTrue((base / "benchmarks" / "results.json").exists())
             self.assertTrue((base / "benchmarks" / "report.md").exists())
+
+    def test_destructive_assets_removes_benchmark_assets_and_local_media(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            self._build_workspace(base)
+            plan = clean_review_artifacts.build_cleanup_plan(
+                project_root=base,
+                apply=True,
+                destructive_assets=True,
+            )
+            clean_review_artifacts.apply_cleanup_plan(plan)
+
+            self.assertFalse((base / "benchmarks" / "assets" / "clip.mp4").exists())
+            self.assertFalse((base / "input" / "source.mp4").exists())
+            self.assertFalse((base / "transcripts" / "final_transcript.json").exists())
+
+    def test_reset_cases_rewrites_cases_json_to_empty_list(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            self._build_workspace(base)
+            plan = clean_review_artifacts.build_cleanup_plan(
+                project_root=base,
+                apply=True,
+                reset_cases=True,
+            )
+            result = clean_review_artifacts.apply_cleanup_plan(plan)
+
+            self.assertTrue(result["cases_reset"])
+            self.assertEqual((base / "benchmarks" / "cases.json").read_text(encoding="utf-8"), '{\n  "cases": []\n}\n')
+
+    def test_purge_archives_uses_backup_dir_for_review_archive(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            self._build_workspace(base)
+            plan = clean_review_artifacts.build_cleanup_plan(
+                project_root=base,
+                apply=True,
+                archive_reviews=True,
+                purge_archives=True,
+                timestamp="20260517_101500",
+            )
+            result = clean_review_artifacts.apply_cleanup_plan(plan)
+
+            backup_path = base / "backups" / "review_reset" / "human_reviews_20260517_101500.jsonl"
+            self.assertEqual(result["archived_to"], str(backup_path))
+            self.assertTrue(backup_path.exists())
+            self.assertFalse((base / "benchmarks" / "archive" / "old_review.jsonl").exists())
 
     def test_missing_files_do_not_crash_apply(self):
         with tempfile.TemporaryDirectory() as temp_dir:

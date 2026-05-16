@@ -1777,12 +1777,12 @@ def parse_args():
         "--semantic-director-mode",
         default="off",
         choices=VALID_SEMANTIC_DIRECTOR_MODES,
-        help="Optional semantic story reviewer: off, local_only, gemini_optional or gemini_required.",
+        help="Experimental semantic story reviewer prototype. Disabled by default and not part of the recommended production flow.",
     )
     parser.add_argument(
         "--semantic-model",
         default="models/gemini-2.5-flash",
-        help="Gemini model for semantic clip review and optional subtitle correction hooks.",
+        help="Experimental Gemini model for the prototype semantic reviewer.",
     )
     parser.add_argument("--rerank-pool-size", type=int, default=0, help="How many locally ranked non-overlapping candidates to expose to Gemini batch rerank")
     parser.add_argument("--cutting-log", default="metadata/cutting_logic.json", help="Output log for cutting logic")

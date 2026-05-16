@@ -618,9 +618,9 @@ def parse_args() -> argparse.Namespace:
         "--subtitle-correction-mode",
         default="off",
         choices=VALID_SUBTITLE_CORRECTION_MODES,
-        help="Subtitle correction mode: off, local_only, gemini_optional or gemini_required",
+        help="Experimental subtitle correction prototype. Disabled by default and not part of the recommended production flow.",
     )
-    parser.add_argument("--semantic-model", default=DEFAULT_SUBTITLE_CORRECTION_MODEL, help="Gemini model for optional subtitle correction")
+    parser.add_argument("--semantic-model", default=DEFAULT_SUBTITLE_CORRECTION_MODEL, help="Experimental Gemini model for the prototype subtitle corrector")
     parser.add_argument("--request-timeout", type=float, default=45.0, help="Timeout in seconds for optional subtitle correction")
     return parser.parse_args()
 

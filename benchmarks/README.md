@@ -1,6 +1,13 @@
 # Benchmarking
 
-`benchmark.py` runs a local-only quality benchmark for `AI-virtual-cutter` without touching the main production folders used by `manager.py`.
+The benchmark corpus has been reset for a new external-model-focused iteration.
+
+Current state:
+- `benchmarks/cases.json` is intentionally empty
+- archived baseline definitions live in `benchmarks/old_cases.json.bak`
+- a reusable example case lives in `benchmarks/cases.example.json`
+
+`benchmark.py` still runs the local cutter/render benchmark flow, but the next corpus should be built from fresh media and evaluated against the new provider architecture described in `docs/EXTERNAL_MODELS_PLAN.md`.
 
 ## What it measures
 
@@ -57,7 +64,7 @@ benchmarks/assets/<case_id>/
     final_transcript.json # optional existing local transcript cache
 ```
 
-Then add a case to `benchmarks/cases.json`:
+Then copy `benchmarks/cases.example.json` into `benchmarks/cases.json` and add your cases:
 
 ```json
 {
@@ -124,3 +131,20 @@ After the run, open `benchmarks/human_review_template.csv` and fill:
 - `notes`
 
 This is the intended place for final subjective judgment, because raw heuristics cannot fully score clip usefulness.
+
+## Clean-slate workflow
+
+1. Put fresh benchmark media into `benchmarks/assets/<case_id>/input/source.mp4`
+2. Add the case to `benchmarks/cases.json`
+3. Run:
+
+```powershell
+.\.venv\Scripts\python.exe benchmark.py --ai-mode local_only --subtitle-checker-mode local_only
+```
+
+4. Export the review dashboard:
+
+```powershell
+.\.venv\Scripts\python.exe review_dashboard.py export-html --results benchmarks\results.json --output benchmarks\review_dashboard.html
+start benchmarks\review_dashboard.html
+```

@@ -1,4 +1,11 @@
 #!/usr/bin/env python3
+"""Experimental semantic clip review helpers.
+
+This module is intentionally kept out of the default pipeline.
+It remains in the repository as a reference prototype, but the current
+project direction is to replace it with provider-based transcription and
+timestamp-aware video understanding adapters.
+"""
 
 from __future__ import annotations
 

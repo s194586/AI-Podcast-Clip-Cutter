@@ -2777,15 +2777,15 @@ def parse_args() -> argparse.Namespace:
         "--semantic-director-mode",
         default=SEMANTIC_DIRECTOR_MODE_OFF,
         choices=VALID_SEMANTIC_DIRECTOR_MODES,
-        help="Optional semantic story reviewer for clip selection.",
+        help="Experimental semantic story reviewer prototype. Disabled by default and not part of the recommended production flow.",
     )
     parser.add_argument(
         "--subtitle-correction-mode",
         default=SUBTITLE_CORRECTION_MODE_OFF,
         choices=VALID_SUBTITLE_CORRECTION_MODES,
-        help="Optional subtitle text correction mode.",
+        help="Experimental subtitle correction prototype. Disabled by default and not part of the recommended production flow.",
     )
-    parser.add_argument("--semantic-model", default="models/gemini-2.5-flash", help="Gemini model for semantic review and subtitle correction")
+    parser.add_argument("--semantic-model", default="models/gemini-2.5-flash", help="Experimental Gemini model for the prototype semantic/subtitle flow")
     parser.add_argument("--skip-render", action="store_true", help="Skip cutter/subtitler rendering stages")
     parser.add_argument("--force-transcribe", action="store_true", help="Force fresh local transcription per case")
     parser.add_argument("--transcription-backend", default="faster_whisper", help="Transcription backend")
