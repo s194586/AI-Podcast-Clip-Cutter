@@ -13,7 +13,7 @@
       "transcript_source": "benchmarks/assets/new_case_id/transcripts/final_transcript.json",
       "heatmap": "benchmarks/assets/new_case_id/metadata/heatmap.json",
       "info_json": "benchmarks/assets/new_case_id/metadata/source.info.json",
-      "review_batch": "semantic_v1",
+      "review_batch": "local_v1",
       "comparison_content_types": [],
       "include_generic_baseline": true,
       "notes": "Free-form notes for the benchmark corpus."
