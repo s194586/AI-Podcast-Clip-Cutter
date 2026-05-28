@@ -1,173 +1,97 @@
-# AI Virtual Cutter
+# AI Podcast Clip Cutter
 
-AI Virtual Cutter is a local-first system for turning long-form videos into vertical short-form clips for TikTok, YouTube Shorts, and Instagram Reels. It supports multiple content types, including gameplay, podcasts, tutorials and screencasts, commentary and news, and a generic fallback mode.
+AI Podcast Clip Cutter is a local-first MVP for turning long podcast, interview and talking-head videos into vertical short-form clips for TikTok, YouTube Shorts and Reels.
 
-## Why This Project Matters
+The active product scope is podcast-only. Gameplay, tutorial, commentary and generic strategies are kept only as legacy code where removing them would risk unrelated imports; they are not selected by the current pipeline, benchmark or default routing.
 
-Short-form editing is usually manual, expensive, or tightly coupled to paid APIs. This project explores a more practical alternative:
+## MVP Target
 
-- keep the core pipeline local-first
-- reduce dependency on paid cloud services
-- adapt framing to the content instead of doing a naive 16:9 to 9:16 crop
-- evaluate changes against a real benchmark corpus instead of intuition alone
+- AI Podcast Clip Cutter
+- Talking-head short generator
+- Long spoken material: podcasts, interviews, conversations and solo talking-head videos
+- Output: 9:16 clips with stable face-focused framing and one consistent subtitle style
 
-## Key Features
+## Pipeline
 
-- Local-first pipeline for clip discovery, cutting, subtitles, and rendering
-- Faster-Whisper transcription with reusable local transcript artifacts
-- Heuristic speaker diarization with conservative merging for low-risk speaker attribution
-- Content classification for `gameplay`, `podcast`, `tutorial`, `commentary`, and `generic`
-- Strategy routing with different scoring preferences per content type
-- Content-aware 9:16 layout system
-- Automatic subtitle rendering
-- Optional Gemini rerank and fallback flow
-- Benchmark suite with 6 real cases
-- Human review workflow with preserve/archive merge behavior
-- Defensive fallback handling across transcription, diarization, layout, and rendering
+1. Prepare or download source media.
+2. Transcribe locally with Faster-Whisper when no reusable transcript exists.
+3. Run diarization as internal analysis.
+4. Route the material as `podcast`.
+5. Score candidate clips for context, answer/thesis, payoff, sentence-safe boundaries and speaker continuity.
+6. Optionally use Gemini for experimental rerank/correction modes.
+7. Cut vertical 9:16 clips.
+8. Burn subtitles with one stable podcast style.
 
-## Architecture
+Technical modes such as `local_only`, `gemini_optional` and `gemini_enabled` still control whether AI/API calls are allowed. They do not change the podcast-only content scope.
 
-```mermaid
-flowchart TD
-    A[Input video / YouTube URL] --> B[Audio extraction]
-    B --> C[Local transcription: faster-whisper]
-    C --> D[Heuristic diarization]
-    D --> E[Content classifier]
-    E --> F[Strategy routing]
-    F --> G[Local candidate scoring]
-    G --> H[Optional Gemini rerank]
-    H --> I[Clip cutting]
-    I --> J[Content-aware 9:16 layout]
-    J --> K[Subtitles]
-    K --> L[Final TikTok / Shorts clips]
-```
-
-## Pipeline Overview
-
-1. Transcribe the source video locally.
-2. Apply heuristic diarization to estimate speaker turns.
-3. Classify the material type.
-4. Route selection and render decisions through a content-aware strategy.
-5. Score candidate clip windows locally.
-6. Optionally rerank the final pool with Gemini.
-7. Cut clips and render them as vertical 9:16 outputs.
-8. Burn subtitles and export short-form-ready files.
-
-## 9:16 Layout System
-
-The final output is always vertical 9:16.
-
-- `gameplay` uses `gameplay_priority_crop`
-  The crop stays stable, avoids overreacting to tiny facecams near screen edges, and prefers preserving the main gameplay action.
-- `tutorial` uses `full_frame_blur_background`
-  The full 16:9 screen remains visible inside a vertical canvas with a blurred background, which keeps screencasts readable.
-- `podcast` uses `speaker_face_crop`
-  Face tracking remains useful here and is weighted much more heavily than in gameplay.
-- `commentary` uses `stable_subject_crop`
-  The framing is calmer and avoids distracting jumps.
-- `generic` uses `safe_center_crop`
-  This is the safe fallback when the material is ambiguous.
-
-## Repository Structure
+## Key Files
 
 ```text
-analyze_virals.py        Candidate generation, scoring, and optional rerank
-benchmark.py             Benchmark runner and reporting
-cutter.py                Clip cutting and content-aware 9:16 rendering
-manager.py               End-to-end CLI orchestration
-layout/                  Layout profiles for final vertical rendering
-strategies/              Selection strategies per content type
-transcription/           Transcription backends
-diarization/             Diarization backends
-tests/                   Unit tests
-benchmarks/              Benchmark config, latest report, latest results, review template
+manager.py                 End-to-end workflow entrypoint
+analyze_virals.py          Candidate generation, scoring and optional rerank
+cutter.py                  Clip cutting and 9:16 rendering
+subtitler.py               Stable podcast subtitles
+content_classifier.py      Podcast-only routing gate
+strategies/                Active registry selects the podcast strategy
+layout/                    Active layout resolves to podcast face crop
+benchmark.py               Podcast-only benchmark runner
+benchmarks/cases.json      Podcast benchmark cases
+benchmarks/review_dashboard.html  Latest review dashboard after a benchmark run
 ```
 
-## Getting Started
+## Install
 
-### Requirements
-
-- Python 3.11+
-- FFmpeg and FFprobe available in `PATH`
-- Optional: GPU support for faster transcription
-- Optional: Gemini API key for rerank or subtitle checking features
-
-### Install
-
-```bash
-git clone <repo-url>
-cd AI-virtual-cutter
+```powershell
 python -m venv .venv
-.venv\Scripts\activate
+.\.venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-### Run the full pipeline
+FFmpeg and FFprobe must be available in `PATH` or through the bundled tools used by the project scripts.
 
-```bash
-python manager.py --url "https://www.youtube.com/watch?v=..."
+## Run Locally
+
+```powershell
+.\.venv\Scripts\python.exe manager.py --content-type auto --ai-mode local_only --subtitle-checker-mode local_only
 ```
 
-### Run fully local selection and rendering
+`auto` is accepted for convenience, but the current MVP routes it to `podcast`.
 
-```bash
-python manager.py --content-type auto --ai-mode local_only --subtitle-checker-mode local_only
+## Benchmark
+
+Run the podcast-only benchmark batch:
+
+```powershell
+.\.venv\Scripts\python.exe tools\run_local_benchmark.py --review-batch podcast_only_v1
 ```
 
-### Run the benchmark suite
+Outputs:
 
-```bash
-python benchmark.py --ai-mode local_only --subtitle-checker-mode local_only
+- `benchmarks/results.json`
+- `benchmarks/report.md`
+- `benchmarks/human_review_template.csv`
+- `benchmarks/review_dashboard.html`
+- `benchmarks/runs/<timestamp>/...`
+
+Open the dashboard:
+
+```powershell
+start benchmarks\review_dashboard.html
 ```
 
-## Benchmarking and Human Review
+## Human Review Focus
 
-The project is developed against a benchmark corpus of 6 real materials:
+For each clip, judge:
 
-- gameplay
-- podcast
-- tutorial / screencast
-- commentary / news
-
-Benchmark outputs include:
-
-- latest machine-readable results in `benchmarks/results.json`
-- latest report in `benchmarks/report.md`
-- review template in `benchmarks/human_review_template.csv`
-
-Human review is intentionally part of the workflow:
-
-- new benchmark templates preserve existing manual scores when clip keys match
-- unmatched historical reviews are archived instead of being overwritten
-- results and reports merge benchmark metrics with available human feedback
-
-## Validation
-
-Useful local checks:
-
-```bash
-python -m unittest discover -s tests -p "test_*.py"
-python manager.py --help
-python benchmark.py --help
-```
-
-## Current Status
-
-This repository is currently focused on:
-
-- reliable local-first clip discovery
-- conservative diarization behavior
-- content-aware 9:16 rendering
-- benchmark-driven iteration
-
-The most important next steps are:
-
-- better gameplay smart crop
-- stronger active-speaker crop for podcasts
-- further boundary refinement
-- more scoring tuning against low-payoff selections
+- whether it starts logically
+- whether it has enough context before the answer or thesis
+- whether it develops into a clear point
+- whether the ending has payoff or closure
+- whether no sentence is cut in the middle
+- whether subtitles are synchronized and readable
+- whether framing and speaker continuity are stable
+- whether the clip tells a short self-contained story
 
 ## Notes
 
-- Heavy benchmark run artifacts, local media, model caches, and secrets are intentionally excluded from version control.
-- The repository keeps the latest benchmark report and results as lightweight documentation, not the full generated media corpus.
+Generated media, benchmark runs, local model caches and secrets are intentionally excluded from version control. Do not commit `.env`, `.venv`, local source media or generated benchmark artifacts unless explicitly planned.

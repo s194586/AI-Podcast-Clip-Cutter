@@ -9,12 +9,7 @@ DEFAULT_OUTPUT_ASPECT_RATIO = "9:16"
 
 VALID_LAYOUT_MODES = (
     "auto",
-    "vertical_crop",
-    "safe_center_crop",
-    "gameplay_priority_crop",
-    "full_frame_blur_background",
     "speaker_face_crop",
-    "stable_subject_crop",
 )
 
 
@@ -22,6 +17,7 @@ VALID_LAYOUT_MODES = (
 class LayoutProfile:
     content_type: str
     layout_mode: str
+    layout_policy: str
     crop_priority: str
     allow_face_tracking: bool
     face_tracking_weight: float

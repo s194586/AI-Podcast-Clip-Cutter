@@ -6,6 +6,7 @@ import re
 import shutil
 import ssl
 import subprocess
+import sys
 import time
 import warnings
 from bisect import bisect_left
@@ -19,6 +20,7 @@ from content_classifier import (
     normalize_content_type_mode,
     save_content_profile,
 )
+from gemini_transport import generate_text_with_transport
 from layout import VALID_LAYOUT_MODES, get_layout_profile, normalize_layout_mode
 from local_scoring import score_candidates
 from pipeline_modes import (
@@ -27,6 +29,14 @@ from pipeline_modes import (
     allows_gemini,
     normalize_ai_mode,
     requires_gemini,
+)
+from semantic_clip_director import (
+    ClipDirectorError,
+    SEMANTIC_DIRECTOR_MODE_OFF,
+    VALID_SEMANTIC_DIRECTOR_MODES,
+    build_clip_director,
+    clamp_score,
+    normalize_semantic_director_mode,
 )
 from strategies import get_strategy
 
@@ -297,49 +307,15 @@ def generate_content_via_curl(prompt, model_name, api_key, operation, request_ti
 
 
 def generate_gemini_text(prompt, model_name, api_key, request_timeout):
-    preferred_transport = os.environ.get("GEMINI_TRANSPORT", "").strip().lower()
-    errors = []
-
-    curl_binary = shutil.which("curl.exe") or shutil.which("curl")
-    use_curl_first = preferred_transport == "curl" or (os.name == "nt" and curl_binary)
-    if not use_curl_first and genai is not None:
-        try:
-            model = genai.GenerativeModel(
-                model_name,
-                generation_config={"temperature": 0.2, "response_mime_type": "application/json"},
-            )
-            result = generate_content_with_backoff(
-                model,
-                [prompt],
-                "Gemini smart context cutter",
-                request_timeout=request_timeout,
-            )
-            text = getattr(result, "text", None)
-            if not text and hasattr(result, "candidates") and result.candidates:
-                text = str(result.candidates[0])
-            if text:
-                return text
-            errors.append("SDK returned an empty response.")
-        except Exception as exc:
-            errors.append(f"SDK error: {exc}")
-            if preferred_transport == "sdk":
-                raise
-
-    if api_key:
-        try:
-            return generate_content_via_curl(
-                prompt,
-                model_name,
-                api_key,
-                "Gemini smart context cutter (curl)",
-                request_timeout=request_timeout,
-            )
-        except Exception as exc:
-            errors.append(f"curl error: {exc}")
-
-    if not errors and genai is None:
-        errors.append("Gemini client library is unavailable.")
-    raise RuntimeError(" | ".join(errors))
+    return generate_text_with_transport(
+        prompt,
+        model_name,
+        api_key,
+        "Podcast viral moment selector",
+        request_timeout=request_timeout,
+        response_mime_type="application/json",
+        temperature=0.15,
+    )
 
 
 def extract_json_object(text):
@@ -422,23 +398,67 @@ def build_sentence_boundaries(transcript):
 
         pieces = split_sentences(text)
         if len(pieces) == 1:
-            sentences.append({"start": start, "end": end, "text": pieces[0], "speaker": speaker})
+            sentences.append(
+                {
+                    "start": start,
+                    "end": end,
+                    "text": pieces[0],
+                    "speaker": speaker,
+                    "segment_start": start,
+                    "segment_end": end,
+                    "sentence_index_in_segment": 0,
+                    "segment_piece_count": 1,
+                }
+            )
             continue
 
         total_chars = sum(len(piece) for piece in pieces)
         if total_chars == 0:
-            sentences.append({"start": start, "end": end, "text": text, "speaker": speaker})
+            sentences.append(
+                {
+                    "start": start,
+                    "end": end,
+                    "text": text,
+                    "speaker": speaker,
+                    "segment_start": start,
+                    "segment_end": end,
+                    "sentence_index_in_segment": 0,
+                    "segment_piece_count": 1,
+                }
+            )
             continue
 
         cursor = start
         consumed = 0
-        for piece in pieces[:-1]:
+        for piece_index, piece in enumerate(pieces[:-1]):
             consumed += len(piece)
             portion = consumed / total_chars
             boundary = start + (end - start) * portion
-            sentences.append({"start": cursor, "end": boundary, "text": piece, "speaker": speaker})
+            sentences.append(
+                {
+                    "start": cursor,
+                    "end": boundary,
+                    "text": piece,
+                    "speaker": speaker,
+                    "segment_start": start,
+                    "segment_end": end,
+                    "sentence_index_in_segment": piece_index,
+                    "segment_piece_count": len(pieces),
+                }
+            )
             cursor = boundary
-        sentences.append({"start": cursor, "end": end, "text": pieces[-1], "speaker": speaker})
+        sentences.append(
+            {
+                "start": cursor,
+                "end": end,
+                "text": pieces[-1],
+                "speaker": speaker,
+                "segment_start": start,
+                "segment_end": end,
+                "sentence_index_in_segment": len(pieces) - 1,
+                "segment_piece_count": len(pieces),
+            }
+        )
     return sentences
 
 
@@ -519,6 +539,10 @@ def collect_context(sentences, window_start, window_end, margin=20.0):
             {
                 "start": sentence["start"],
                 "end": sentence["end"],
+                "segment_start": sentence.get("segment_start", sentence["start"]),
+                "segment_end": sentence.get("segment_end", sentence["end"]),
+                "sentence_index_in_segment": sentence.get("sentence_index_in_segment", 0),
+                "segment_piece_count": sentence.get("segment_piece_count", 1),
                 "text": sentence["text"],
                 "speaker": speaker,
                 "line": f'{format_time(sentence["start"])} - {format_time(sentence["end"])}{label}: {sentence["text"]}',
@@ -551,15 +575,386 @@ def boundary_end_for_time(sentences, value):
     return min(ends, key=lambda item: abs(item - value))
 
 
-def enforce_story_bounds(start, end, context, fallback, max_duration):
+def segment_boundary_start_for_time(sentences, value):
+    for sentence in sentences:
+        if sentence["start"] <= value <= sentence["end"]:
+            return float(sentence.get("segment_start", sentence["start"]))
+    starts = [float(sentence.get("segment_start", sentence["start"])) for sentence in sentences]
+    if not starts:
+        return value
+    return min(starts, key=lambda item: abs(item - value))
+
+
+def segment_boundary_end_for_time(sentences, value):
+    for sentence in sentences:
+        if sentence["start"] <= value <= sentence["end"]:
+            return float(sentence.get("segment_end", sentence["end"]))
+    ends = [float(sentence.get("segment_end", sentence["end"])) for sentence in sentences]
+    if not ends:
+        return value
+    return min(ends, key=lambda item: abs(item - value))
+
+
+GAMEPLAY_LOW_VALUE_LEAD_TOKENS = {
+    "buy",
+    "case",
+    "changer",
+    "czekam",
+    "czekamy",
+    "czekania",
+    "chodze",
+    "chodzę",
+    "chodzenie",
+    "eco",
+    "ide",
+    "idę",
+    "menu",
+    "promo",
+    "reklama",
+    "rotate",
+    "rotacja",
+    "setup",
+    "skin",
+    "skiny",
+    "skrzynie",
+    "smoke",
+    "sponsor",
+    "utility",
+    "walk",
+}
+
+GAMEPLAY_PAYOFF_TOKENS = {
+    "ace",
+    "boom",
+    "clutch",
+    "dead",
+    "defuse",
+    "frag",
+    "headshot",
+    "hit",
+    "kill",
+    "lezy",
+    "nice",
+    "padl",
+    "plant",
+    "strzela",
+    "trafilem",
+    "trafiony",
+    "win",
+    "zabil",
+    "zabilem",
+}
+
+PODCAST_PAYOFF_TOKENS = {
+    "dlatego",
+    "dokladnie",
+    "dokładnie",
+    "finalnie",
+    "koniec",
+    "morał",
+    "moral",
+    "najwazniejsze",
+    "najważniejsze",
+    "okazalo",
+    "okazało",
+    "pointa",
+    "puenta",
+    "sedno",
+    "wniosek",
+    "wlasnie",
+    "właśnie",
+}
+
+PODCAST_PAYOFF_PHRASES = (
+    "i to jest",
+    "o to chodzi",
+    "to jest sedno",
+    "to jest pointa",
+    "to jest puenta",
+    "w tym sensie",
+    "na koniec",
+    "ostatecznie",
+    "wtedy zrozumialem",
+    "wtedy zrozumiałem",
+)
+
+CONTINUATION_END_TOKENS = {
+    "a",
+    "ale",
+    "albo",
+    "bo",
+    "czy",
+    "czyli",
+    "dlatego",
+    "gdy",
+    "i",
+    "jak",
+    "jakby",
+    "kiedy",
+    "no",
+    "oraz",
+    "poniewaz",
+    "ponieważ",
+    "to",
+    "wiec",
+    "więc",
+    "ze",
+    "że",
+}
+
+PODCAST_NEW_THREAD_END_PHRASES = (
+    "dlatego wydaje mi sie",
+    "dlatego wydaje mi się",
+    "gdzie jednak chyba",
+    "tutaj czesc osob podnosi argument",
+    "tutaj część osób podnosi argument",
+    "do tego banku",
+    "wracajac do",
+    "wracając do",
+    "wrocmy teraz",
+    "wróćmy teraz",
+    "jeszcze jedna rzecz",
+    "kolejna rzecz",
+    "inna sprawa",
+    "z drugiej strony",
+)
+
+PODCAST_CONTINUATION_PHRASES = (
+    "wydaje mi sie",
+    "wydaje mi się",
+    "chyba",
+    "bo jeszcze",
+    "i jeszcze",
+    "natomiast",
+    "a potem",
+    "ale potem",
+    "bo potem",
+    "co dalej",
+    "co wiecej",
+    "co więcej",
+)
+
+LLM_PACKET_CONTEXT_ROWS = 32
+LLM_PACKET_TEXT_LIMIT = 220
+LLM_RERANK_BATCH_SIZE = 6
+
+
+def _words(text):
+    return re.findall(r"[^\W_]+(?:['-][^\W_]+)*", str(text or "").lower(), flags=re.UNICODE)
+
+
+def _contains_any_token(text, tokens):
+    return bool(set(_words(text)).intersection(tokens))
+
+
+def _contains_any_phrase(text, phrases):
+    lower_text = str(text or "").lower()
+    return any(phrase in lower_text for phrase in phrases)
+
+
+def _is_low_value_gameplay_lead(text):
+    return _contains_any_token(text, GAMEPLAY_LOW_VALUE_LEAD_TOKENS) or _contains_any_phrase(
+        text,
+        (
+            "buy menu",
+            "full buy",
+            "kod promo",
+            "link w opisie",
+            "materiał sponsorowany",
+            "material sponsorowany",
+            "x changer",
+            "x-changer",
+        ),
+    )
+
+
+def _has_gameplay_payoff(text):
+    return _contains_any_token(text, GAMEPLAY_PAYOFF_TOKENS) or _contains_any_phrase(
+        text,
+        (
+            "enemy down",
+            "round win",
+            "round won",
+            "zabijam go",
+            "zabili go",
+        ),
+    )
+
+
+def _has_podcast_payoff(text):
+    compact = " ".join(str(text or "").split()).lower()
+    if not compact:
+        return False
+    if _contains_any_token(compact, PODCAST_PAYOFF_TOKENS) or _contains_any_phrase(compact, PODCAST_PAYOFF_PHRASES):
+        return True
+    sentences = split_sentences(compact)
+    if not sentences:
+        return False
+    last_sentence = sentences[-1].strip()
+    return bool(len(_words(last_sentence)) >= 5 and last_sentence.endswith((".", "!", "?")))
+
+
+def _looks_like_incomplete_end(text):
+    compact = " ".join(str(text or "").split()).strip()
+    if not compact:
+        return True
+    if compact.endswith(("...", ",", ";", ":", "-")):
+        return True
+    words = _words(compact)
+    if words and words[-1] in CONTINUATION_END_TOKENS:
+        return True
+    if not compact.endswith((".", "!", "?")) and len(words) <= 12:
+        return True
+    return False
+
+
+def _normalize_compact_text(text):
+    return " ".join(str(text or "").strip().lower().split())
+
+
+def _starts_with_any_phrase(text, phrases):
+    compact = _normalize_compact_text(text)
+    return any(compact.startswith(phrase) for phrase in phrases)
+
+
+def detect_podcast_ending_type(last_text, combined_text):
+    last_compact = _normalize_compact_text(last_text)
+    combined_compact = _normalize_compact_text(combined_text)
+    if not last_compact:
+        return "cut_off"
+    if _looks_like_incomplete_end(last_text):
+        return "cut_off"
+    if _starts_with_any_phrase(last_compact, PODCAST_NEW_THREAD_END_PHRASES):
+        return "new_thread"
+    if _starts_with_any_phrase(last_compact, PODCAST_CONTINUATION_PHRASES):
+        return "continues"
+    if not _has_podcast_payoff(combined_compact):
+        return "continues"
+    return "closed"
+
+
+def is_low_viral_podcast_candidate(local_features):
+    features = local_features or {}
+    hook_score = float(features.get("hook_score", 0.0) or 0.0)
+    emotion_score = float(features.get("emotion_score", 0.0) or 0.0)
+    punchiness_score = float(features.get("punchiness_score", 0.0) or 0.0)
+    question_present = int(features.get("podcast_question_present", 0) or 0)
+    payoff_score = float(features.get("podcast_dialogue_payoff_score", 0.0) or 0.0)
+    speaker_turn_score = float(features.get("speaker_turn_score", 0.0) or 0.0)
+    if hook_score >= 0.55 or emotion_score >= 0.35 or punchiness_score >= 0.35:
+        return False
+    if question_present > 0:
+        return False
+    if payoff_score >= 0.6 or speaker_turn_score >= 0.45:
+        return False
+    return True
+
+
+def validate_podcast_candidate(window, boundary_metadata, *, source):
+    reasons = []
+    ending_type = str(boundary_metadata.get("ending_type") or "")
+    if ending_type != "closed":
+        reasons.append(f"ending_type_{ending_type or 'unknown'}")
+    if source == "local_ranking" and is_low_viral_podcast_candidate(window.get("local_features")):
+        reasons.append("local_viral_filter_reject")
+    if source == "gemini_batch_rerank":
+        if bool(window.get("llm_reject_if_boring")):
+            reasons.append("llm_reject_if_boring")
+        if str(window.get("llm_ending_type") or "") != "closed":
+            reasons.append(f"llm_ending_type_{window.get('llm_ending_type') or 'unknown'}")
+    return (not reasons), reasons
+
+
+def repair_podcast_end_boundary(start, end, context, *, max_duration):
     if not context:
-        return fallback["start"], fallback["end"], ["No transcript context found, keeping heatmap window."]
+        return end, [], {
+            "end_expanded": False,
+            "end_expansion_reason": "",
+            "payoff_detected": False,
+            "ending_type": "cut_off",
+        }
+
+    inside = [item for item in context if item["end"] > start and item["start"] < end]
+    text = " ".join(item.get("text", "") for item in inside).strip()
+    payoff_detected = _has_podcast_payoff(text)
+    last_text = inside[-1].get("text", "") if inside else ""
+    ending_type = detect_podcast_ending_type(last_text, text)
+    if ending_type == "closed":
+        return end, [], {
+            "end_expanded": False,
+            "end_expansion_reason": "",
+            "payoff_detected": True,
+            "ending_type": "closed",
+        }
+
+    max_end = start + max_duration
+    search_end = min(max_end, end + 25.0)
+    following = [item for item in context if item["end"] > end + 0.02 and item["end"] <= search_end + 0.02]
+    if not following:
+        return end, [], {
+            "end_expanded": False,
+            "end_expansion_reason": "no_following_context_for_payoff",
+            "payoff_detected": payoff_detected,
+            "ending_type": ending_type,
+        }
+
+    candidate_text = text
+    for item in following:
+        proposed_end = float(item["end"])
+        candidate_text = " ".join(part for part in (candidate_text, str(item.get("text", ""))) if part).strip()
+        candidate_ending_type = detect_podcast_ending_type(str(item.get("text", "")), candidate_text)
+        if candidate_ending_type == "closed":
+            reason = (
+                "Expanded podcast ending to include payoff/closure after the original boundary."
+                if not payoff_detected
+                else "Expanded podcast ending to avoid cutting a continuing answer."
+            )
+            return proposed_end, [f"{reason} New end: {format_time(proposed_end)}."], {
+                "end_expanded": proposed_end > end + 0.02,
+                "end_expansion_reason": reason,
+                "payoff_detected": True,
+                "ending_type": "closed",
+            }
+
+    proposed_end = min(search_end, float(following[-1]["end"]))
+    if proposed_end > end + 0.02:
+        reason = "Expanded podcast ending but still did not find a closed payoff."
+        return proposed_end, [f"{reason} New end: {format_time(proposed_end)}."], {
+            "end_expanded": True,
+            "end_expansion_reason": reason,
+            "payoff_detected": _has_podcast_payoff(candidate_text),
+            "ending_type": detect_podcast_ending_type(str(following[-1].get("text", "")), candidate_text),
+        }
+
+    return end, [], {
+        "end_expanded": False,
+        "end_expansion_reason": "no_clear_payoff_found_after_boundary",
+        "payoff_detected": payoff_detected,
+        "ending_type": ending_type,
+    }
+
+
+def enforce_story_bounds_with_metadata(start, end, context, fallback, max_duration):
+    if not context:
+        return (
+            fallback["start"],
+            fallback["end"],
+            ["No transcript context found, keeping heatmap window."],
+            {
+                "max_duration_clamped": False,
+                "segment_boundary_aligned": False,
+                "sentence_boundary_aligned": False,
+                "no_transcript_context": True,
+                "fallback_alignment_reason": "no_transcript_context",
+            },
+        )
 
     context_start = context[0]["start"]
     context_end = context[-1]["end"]
     adjusted_start = boundary_start_for_time(context, clamp(start, context_start, context_end))
     adjusted_end = boundary_end_for_time(context, clamp(end, context_start, context_end))
     decisions = []
+    max_duration_clamped = False
 
     if adjusted_start != start:
         decisions.append(f"Moved hook to sentence start: {format_time(adjusted_start)}.")
@@ -572,6 +967,7 @@ def enforce_story_bounds(start, end, context, fallback, max_duration):
         decisions.append("AI returned invalid bounds, fallback to original heatmap window.")
 
     if adjusted_end - adjusted_start > max_duration:
+        max_duration_clamped = True
         limit = adjusted_start + max_duration
         safe_ends = [item["end"] for item in context if adjusted_start < item["end"] <= limit]
         if safe_ends:
@@ -588,59 +984,438 @@ def enforce_story_bounds(start, end, context, fallback, max_duration):
                 f"Moved hook from {format_time(old_start)} to {format_time(adjusted_start)} to respect {max_duration:.0f}s."
             )
 
+    return adjusted_start, adjusted_end, decisions, {
+        "max_duration_clamped": max_duration_clamped,
+        "segment_boundary_aligned": False,
+        "sentence_boundary_aligned": False,
+        "no_transcript_context": False,
+        "fallback_alignment_reason": "",
+    }
+
+
+def enforce_story_bounds(start, end, context, fallback, max_duration):
+    adjusted_start, adjusted_end, decisions, _metadata = enforce_story_bounds_with_metadata(
+        start,
+        end,
+        context,
+        fallback,
+        max_duration,
+    )
     return adjusted_start, adjusted_end, decisions
+
+
+def trim_gameplay_low_value_lead(start, end, context, *, min_duration):
+    if not context:
+        return start, []
+    inside = [item for item in context if item["end"] > start and item["start"] < end]
+    if len(inside) < 2:
+        return start, []
+
+    first_payoff = None
+    low_value_prefix = []
+    for item in inside:
+        if item["end"] <= start:
+            continue
+        if _has_gameplay_payoff(item.get("text", "")):
+            first_payoff = item
+            break
+        if _is_low_value_gameplay_lead(item.get("text", "")):
+            low_value_prefix.append(item)
+            continue
+        break
+
+    if first_payoff is None or not low_value_prefix:
+        return start, []
+
+    pre_roll_seconds = 2.0
+    proposed_start = max(start, float(first_payoff["start"]) - pre_roll_seconds)
+    if end - proposed_start < min_duration:
+        proposed_start = max(start, end - min_duration)
+
+    if proposed_start <= start + 0.5:
+        return start, []
+    return proposed_start, [
+        (
+            "Trimmed low-value gameplay setup before the action while keeping a short pre-roll "
+            f"from {format_time(start)} to {format_time(proposed_start)}."
+        )
+    ]
+
+
+def apply_context_padding(start, end, context, *, strategy_name, max_duration):
+    if strategy_name not in {"commentary", "podcast", "tutorial"} or not context:
+        return start, end, [], {"preroll_added": 0.0, "postroll_added": 0.0, "context_padding_reason": ""}
+
+    if strategy_name == "commentary":
+        target_preroll = 1.5
+        target_postroll = 1.2
+    elif strategy_name == "podcast":
+        target_preroll = 1.2
+        target_postroll = 1.5
+    else:
+        target_preroll = 0.8
+        target_postroll = 1.0
+    current_duration = max(0.0, end - start)
+    available_budget = max(0.0, max_duration - current_duration)
+    if available_budget <= 0.0:
+        return start, end, [], {"preroll_added": 0.0, "postroll_added": 0.0, "context_padding_reason": ""}
+
+    desired_preroll = min(target_preroll, available_budget)
+    desired_postroll = min(target_postroll, max(0.0, available_budget - desired_preroll))
+    padded_start = max(0.0, start - desired_preroll)
+    padded_end = end + desired_postroll
+    if context:
+        padded_start = boundary_start_for_time(context, padded_start)
+        padded_end = boundary_end_for_time(context, padded_end)
+
+    if padded_end - padded_start > max_duration:
+        padded_end = min(padded_end, padded_start + max_duration)
+        if context:
+            padded_end = boundary_end_for_time(context, padded_end)
+        if padded_end - padded_start > max_duration:
+            padded_end = padded_start + max_duration
+
+    preroll_added = round(max(0.0, start - padded_start), 4)
+    postroll_added = round(max(0.0, padded_end - end), 4)
+    if preroll_added <= 0.01 and postroll_added <= 0.01:
+        return start, end, [], {"preroll_added": 0.0, "postroll_added": 0.0, "context_padding_reason": ""}
+
+    reason = f"{strategy_name}_context_padding"
+    decisions = [
+        (
+            f"Added context padding for {strategy_name}: "
+            f"+{preroll_added:.2f}s pre-roll, +{postroll_added:.2f}s post-roll."
+        )
+    ]
+    return padded_start, padded_end, decisions, {
+        "preroll_added": preroll_added,
+        "postroll_added": postroll_added,
+        "context_padding_reason": reason,
+    }
+
+
+def align_to_transcript_segment_bounds(start, end, context, *, strategy_name, max_duration):
+    if not context:
+        return start, end, [], {
+            "segment_boundary_aligned": False,
+            "sentence_boundary_aligned": False,
+            "fallback_alignment_reason": "no_transcript_context",
+        }
+    if strategy_name not in {"commentary", "podcast", "tutorial"}:
+        return start, end, [], {
+            "segment_boundary_aligned": False,
+            "sentence_boundary_aligned": False,
+            "fallback_alignment_reason": "",
+        }
+
+    aligned_start = start
+    aligned_end = end
+    decisions: list[str] = []
+
+    proposed_start = segment_boundary_start_for_time(context, start)
+    if proposed_start < aligned_start and (aligned_end - proposed_start) <= max_duration:
+        aligned_start = proposed_start
+        decisions.append(f"Expanded start to transcript segment boundary: {format_time(aligned_start)}.")
+
+    proposed_end = segment_boundary_end_for_time(context, end)
+    if proposed_end > aligned_end and (proposed_end - aligned_start) <= max_duration:
+        aligned_end = proposed_end
+        decisions.append(f"Expanded end to transcript segment boundary: {format_time(aligned_end)}.")
+
+    segment_aligned = (
+        any(abs(float(item.get("segment_start", item["start"])) - float(aligned_start)) <= 0.02 for item in context)
+        or any(abs(float(item.get("segment_end", item["end"])) - float(aligned_end)) <= 0.02 for item in context)
+    )
+    sentence_aligned = (
+        any(abs(float(item["start"]) - float(aligned_start)) <= 0.02 for item in context)
+        or any(abs(float(item["end"]) - float(aligned_end)) <= 0.02 for item in context)
+    )
+
+    return aligned_start, aligned_end, decisions, {
+        "segment_boundary_aligned": bool(segment_aligned),
+        "sentence_boundary_aligned": bool(sentence_aligned),
+        "fallback_alignment_reason": "" if decisions or segment_aligned or sentence_aligned else "nearest_sentence_boundary_only",
+    }
+
+
+def refine_story_bounds_for_strategy(
+    start,
+    end,
+    context,
+    fallback,
+    max_duration,
+    *,
+    min_duration=20.0,
+    strategy_name="podcast",
+):
+    adjusted_start, adjusted_end, decisions, metadata = enforce_story_bounds_with_metadata(
+        start,
+        end,
+        context,
+        fallback,
+        max_duration,
+    )
+    if strategy_name == "gameplay":
+        trimmed_start, trim_decisions = trim_gameplay_low_value_lead(
+            adjusted_start,
+            adjusted_end,
+            context,
+            min_duration=min_duration,
+        )
+        if trim_decisions:
+            adjusted_start = trimmed_start
+            decisions.extend(trim_decisions)
+
+    adjusted_start, adjusted_end, segment_decisions, segment_metadata = align_to_transcript_segment_bounds(
+        adjusted_start,
+        adjusted_end,
+        context,
+        strategy_name=strategy_name,
+        max_duration=max_duration,
+    )
+    if segment_decisions:
+        decisions.extend(segment_decisions)
+
+    adjusted_start, adjusted_end, padding_decisions, padding_metadata = apply_context_padding(
+        adjusted_start,
+        adjusted_end,
+        context,
+        strategy_name=strategy_name,
+        max_duration=max_duration,
+    )
+    if padding_decisions:
+        decisions.extend(padding_decisions)
+
+    if strategy_name == "podcast":
+        repaired_end, repair_decisions, repair_metadata = repair_podcast_end_boundary(
+            adjusted_start,
+            adjusted_end,
+            context,
+            max_duration=max_duration,
+        )
+        if repair_decisions:
+            decisions.extend(repair_decisions)
+        adjusted_end = repaired_end
+    else:
+        repair_metadata = {
+            "end_expanded": False,
+            "end_expansion_reason": "",
+            "payoff_detected": False,
+            "ending_type": "closed",
+        }
+
+    if adjusted_end - adjusted_start > max_duration:
+        metadata["max_duration_clamped"] = True
+        adjusted_end = adjusted_start + max_duration
+        adjusted_end = boundary_end_for_time(context, adjusted_end) if context else adjusted_end
+        if adjusted_end - adjusted_start > max_duration:
+            adjusted_end = adjusted_start + max_duration
+        decisions.append(f"Clamped refined clip to {max_duration:.0f}s maximum duration.")
+
+    metadata.update(padding_metadata)
+    metadata.update(repair_metadata)
+    metadata.update(segment_metadata)
+    metadata["boundary_refined"] = bool(abs(float(adjusted_start) - float(start)) > 0.02 or abs(float(adjusted_end) - float(end)) > 0.02)
+    metadata["preroll_added"] = round(max(0.0, float(start) - float(adjusted_start)), 4)
+    metadata["postroll_added"] = round(max(0.0, float(adjusted_end) - float(end)), 4)
+    metadata.setdefault("context_padding_reason", "")
+    metadata.setdefault("segment_boundary_aligned", False)
+    metadata.setdefault("sentence_boundary_aligned", False)
+    metadata.setdefault("fallback_alignment_reason", "")
+    return adjusted_start, adjusted_end, decisions, metadata
 
 
 def build_candidate_packet(window, sentences, context_margin):
     context = collect_context(sentences, window["start"], window["end"], margin=context_margin)
+    trimmed_context = trim_context_for_llm_packet(window, context)
     return {
         "candidate_id": window["candidate_id"],
         "local_rank": window.get("local_rank"),
         "local_score": window.get("local_score"),
+        "local_features": window.get("local_features") or {},
         "heatmap_score": round(float(window.get("avg_value", 0.0)), 4),
-        "range_start": format_time(window["start"]),
-        "range_end": format_time(window["end"]),
+        "current_start_time": round(float(window["start"]), 4),
+        "current_end_time": round(float(window["end"]), 4),
+        "current_start_label": format_time(window["start"]),
+        "current_end_label": format_time(window["end"]),
         "duration_seconds": round(float(window["duration"]), 2),
         "summary": safe_excerpt(window.get("summary") or window.get("text"), limit=220),
         "selection_reasons": window.get("selection_reasons") or [],
-        "context": [
+        "context_margin_seconds": round(float(context_margin), 2),
+        "context_segments_total": len(context),
+        "context_segments_in_packet": len(trimmed_context),
+        "context_segments_omitted": max(0, len(context) - len(trimmed_context)),
+        "transcript_context": [
             {
-                "start": format_time(item["start"]),
-                "end": format_time(item["end"]),
+                "start_time": round(float(item["start"]), 4),
+                "end_time": round(float(item["end"]), 4),
+                "start_label": format_time(item["start"]),
+                "end_label": format_time(item["end"]),
                 "speaker": item.get("speaker"),
-                "text": item.get("text"),
+                "text": safe_excerpt(item.get("text"), limit=LLM_PACKET_TEXT_LIMIT),
             }
-            for item in context
+            for item in trimmed_context
         ],
     }
 
 
-def rerank_candidates_with_ai_batch(candidate_pool, sentences, *, top_count, model_name, max_duration, context_margin, request_timeout, api_key):
-    packets = [build_candidate_packet(candidate, sentences, context_margin) for candidate in candidate_pool]
+def trim_context_for_llm_packet(window, context, *, max_rows=LLM_PACKET_CONTEXT_ROWS):
+    if len(context) <= max_rows:
+        return context
+    overlap_indices = [
+        index
+        for index, item in enumerate(context)
+        if item["end"] > window["start"] and item["start"] < window["end"]
+    ]
+    if overlap_indices:
+        center_index = (overlap_indices[0] + overlap_indices[-1]) // 2
+    else:
+        center_index = len(context) // 2
+    start_index = max(0, center_index - max_rows // 2)
+    end_index = min(len(context), start_index + max_rows)
+    start_index = max(0, end_index - max_rows)
+    return context[start_index:end_index]
+
+
+def _normalize_llm_score_0_100(value, default=0.0):
+    try:
+        parsed = float(value)
+    except Exception:
+        return float(default)
+    if parsed <= 5.0:
+        parsed *= 20.0
+    return max(0.0, min(100.0, parsed))
+
+
+def _normalize_llm_score_1_5(value, default=0.0):
+    try:
+        parsed = float(value)
+    except Exception:
+        return float(default)
+    if parsed > 5.0:
+        parsed = parsed / 20.0
+    return max(0.0, min(5.0, parsed))
+
+
+def _normalize_bool(value, default=False):
+    if isinstance(value, bool):
+        return value
+    normalized = str(value or "").strip().lower()
+    if normalized in {"1", "true", "yes", "y", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "n", "off", ""}:
+        return False
+    return default
+
+
+def normalize_ai_choice(raw_choice):
+    candidate_id = str(raw_choice.get("candidate_id") or "").strip()
+    if not candidate_id:
+        return None
+    score = _normalize_llm_score_0_100(raw_choice.get("score"), 0.0)
+    payoff_score = _normalize_llm_score_1_5(raw_choice.get("payoff_score"), 0.0)
+    answer_score = _normalize_llm_score_1_5(raw_choice.get("answer_completeness_score"), 0.0)
+    story_score = _normalize_llm_score_1_5(raw_choice.get("standalone_story_score"), 0.0)
+    viral_score = _normalize_llm_score_1_5(raw_choice.get("viral_potential_score"), 0.0)
+    selected = _normalize_bool(raw_choice.get("selected"), True)
+    reject_if_boring = _normalize_bool(raw_choice.get("reject_if_boring"), False)
+    reject_reason = str(raw_choice.get("reject_reason") or "").strip()
+    ending_type = str(raw_choice.get("ending_type") or "").strip().lower()
+    if reject_reason:
+        selected = False
+    if payoff_score and payoff_score < 3.0:
+        selected = False
+        reject_reason = reject_reason or "payoff_score_below_threshold"
+    if answer_score and answer_score < 3.0:
+        selected = False
+        reject_reason = reject_reason or "answer_completeness_below_threshold"
+    if story_score and story_score < 3.0:
+        selected = False
+        reject_reason = reject_reason or "standalone_story_below_threshold"
+    if viral_score and viral_score < 3.0:
+        selected = False
+        reject_reason = reject_reason or "viral_potential_below_threshold"
+    if ending_type and ending_type != "closed":
+        selected = False
+        reject_reason = reject_reason or f"ending_type_{ending_type}"
+    if reject_if_boring:
+        selected = False
+        reject_reason = reject_reason or "reject_if_boring"
+
+    return {
+        "candidate_id": candidate_id,
+        "selected": selected,
+        "score": score,
+        "hook_score": _normalize_llm_score_1_5(raw_choice.get("hook_score"), 0.0),
+        "context_score": _normalize_llm_score_1_5(raw_choice.get("context_score"), 0.0),
+        "answer_completeness_score": answer_score,
+        "payoff_score": payoff_score,
+        "standalone_story_score": story_score,
+        "viral_potential_score": viral_score,
+        "boundary_quality_score": _normalize_llm_score_1_5(raw_choice.get("boundary_quality_score"), 0.0),
+        "recommended_start_time": raw_choice.get("recommended_start_time", raw_choice.get("hook_start")),
+        "recommended_end_time": raw_choice.get("recommended_end_time", raw_choice.get("punchline_end")),
+        "title_suggestion": str(raw_choice.get("title_suggestion") or "").strip(),
+        "hook_summary": str(raw_choice.get("hook_summary") or raw_choice.get("hook_reason") or "").strip(),
+        "story_summary": str(raw_choice.get("story_summary") or raw_choice.get("reason") or "").strip(),
+        "payoff_summary": str(raw_choice.get("payoff_summary") or raw_choice.get("ending_reason") or "").strip(),
+        "ending_type": ending_type or "closed",
+        "viral_reason": str(raw_choice.get("viral_reason") or "").strip(),
+        "why_viewer_keeps_watching": str(raw_choice.get("why_viewer_keeps_watching") or "").strip(),
+        "reject_if_boring": reject_if_boring,
+        "boundary_notes": str(raw_choice.get("boundary_notes") or "").strip(),
+        "reject_reason": reject_reason or None,
+    }
+
+
+def rerank_candidate_packets_with_ai(packets, *, top_count, model_name, max_duration, request_timeout, api_key):
     prompt = (
-        "You are a senior short-form video editor.\n"
-        "You are reranking pre-scored short video candidates for one source video.\n"
-        "The local system already filtered non-overlapping candidates.\n"
-        f"Pick the best {top_count} clips overall.\n"
+        "You are a senior short-form video editor for podcast and talking-head Shorts.\n"
+        "The local system generated candidate podcast clips with wider transcript context.\n"
+        f"Pick up to {top_count} clips that work as self-contained short videos.\n"
+        "Reject candidates without a clear payoff, with an incomplete answer, or without real short-form tension.\n"
         "Rules:\n"
-        "- favor clear hook -> payoff story shape\n"
-        "- keep candidates in their existing order only if quality is similar\n"
-        "- you may refine boundaries inside the candidate context\n"
+        "- prefer micro-stories: question/context -> answer/thesis -> payoff/closure\n"
+        "- do not select a clip if the answer is cut off\n"
+        "- do not select a clip if the ending has no point, payoff, or closure\n"
+        "- do not select a clip if the ending opens a new topic instead of closing the current one\n"
+        "- reject neutral conversation that lacks conflict, emotion, surprise, a sharp thesis, or viewer tension\n"
+        "- you may move start/end inside the provided transcript context\n"
+        "- recommended_start_time and recommended_end_time must be numeric seconds\n"
         "- never start or end in the middle of a sentence\n"
-        f"- every returned clip must stay under {max_duration:.0f} seconds\n"
-        "- if a candidate is already strong, keep its original timestamps\n\n"
-        "Return JSON only in this shape:\n"
+        f"- prefer 45-75s when it improves story completeness; hard max is {max_duration:.0f}s\n"
+        "- score each selected/rejected candidate using 1-5 integer-like values\n\n"
+        "Return JSON only, in this shape:\n"
         "{\n"
         '  "overall_reason": "one short sentence",\n'
         '  "selected": [\n'
         "    {\n"
         '      "candidate_id": "cand_001",\n'
-        '      "hook_start": "MM:SS.ss",\n'
-        '      "punchline_end": "MM:SS.ss",\n'
-        '      "reason": "why this clip made the final cut",\n'
-        '      "hook_reason": "why this opening works",\n'
-        '      "ending_reason": "why this ending works"\n'
+        '      "selected": true,\n'
+        '      "score": 0,\n'
+        '      "hook_score": 1,\n'
+        '      "context_score": 1,\n'
+        '      "answer_completeness_score": 1,\n'
+        '      "payoff_score": 1,\n'
+        '      "standalone_story_score": 1,\n'
+        '      "viral_potential_score": 1,\n'
+        '      "boundary_quality_score": 1,\n'
+        '      "ending_type": "closed",\n'
+        '      "recommended_start_time": 0.0,\n'
+        '      "recommended_end_time": 0.0,\n'
+        '      "title_suggestion": "",\n'
+        '      "hook_summary": "",\n'
+        '      "story_summary": "",\n'
+        '      "payoff_summary": "",\n'
+        '      "viral_reason": "",\n'
+        '      "why_viewer_keeps_watching": "",\n'
+        '      "reject_if_boring": false,\n'
+        '      "boundary_notes": "",\n'
+        '      "reject_reason": null\n'
         "    }\n"
+        "  ],\n"
+        '  "rejected": [\n'
+        '    {"candidate_id": "cand_002", "selected": false, "score": 20, "ending_type": "continues", "reject_if_boring": true, "reject_reason": "no payoff"}\n'
         "  ]\n"
         "}\n\n"
         f"CANDIDATES_JSON:\n{json.dumps(packets, ensure_ascii=False, indent=2)}\n"
@@ -651,14 +1426,109 @@ def rerank_candidates_with_ai_batch(candidate_pool, sentences, *, top_count, mod
     selected = parsed.get("selected")
     if not isinstance(selected, list):
         raise ValueError("Gemini batch rerank did not return a 'selected' list.")
+    normalized_selected = []
+    for item in selected:
+        if not isinstance(item, dict):
+            continue
+        choice = normalize_ai_choice(item)
+        if choice and choice["selected"]:
+            normalized_selected.append(choice)
+    normalized_selected.sort(key=lambda item: item.get("score", 0.0), reverse=True)
     return {
         "overall_reason": str(parsed.get("overall_reason", "")).strip(),
-        "selected": selected,
+        "selected": normalized_selected,
+        "rejected": parsed.get("rejected") if isinstance(parsed.get("rejected"), list) else [],
     }
 
 
-def build_fallback_window(window, sentences, context, max_duration, error_message):
-    start, end, adjustments = enforce_story_bounds(window["start"], window["end"], context, window, max_duration)
+def rerank_candidates_with_ai_batch(candidate_pool, sentences, *, top_count, model_name, max_duration, context_margin, request_timeout, api_key):
+    packets = [build_candidate_packet(candidate, sentences, context_margin) for candidate in candidate_pool]
+    if not packets:
+        return {"overall_reason": "", "selected": [], "rejected": []}
+
+    try:
+        batch_size = int(os.environ.get("GEMINI_RERANK_BATCH_SIZE", LLM_RERANK_BATCH_SIZE))
+    except Exception:
+        batch_size = LLM_RERANK_BATCH_SIZE
+    batch_size = max(1, min(len(packets), batch_size))
+
+    if len(packets) <= batch_size:
+        return rerank_candidate_packets_with_ai(
+            packets,
+            top_count=top_count,
+            model_name=model_name,
+            max_duration=max_duration,
+            request_timeout=request_timeout,
+            api_key=api_key,
+        )
+
+    selected_by_id = {}
+    rejected = []
+    reasons = []
+    errors = []
+    for batch_index, start_index in enumerate(range(0, len(packets), batch_size), start=1):
+        chunk = packets[start_index : start_index + batch_size]
+        try:
+            result = rerank_candidate_packets_with_ai(
+                chunk,
+                top_count=min(top_count, len(chunk)),
+                model_name=model_name,
+                max_duration=max_duration,
+                request_timeout=request_timeout,
+                api_key=api_key,
+            )
+        except Exception as exc:
+            errors.append(f"batch_{batch_index}: {exc}")
+            continue
+
+        if result.get("overall_reason"):
+            reasons.append(f"batch {batch_index}: {result.get('overall_reason')}")
+        for item in result.get("selected", []):
+            candidate_id = str(item.get("candidate_id") or "").strip()
+            if not candidate_id:
+                continue
+            previous = selected_by_id.get(candidate_id)
+            if previous is None or float(item.get("score", 0.0) or 0.0) > float(previous.get("score", 0.0) or 0.0):
+                selected_by_id[candidate_id] = item
+        rejected.extend(result.get("rejected", []))
+        if start_index + batch_size < len(packets):
+            time.sleep(1.0)
+
+    if not selected_by_id:
+        detail = " | ".join(errors[:4]) if errors else "no selected candidates"
+        raise RuntimeError(f"Gemini chunked rerank returned no valid selections. {detail}")
+
+    selected = sorted(selected_by_id.values(), key=lambda item: item.get("score", 0.0), reverse=True)
+    overall_reason = " ".join(reasons[:3]).strip()
+    if errors:
+        overall_reason = " ".join(part for part in (overall_reason, f"Partial Gemini fallback: {len(errors)} chunk(s) failed.") if part)
+    return {
+        "overall_reason": overall_reason,
+        "selected": selected,
+        "rejected": rejected,
+        "partial_errors": errors,
+    }
+
+
+def build_fallback_window(
+    window,
+    sentences,
+    context,
+    max_duration,
+    error_message,
+    *,
+    min_duration=20.0,
+    strategy_name="podcast",
+):
+    start, end, adjustments, boundary_metadata = refine_story_bounds_for_strategy(
+        window["start"],
+        window["end"],
+        context,
+        window,
+        max_duration,
+        min_duration=min_duration,
+        strategy_name=strategy_name,
+    )
     text = collect_text_for_window(sentences, start, end)
     fallback = dict(window)
     fallback.update(
@@ -675,10 +1545,47 @@ def build_fallback_window(window, sentences, context, max_duration, error_messag
             "fallback_reason": "Used local transcript bounds after AI refinement failed.",
         }
     )
+    fallback["_boundary_refinement_metadata"] = boundary_metadata
     return fallback, adjustments
 
 
-def build_local_selection(window, sentences, *, index, max_duration, context_margin, reason):
+def _matches_context_boundary(context, value):
+    return any(
+        abs(float(item["start"]) - float(value)) <= 0.02
+        or abs(float(item["end"]) - float(value)) <= 0.02
+        for item in context
+    )
+
+
+def _speaker_turn_boundary_used(context, start, end):
+    if not context:
+        return False
+    start_matches = [
+        item
+        for item in context
+        if abs(float(item["start"]) - float(start)) <= 0.02
+        or abs(float(item["end"]) - float(start)) <= 0.02
+    ]
+    end_matches = [
+        item
+        for item in context
+        if abs(float(item["start"]) - float(end)) <= 0.02
+        or abs(float(item["end"]) - float(end)) <= 0.02
+    ]
+    return bool(start_matches or end_matches)
+
+
+def build_local_selection(
+    window,
+    sentences,
+    *,
+    index,
+    max_duration,
+    context_margin,
+    reason,
+    min_duration=20.0,
+    strategy_name="podcast",
+):
     context = collect_context(sentences, window["start"], window["end"], margin=context_margin)
     fallback_window, adjustments = build_fallback_window(
         window,
@@ -686,15 +1593,38 @@ def build_local_selection(window, sentences, *, index, max_duration, context_mar
         context,
         max_duration,
         reason,
+        min_duration=min_duration,
+        strategy_name=strategy_name,
     )
+    boundary_extra = fallback_window.pop("_boundary_refinement_metadata", {}) or {}
     boundary_metadata = {
         "original_start": round(float(window["start"]), 4),
         "original_end": round(float(window["end"]), 4),
         "refined_start": round(float(fallback_window["start"]), 4),
         "refined_end": round(float(fallback_window["end"]), 4),
         "boundary_adjustment_reason": adjustments,
-        "sentence_boundary_used": True,
-        "speaker_turn_boundary_used": False,
+        "sentence_boundary_used": bool(
+            context
+            and (
+                _matches_context_boundary(context, fallback_window["start"])
+                or _matches_context_boundary(context, fallback_window["end"])
+            )
+        ),
+        "sentence_boundary_aligned": bool(boundary_extra.get("sentence_boundary_aligned", False)),
+        "segment_boundary_aligned": bool(boundary_extra.get("segment_boundary_aligned", False)),
+        "speaker_turn_boundary_used": _speaker_turn_boundary_used(context, fallback_window["start"], fallback_window["end"]),
+        "max_duration_clamped": bool(boundary_extra.get("max_duration_clamped", False)),
+        "boundary_refined": bool(boundary_extra.get("boundary_refined", False)),
+        "preroll_added": round(float(boundary_extra.get("preroll_added", 0.0) or 0.0), 4),
+        "postroll_added": round(float(boundary_extra.get("postroll_added", 0.0) or 0.0), 4),
+        "context_padding_reason": str(boundary_extra.get("context_padding_reason") or ""),
+        "fallback_alignment_reason": str(boundary_extra.get("fallback_alignment_reason") or ""),
+        "end_expanded": bool(boundary_extra.get("end_expanded", False)),
+        "end_expansion_reason": str(boundary_extra.get("end_expansion_reason") or ""),
+        "payoff_detected": bool(boundary_extra.get("payoff_detected", False)),
+        "ending_type": str(boundary_extra.get("ending_type") or ""),
+        "llm_boundary_adjusted": False,
+        "llm_score": 0.0,
     }
     fallback_window["selection_source"] = "local_ranking"
     fallback_window["selection_reasons"] = window.get("selection_reasons") or []
@@ -702,6 +1632,14 @@ def build_local_selection(window, sentences, *, index, max_duration, context_mar
     fallback_window["local_rank"] = window.get("local_rank")
     fallback_window["fallback_reason"] = reason
     fallback_window["boundary_metadata"] = boundary_metadata
+    fallback_window["rejected_selection_reasons"] = []
+    accepted, rejection_reasons = validate_podcast_candidate(
+        fallback_window,
+        boundary_metadata,
+        source="local_ranking",
+    )
+    fallback_window["selection_valid"] = accepted
+    fallback_window["rejected_selection_reasons"] = rejection_reasons
     decision = {
         "index": index,
         "candidate_id": window.get("candidate_id"),
@@ -717,7 +1655,7 @@ def build_local_selection(window, sentences, *, index, max_duration, context_mar
         "context_end_label": format_time(context[-1]["end"]) if context else None,
         "summary_before": safe_excerpt(window.get("summary") or window.get("text")),
         "context_excerpt": safe_excerpt(" ".join(item["text"] for item in context), limit=520),
-        "status": "selected_local",
+        "status": "selected_local" if accepted else "rejected_local_candidate",
         "error": reason,
         "final_start": fallback_window["start"],
         "final_end": fallback_window["end"],
@@ -726,20 +1664,40 @@ def build_local_selection(window, sentences, *, index, max_duration, context_mar
         "final_duration": fallback_window["duration"],
         "adjustments": adjustments,
         "boundary_metadata": boundary_metadata,
+        "rejected_selection_reasons": rejection_reasons,
         "summary_after": safe_excerpt(fallback_window["summary"]),
     }
     return fallback_window, decision
 
-def apply_batch_ai_selection(window, ai_choice, sentences, *, index, max_duration, context_margin, overall_reason):
+def apply_batch_ai_selection(
+    window,
+    ai_choice,
+    sentences,
+    *,
+    index,
+    max_duration,
+    context_margin,
+    overall_reason,
+    min_duration=20.0,
+    strategy_name="podcast",
+):
     context = collect_context(sentences, window["start"], window["end"], margin=context_margin)
-    hook_start_raw = ai_choice.get("hook_start", format_time(window["start"]))
-    punchline_end_raw = ai_choice.get("punchline_end", format_time(window["end"]))
-    start, end, adjustments = enforce_story_bounds(
-        parse_time(hook_start_raw),
-        parse_time(punchline_end_raw),
+    hook_start_raw = ai_choice.get("recommended_start_time")
+    punchline_end_raw = ai_choice.get("recommended_end_time")
+    if hook_start_raw in (None, ""):
+        hook_start_raw = window["start"]
+    if punchline_end_raw in (None, ""):
+        punchline_end_raw = window["end"]
+    requested_start = parse_time(hook_start_raw)
+    requested_end = parse_time(punchline_end_raw)
+    start, end, adjustments, boundary_extra = refine_story_bounds_for_strategy(
+        requested_start,
+        requested_end,
         context,
         window,
         max_duration,
+        min_duration=min_duration,
+        strategy_name=strategy_name,
     )
     boundary_metadata = {
         "original_start": round(float(window["start"]), 4),
@@ -747,8 +1705,31 @@ def apply_batch_ai_selection(window, ai_choice, sentences, *, index, max_duratio
         "refined_start": round(float(start), 4),
         "refined_end": round(float(end), 4),
         "boundary_adjustment_reason": adjustments,
-        "sentence_boundary_used": True,
-        "speaker_turn_boundary_used": False,
+        "sentence_boundary_used": bool(
+            context
+            and (
+                _matches_context_boundary(context, start)
+                or _matches_context_boundary(context, end)
+            )
+        ),
+        "sentence_boundary_aligned": bool(boundary_extra.get("sentence_boundary_aligned", False)),
+        "segment_boundary_aligned": bool(boundary_extra.get("segment_boundary_aligned", False)),
+        "speaker_turn_boundary_used": _speaker_turn_boundary_used(context, start, end),
+        "max_duration_clamped": bool(boundary_extra.get("max_duration_clamped", False)),
+        "boundary_refined": bool(boundary_extra.get("boundary_refined", False)),
+        "preroll_added": round(float(boundary_extra.get("preroll_added", 0.0) or 0.0), 4),
+        "postroll_added": round(float(boundary_extra.get("postroll_added", 0.0) or 0.0), 4),
+        "context_padding_reason": str(boundary_extra.get("context_padding_reason") or ""),
+        "fallback_alignment_reason": str(boundary_extra.get("fallback_alignment_reason") or ""),
+        "end_expanded": bool(boundary_extra.get("end_expanded", False)),
+        "end_expansion_reason": str(boundary_extra.get("end_expansion_reason") or ""),
+        "payoff_detected": bool(boundary_extra.get("payoff_detected", False)),
+        "ending_type": str(boundary_extra.get("ending_type") or ""),
+        "llm_boundary_adjusted": bool(
+            abs(float(requested_start) - float(window["start"])) > 0.02
+            or abs(float(requested_end) - float(window["end"])) > 0.02
+        ),
+        "llm_score": round(float(ai_choice.get("score", 0.0) or 0.0), 4),
     }
     text = collect_text_for_window(sentences, start, end)
     refined_window = dict(window)
@@ -761,9 +1742,24 @@ def apply_batch_ai_selection(window, ai_choice, sentences, *, index, max_duratio
             "duration": end - start,
             "summary": summarize_text(text),
             "text": text,
-            "ai_reason": str(ai_choice.get("reason", "")).strip(),
-            "hook_reason": str(ai_choice.get("hook_reason", "")).strip(),
-            "ending_reason": str(ai_choice.get("ending_reason", "")).strip(),
+            "ai_reason": str(ai_choice.get("story_summary") or ai_choice.get("hook_summary") or "").strip(),
+            "hook_reason": str(ai_choice.get("hook_summary", "")).strip(),
+            "ending_reason": str(ai_choice.get("payoff_summary", "")).strip(),
+            "llm_score": round(float(ai_choice.get("score", 0.0) or 0.0), 4),
+            "llm_hook_score": round(float(ai_choice.get("hook_score", 0.0) or 0.0), 4),
+            "llm_context_score": round(float(ai_choice.get("context_score", 0.0) or 0.0), 4),
+            "llm_answer_completeness_score": round(float(ai_choice.get("answer_completeness_score", 0.0) or 0.0), 4),
+            "llm_payoff_score": round(float(ai_choice.get("payoff_score", 0.0) or 0.0), 4),
+            "llm_standalone_story_score": round(float(ai_choice.get("standalone_story_score", 0.0) or 0.0), 4),
+            "llm_viral_potential_score": round(float(ai_choice.get("viral_potential_score", 0.0) or 0.0), 4),
+            "llm_boundary_quality_score": round(float(ai_choice.get("boundary_quality_score", 0.0) or 0.0), 4),
+            "llm_ending_type": str(ai_choice.get("ending_type") or "closed"),
+            "llm_title_suggestion": str(ai_choice.get("title_suggestion") or "").strip(),
+            "llm_story_summary": str(ai_choice.get("story_summary") or "").strip(),
+            "llm_viral_reason": str(ai_choice.get("viral_reason") or "").strip(),
+            "llm_why_viewer_keeps_watching": str(ai_choice.get("why_viewer_keeps_watching") or "").strip(),
+            "llm_reject_if_boring": bool(ai_choice.get("reject_if_boring", False)),
+            "llm_boundary_notes": str(ai_choice.get("boundary_notes") or "").strip(),
             "smart_context": True,
             "selection_source": "gemini_batch_rerank",
             "selection_reasons": window.get("selection_reasons") or [],
@@ -772,6 +1768,13 @@ def apply_batch_ai_selection(window, ai_choice, sentences, *, index, max_duratio
             "boundary_metadata": boundary_metadata,
         }
     )
+    accepted, rejection_reasons = validate_podcast_candidate(
+        refined_window,
+        boundary_metadata,
+        source="gemini_batch_rerank",
+    )
+    refined_window["selection_valid"] = accepted
+    refined_window["rejected_selection_reasons"] = rejection_reasons
     decision = {
         "index": index,
         "candidate_id": window.get("candidate_id"),
@@ -785,9 +1788,15 @@ def apply_batch_ai_selection(window, ai_choice, sentences, *, index, max_duratio
         "heatmap_end_label": format_time(window["end"]),
         "context_start_label": format_time(context[0]["start"]) if context else None,
         "context_end_label": format_time(context[-1]["end"]) if context else None,
-        "status": "selected_by_ai_batch",
+        "status": "selected_by_ai_batch" if accepted else "rejected_ai_candidate",
         "ai_hook_start": hook_start_raw,
         "ai_punchline_end": punchline_end_raw,
+        "llm_score": refined_window["llm_score"],
+        "llm_ending_type": refined_window["llm_ending_type"],
+        "llm_title_suggestion": refined_window["llm_title_suggestion"],
+        "llm_story_summary": refined_window["llm_story_summary"],
+        "llm_viral_reason": refined_window["llm_viral_reason"],
+        "llm_boundary_notes": refined_window["llm_boundary_notes"],
         "final_start": start,
         "final_end": end,
         "final_start_label": format_time(start),
@@ -799,9 +1808,152 @@ def apply_batch_ai_selection(window, ai_choice, sentences, *, index, max_duratio
         "overall_reason": overall_reason,
         "adjustments": adjustments,
         "boundary_metadata": boundary_metadata,
+        "rejected_selection_reasons": rejection_reasons,
         "summary_after": safe_excerpt(refined_window["summary"]),
     }
     return refined_window, decision
+
+
+def apply_semantic_director_selection(
+    selected_windows,
+    candidate_pool,
+    sentences,
+    *,
+    top_count,
+    min_duration,
+    max_duration,
+    context_margin,
+    strategy_name,
+    semantic_director_mode,
+    semantic_model,
+    request_timeout,
+    api_key,
+    selection_context=None,
+):
+    semantic_director_mode = normalize_semantic_director_mode(semantic_director_mode)
+    if semantic_director_mode == SEMANTIC_DIRECTOR_MODE_OFF:
+        return selected_windows, {
+            "mode": semantic_director_mode,
+            "used": False,
+            "reviewed_candidates": 0,
+            "rejected_candidates": 0,
+            "boundary_adjusted_candidates": 0,
+            "fallback_reason": "semantic_director_disabled",
+        }
+
+    director = build_clip_director(
+        mode=semantic_director_mode,
+        model_name=semantic_model,
+        request_timeout=request_timeout,
+        api_key=api_key,
+    )
+    ordered_candidates = list(selected_windows)
+    selected_ids = {item.get("candidate_id") for item in ordered_candidates if item.get("candidate_id")}
+    for candidate in candidate_pool:
+        if candidate.get("candidate_id") not in selected_ids:
+            ordered_candidates.append(candidate)
+
+    final_windows = []
+    reviewed_candidates = 0
+    rejected_candidates = 0
+    boundary_adjusted_candidates = 0
+    fallback_reason = ""
+
+    for item in ordered_candidates:
+        if len(final_windows) >= top_count:
+            break
+        if "boundary_metadata" in item:
+            window = dict(item)
+        else:
+            window, _decision = build_local_selection(
+                item,
+                sentences,
+                index=len(final_windows) + 1,
+                max_duration=max_duration,
+                context_margin=context_margin,
+                reason="Semantic director backfill from local pool.",
+                min_duration=min_duration,
+                strategy_name=strategy_name,
+            )
+        context_segments = collect_context(sentences, window["start"], window["end"], margin=context_margin)
+        reviewed_candidates += 1
+        try:
+            review = director.review_candidate(
+                window,
+                case_id=(selection_context or {}).get("case_id"),
+                title=(selection_context or {}).get("title"),
+                content_type=(selection_context or {}).get("content_type") or strategy_name,
+                detected_speakers=sorted({segment.get("speaker") for segment in context_segments if segment.get("speaker")}),
+                context_segments=context_segments,
+            )
+        except ClipDirectorError as exc:
+            if semantic_director_mode.endswith("required"):
+                raise
+            fallback_reason = str(exc)
+            break
+
+        reject = bool(review.get("advertisement_or_intro")) or not bool(review.get("keep", True))
+        semantic_bounds = director.refine_boundaries(
+            window,
+            review,
+            context_segments,
+            min_duration=min_duration,
+            max_duration=max_duration,
+        )
+        if reject:
+            rejected_candidates += 1
+            continue
+
+        if semantic_bounds["semantic_boundary_adjusted"]:
+            boundary_adjusted_candidates += 1
+
+        updated_window = dict(window)
+        updated_window["start"] = semantic_bounds["start"]
+        updated_window["end"] = semantic_bounds["end"]
+        updated_window["duration"] = round(semantic_bounds["end"] - semantic_bounds["start"], 4)
+        updated_window["summary"] = summarize_text(
+            collect_text_for_window(sentences, semantic_bounds["start"], semantic_bounds["end"])
+        )
+        updated_window["text"] = collect_text_for_window(sentences, semantic_bounds["start"], semantic_bounds["end"])
+        updated_window["semantic_director_used"] = bool(review.get("semantic_director_used", False))
+        updated_window["semantic_model"] = str(review.get("semantic_model") or "")
+        updated_window["story_score"] = clamp_score(review.get("story_score"), 0.0)
+        updated_window["hook_score"] = clamp_score(review.get("hook_score"), 0.0)
+        updated_window["context_score"] = clamp_score(review.get("context_score"), 0.0)
+        updated_window["payoff_score"] = clamp_score(review.get("payoff_score"), 0.0)
+        updated_window["semantic_reason"] = str(review.get("reason") or "").strip()
+        updated_window["semantic_boundary_adjusted"] = bool(semantic_bounds["semantic_boundary_adjusted"])
+        updated_window["semantic_fallback_reason"] = str(
+            semantic_bounds.get("semantic_fallback_reason")
+            or review.get("semantic_fallback_reason")
+            or ""
+        ).strip()
+        boundary_metadata = dict(updated_window.get("boundary_metadata") or {})
+        boundary_metadata["semantic_boundary_adjusted"] = bool(semantic_bounds["semantic_boundary_adjusted"])
+        boundary_metadata["semantic_fallback_reason"] = updated_window["semantic_fallback_reason"]
+        boundary_metadata["semantic_adjustment_reason"] = semantic_bounds.get("adjustments") or []
+        updated_window["boundary_metadata"] = boundary_metadata
+        final_windows.append(updated_window)
+
+    if not final_windows:
+        return selected_windows, {
+            "mode": semantic_director_mode,
+            "used": False,
+            "reviewed_candidates": reviewed_candidates,
+            "rejected_candidates": rejected_candidates,
+            "boundary_adjusted_candidates": boundary_adjusted_candidates,
+            "fallback_reason": fallback_reason or "semantic_director_kept_no_candidates",
+        }
+
+    return final_windows, {
+        "mode": semantic_director_mode,
+        "used": True,
+        "model": semantic_model if any(window.get("semantic_director_used") for window in final_windows) else "",
+        "reviewed_candidates": reviewed_candidates,
+        "rejected_candidates": rejected_candidates,
+        "boundary_adjusted_candidates": boundary_adjusted_candidates,
+        "fallback_reason": fallback_reason,
+    }
 
 
 def save_cutting_log(log_path, log):
@@ -839,7 +1991,7 @@ def resolve_content_routing(args):
     strategy_name = (
         classification.get("strategy_name")
         or classification.get("content_type")
-        or "generic"
+        or "podcast"
     )
     strategy = get_strategy(strategy_name)
     layout_profile = get_layout_profile(classification.get("content_type"), requested_layout_mode)
@@ -850,7 +2002,7 @@ def resolve_content_routing(args):
         **layout_profile.to_render_hints(),
     }
     routing = {
-        "content_type": classification.get("content_type", "generic"),
+        "content_type": classification.get("content_type", "podcast"),
         "confidence": round(float(classification.get("confidence", 0.0) or 0.0), 4),
         "reasons": classification.get("reasons") or [],
         "source": "cached_profile" if profile_loaded else (classification.get("source") or "heuristic_classifier"),
@@ -880,6 +2032,9 @@ def rerank_cuts_with_ai(
     log_path,
     request_timeout,
     selection_context=None,
+    min_duration=20.0,
+    semantic_director_mode=SEMANTIC_DIRECTOR_MODE_OFF,
+    semantic_model="models/gemini-2.5-flash",
 ):
     local_candidate_snapshots = [
         {
@@ -897,12 +2052,20 @@ def rerank_cuts_with_ai(
         for candidate in candidate_pool
     ]
 
+    try:
+        llm_batch_size = int(os.environ.get("GEMINI_RERANK_BATCH_SIZE", LLM_RERANK_BATCH_SIZE))
+    except Exception:
+        llm_batch_size = LLM_RERANK_BATCH_SIZE
+    llm_batch_size = max(1, llm_batch_size)
+
     log = {
         "created_at": datetime.now(timezone.utc).isoformat(),
         "strategy": "local_first_selector",
         "ai_mode": ai_mode,
         "model": model_name,
         "context_margin_seconds": context_margin,
+        "llm_context_rows_per_candidate": LLM_PACKET_CONTEXT_ROWS,
+        "llm_rerank_batch_size": llm_batch_size,
         "max_duration_seconds": max_duration,
         "request_timeout_seconds": request_timeout,
         "clips_requested": top_count,
@@ -914,6 +2077,11 @@ def rerank_cuts_with_ai(
     }
     if selection_context:
         log["content_routing"] = selection_context
+    strategy_name = (
+        ((selection_context or {}).get("strategy") or {}).get("name")
+        or (selection_context or {}).get("content_type")
+        or "podcast"
+    )
     if not candidate_pool:
         log["status"] = "no_windows"
         save_cutting_log(log_path, log)
@@ -939,7 +2107,7 @@ def rerank_cuts_with_ai(
     if requires_gemini(ai_mode) and not ai_ready:
         raise RuntimeError(log.get("ai_reason", "Gemini is required but unavailable."))
 
-    local_top = candidate_pool[:top_count]
+    local_top = candidate_pool
     final_windows = []
     decisions = []
     refined_count = 0
@@ -948,7 +2116,7 @@ def rerank_cuts_with_ai(
     if allows_gemini(ai_mode) and ai_ready:
         print(
             f"  Gemini batch rerank: evaluating {len(candidate_pool)} local candidates "
-            f"(timeout={request_timeout}s)"
+            f"in chunks of {log['llm_rerank_batch_size']} (timeout={request_timeout}s)"
         )
         try:
             ai_result = rerank_candidates_with_ai_batch(
@@ -962,6 +2130,8 @@ def rerank_cuts_with_ai(
                 api_key=api_key,
             )
             batch_reason = ai_result.get("overall_reason", "")
+            if ai_result.get("partial_errors"):
+                log["batch_rerank_partial_errors"] = ai_result.get("partial_errors")
             selected_by_id = {}
             for item in ai_result.get("selected", []):
                 candidate_id = str(item.get("candidate_id") or "").strip()
@@ -983,9 +2153,13 @@ def rerank_cuts_with_ai(
                     max_duration=max_duration,
                     context_margin=context_margin,
                     overall_reason=batch_reason,
+                    min_duration=min_duration,
+                    strategy_name=strategy_name,
                 )
-                final_windows.append(refined_window)
                 decisions.append(decision)
+                if not refined_window.get("selection_valid", True):
+                    continue
+                final_windows.append(refined_window)
                 refined_count += 1
                 if len(final_windows) == top_count:
                     break
@@ -1007,9 +2181,13 @@ def rerank_cuts_with_ai(
                 max_duration=max_duration,
                 context_margin=context_margin,
                 reason=fallback_reason,
+                min_duration=min_duration,
+                strategy_name=strategy_name,
             )
-            final_windows.append(local_window)
             decisions.append(decision)
+            if not local_window.get("selection_valid", True):
+                continue
+            final_windows.append(local_window)
             if len(final_windows) == top_count:
                 break
 
@@ -1020,6 +2198,23 @@ def rerank_cuts_with_ai(
     log["batch_rerank_reason"] = batch_reason
     log["clips_refined_with_ai"] = refined_count
     log["clips_with_local_fallback"] = max(0, len(final_windows) - refined_count)
+    semantic_windows, semantic_summary = apply_semantic_director_selection(
+        final_windows,
+        candidate_pool,
+        sentences,
+        top_count=top_count,
+        min_duration=min_duration,
+        max_duration=max_duration,
+        context_margin=context_margin,
+        strategy_name=strategy_name,
+        semantic_director_mode=semantic_director_mode,
+        semantic_model=semantic_model,
+        request_timeout=request_timeout,
+        api_key=api_key,
+        selection_context=selection_context,
+    )
+    log["semantic_director"] = semantic_summary
+    final_windows = semantic_windows
     save_cutting_log(log_path, log)
     return final_windows, log
 
@@ -1092,29 +2287,44 @@ def parse_args():
         "--content-type",
         default="auto",
         choices=VALID_CONTENT_TYPE_MODES,
-        help="auto, podcast, gameplay, tutorial, commentary or generic",
+        help="auto or podcast. The MVP routes supported material as podcast/talking-head.",
     )
     parser.add_argument("--min-duration", type=float, default=30.0, help="Minimum window duration in seconds")
-    parser.add_argument("--max-duration", type=float, default=60.0, help="Maximum window duration in seconds")
+    parser.add_argument("--max-duration", type=float, default=90.0, help="Maximum window duration in seconds")
     parser.add_argument("--top", type=int, default=5, help="How many clips to export")
     parser.add_argument("--save-json", default=None, help="Output JSON path for selected windows")
     parser.add_argument("--model", default="models/gemini-2.5-flash", help="Gemini model for Smart Context Cutter")
     parser.add_argument("--ai-mode", default="gemini_optional", choices=VALID_AI_MODES, help="Selection mode: local_only, gemini_optional, gemini_enabled")
-    parser.add_argument("--context-margin", type=float, default=20.0, help="Transcript margin around each window")
+    parser.add_argument("--context-margin", type=float, default=90.0, help="Transcript margin around each window")
     parser.add_argument("--request-timeout", type=float, default=75.0, help="Gemini timeout in seconds per selected scene")
+    parser.add_argument(
+        "--semantic-director-mode",
+        default="off",
+        choices=VALID_SEMANTIC_DIRECTOR_MODES,
+        help="Experimental semantic story reviewer prototype. Disabled by default and not part of the recommended production flow.",
+    )
+    parser.add_argument(
+        "--semantic-model",
+        default="models/gemini-2.5-flash",
+        help="Experimental Gemini model for the prototype semantic reviewer.",
+    )
     parser.add_argument("--rerank-pool-size", type=int, default=0, help="How many locally ranked non-overlapping candidates to expose to Gemini batch rerank")
     parser.add_argument("--cutting-log", default="metadata/cutting_logic.json", help="Output log for cutting logic")
     parser.add_argument(
         "--layout-mode",
         default="auto",
         choices=VALID_LAYOUT_MODES,
-        help="Layout override for 9:16 rendering: auto, full_frame_blur_background, safe_center_crop, gameplay_priority_crop, speaker_face_crop, stable_subject_crop or vertical_crop",
+        help="Layout override for 9:16 rendering: auto or speaker_face_crop.",
     )
     parser.add_argument("--skip-smart-context", action="store_true", help="Skip Gemini refinement and keep local windows")
     return parser.parse_args()
 
 
 def main():
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     args = parse_args()
     bootstrap_ssl_certificates()
 
@@ -1128,7 +2338,10 @@ def main():
     sentences = build_sentence_boundaries(transcript)
     heatmap_index, heatmap_starts = build_heatmap_index(heatmap)
     ai_mode = AI_MODE_LOCAL_ONLY if args.skip_smart_context else normalize_ai_mode(args.ai_mode)
+    semantic_director_mode = normalize_semantic_director_mode(args.semantic_director_mode)
     content_routing, strategy = resolve_content_routing(args)
+    content_routing["case_id"] = Path(args.video).stem if args.video else ""
+    content_routing["title"] = Path(args.video).stem if args.video else ""
 
     print(
         f"  Content classification: {content_routing['content_type']} "
@@ -1155,7 +2368,7 @@ def main():
     for index, candidate in enumerate(scored_candidates, start=1):
         candidate["candidate_id"] = f"cand_{index:03d}"
 
-    rerank_pool_size = args.rerank_pool_size or max(args.top, args.top * 3)
+    rerank_pool_size = args.rerank_pool_size or (max(args.top * 6, 30) if allows_gemini(ai_mode) else max(args.top, args.top * 3))
     rerank_pool_size = max(args.top, rerank_pool_size)
     candidate_pool = select_non_overlapping(scored_candidates, count=rerank_pool_size, score_key="local_score")
     if not candidate_pool:
@@ -1179,6 +2392,9 @@ def main():
             log_path=Path(args.cutting_log),
             request_timeout=args.request_timeout,
             selection_context=content_routing,
+            min_duration=args.min_duration,
+            semantic_director_mode=semantic_director_mode,
+            semantic_model=args.semantic_model,
         )
         fallback_count = cutting_log.get("clips_with_local_fallback", 0)
         if fallback_count:
@@ -1197,6 +2413,9 @@ def main():
             log_path=Path(args.cutting_log),
             request_timeout=args.request_timeout,
             selection_context=content_routing,
+            min_duration=args.min_duration,
+            semantic_director_mode=semantic_director_mode,
+            semantic_model=args.semantic_model,
         )
         print("  AI rerank skipped: local_only mode is active.")
 

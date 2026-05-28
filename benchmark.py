@@ -28,9 +28,15 @@ from pipeline_modes import (
     subtitle_checker_sample_limit,
     subtitle_checker_uses_ai,
 )
+from semantic_clip_director import (
+    SEMANTIC_DIRECTOR_MODE_OFF,
+    SUBTITLE_CORRECTION_MODE_OFF,
+    VALID_SEMANTIC_DIRECTOR_MODES,
+    VALID_SUBTITLE_CORRECTION_MODES,
+)
 
 
-VALID_CONTENT_TYPES = ("podcast", "gameplay", "tutorial", "commentary", "generic")
+VALID_CONTENT_TYPES = ("podcast",)
 VALID_CONTENT_TYPE_MODES = ("auto",) + VALID_CONTENT_TYPES
 PROJECT_ROOT = Path(__file__).resolve().parent
 BENCHMARK_ROOT = PROJECT_ROOT / "benchmarks"
@@ -53,13 +59,21 @@ HUMAN_REVIEW_KEY_FIELDS = (
     "clip_start",
     "clip_end",
 )
+DEDUP_OVERLAP_THRESHOLD = 0.67
+DEDUP_AUTO_SCORE_DELTA = 2.5
+MIN_HUMAN_REVIEW_RECORDS_FOR_TUNING = 10
+HUMAN_REVIEW_TARGET_CASE_PRIORITY = {
+    "podcast_j86_semantic_test": 0,
+    "podcast_rff_semantic_test": 1,
+    "magenta_team_podcast": 2,
+}
 HUMAN_REVIEW_NOTE_PATTERNS = {
-    "buy menu": ("buy menu",),
-    "setup / waiting": ("setup", "czekania", "waiting", "smoke", "chodzenia", "chodzenie", "utility"),
     "ad / sponsor-like segment": ("reklama", "sponsor", "skin", "skiny", "skrzynie", "promo"),
     "weak payoff": ("brak payoffu", "mało wyraźnego payoffu", "payoff nie jest bardzo mocny", "bez payoffu"),
-    "boundary too early / too long": ("za wczesny", "trochę długi", "start/koniec", "ciaśniej", "bez kontekstu"),
-    "crop / framing issue": (
+    "missing context": ("bez kontekstu", "brak kontekstu"),
+    "cut mid-sentence": ("ucięte zdanie", "w środku zdania", "polowie zdania", "połowie zdania"),
+    "bad boundary": ("źle pocięte", "zle pocięte", "start/koniec", "za wczesny", "trochę długi", "ciaśniej"),
+    "fatal crop": (
         "fatalny crop",
         "źle wykadrow",
         "nie widać co się dzieje",
@@ -68,26 +82,25 @@ HUMAN_REVIEW_NOTE_PATTERNS = {
         "ucięty ekran",
     ),
     "too many speakers": ("więcej speakerów niż jest",),
-    "subtitle readability": ("napisy", "subtitles", "czytelność"),
+    "unreadable subtitles": ("nieczytelne napisy", "napisy", "subtitles", "czytelność"),
 }
 HUMAN_REVIEW_CATEGORY_PATTERNS = {
     "scoring": (
-        "buy menu",
-        "setup / waiting",
         "ad / sponsor-like segment",
         "weak payoff",
+        "missing context",
     ),
-    "boundary": ("boundary too early / too long",),
-    "crop": ("crop / framing issue",),
+    "boundary": ("missing context", "cut mid-sentence", "bad boundary"),
+    "crop": ("fatal crop",),
     "diarization": ("too many speakers",),
-    "subtitles": ("subtitle readability",),
+    "subtitles": ("unreadable subtitles",),
 }
 ITERATION_CHANGES = [
-    "Benchmark now preserves existing human review rows when regenerating `benchmarks/human_review_template.csv` and includes reviewed rows from earlier runs instead of wiping them.",
-    "Human review is now merged into `benchmarks/results.json` and `benchmarks/report.md`, including averages, reviewed outliers, note issue counts and data-backed top problems.",
-    "Gameplay local scoring now lightly penalizes sponsor-like clips, setup/waiting windows and weak-payoff segments instead of rewarding them mostly on heatmap plus chatter.",
-    "Selection outputs now carry boundary metadata, and cutter logs now record whether sentence-boundary refinement was used for each clip.",
-    "Rendering is now content-aware per material type: tutorial uses a 9:16 full-frame blur-background layout, gameplay uses a safer gameplay-priority crop, podcast keeps face-driven framing, commentary stays stable and generic falls back to safe center crop.",
+    "Human review preservation now also recovers complete scored rows from the previous `benchmarks/results.json`, so historical manual scores are archived even if the CSV archive file is missing.",
+    "The report now marks small human-review samples explicitly and lists the next clips to review instead of presenting low-N tuning as statistically strong.",
+    "The MVP benchmark scope is now podcast/talking-head only.",
+    "Local scoring focuses on context completeness, question/context before answer, payoff, sentence boundaries, speaker continuity and subtitle readability.",
+    "Subtitle rendering uses one stable podcast style instead of speaker-colored captions.",
 ]
 
 
@@ -107,6 +120,7 @@ class BenchmarkCase:
     comparison_content_types: list[str]
     include_generic_baseline: bool
     notes: str
+    review_batch: str = "old_baseline"
 
 
 def resolve_path(value: str | None, base_dir: Path) -> Path | None:
@@ -287,6 +301,141 @@ def count_overlapping_windows(
     return matches
 
 
+def clip_duplicate_ref(case_id: str, scenario_id: str, clip: dict[str, Any]) -> str:
+    return (
+        f"{case_id}:{scenario_id}:"
+        f"{clip.get('index', '?')}:{clip.get('start_label', '?')}->{clip.get('end_label', '?')}"
+    )
+
+
+def _duplicate_preference_key(case_id: str, scenario_id: str, clip: dict[str, Any]) -> tuple[float, float, float]:
+    local_score = float(clip.get("local_score", 0.0) or 0.0)
+    auto_bonus = 0.5 if scenario_id == "auto" else 0.0
+    earlier_bonus = -float(clip.get("start", 0.0) or 0.0)
+    return (round(local_score + auto_bonus, 4), local_score, earlier_bonus)
+
+
+def _choose_duplicate_winner(
+    case_id: str,
+    left: tuple[str, dict[str, Any]],
+    right: tuple[str, dict[str, Any]],
+) -> tuple[str, dict[str, Any]]:
+    left_scenario, left_clip = left
+    right_scenario, right_clip = right
+    left_score = float(left_clip.get("local_score", 0.0) or 0.0)
+    right_score = float(right_clip.get("local_score", 0.0) or 0.0)
+    if abs(left_score - right_score) <= DEDUP_AUTO_SCORE_DELTA:
+        if left_scenario == "auto" and right_scenario != "auto":
+            return left
+        if right_scenario == "auto" and left_scenario != "auto":
+            return right
+    if _duplicate_preference_key(case_id, left_scenario, left_clip) >= _duplicate_preference_key(case_id, right_scenario, right_clip):
+        return left
+    return right
+
+
+def annotate_case_duplicates(
+    case_payload: dict[str, Any],
+    *,
+    overlap_threshold: float = DEDUP_OVERLAP_THRESHOLD,
+) -> dict[str, Any]:
+    scenarios = [
+        scenario
+        for scenario in case_payload.get("scenarios", [])
+        if scenario.get("status") == "completed"
+    ]
+    clip_entries: list[dict[str, Any]] = []
+    for scenario in scenarios:
+        selection = scenario.setdefault("selection", {})
+        clips = selection.get("clips") or []
+        selection["removed_duplicates_count"] = 0
+        selection["kept_clip_count_after_dedup"] = len(clips)
+        for clip in clips:
+            clip["deduped"] = bool(clip.get("deduped", False))
+            clip["duplicate_of"] = str(clip.get("duplicate_of") or "")
+            clip["overlap_ratio"] = round(float(clip.get("overlap_ratio", 0.0) or 0.0), 4)
+            clip_entries.append(
+                {
+                    "scenario_id": str(scenario.get("scenario_id") or ""),
+                    "clip": clip,
+                }
+            )
+
+    duplicate_groups = 0
+    duplicates_removed = 0
+    visited: set[int] = set()
+    for start_index, entry in enumerate(clip_entries):
+        if start_index in visited:
+            continue
+        stack = [start_index]
+        component: set[int] = set()
+        while stack:
+            index = stack.pop()
+            if index in component:
+                continue
+            component.add(index)
+            for other_index in range(len(clip_entries)):
+                if other_index == index:
+                    continue
+                if interval_overlap_ratio(clip_entries[index]["clip"], clip_entries[other_index]["clip"]) >= overlap_threshold:
+                    stack.append(other_index)
+        visited.update(component)
+        if len(component) <= 1:
+            continue
+        duplicate_groups += 1
+        component_entries = [clip_entries[index] for index in sorted(component)]
+        winner = component_entries[0]
+        for contender in component_entries[1:]:
+            winner_scenario = str(winner["scenario_id"] or "")
+            contender_scenario = str(contender["scenario_id"] or "")
+            chosen_scenario, chosen_clip = _choose_duplicate_winner(
+                str(case_payload.get("case_id") or ""),
+                (winner_scenario, winner["clip"]),
+                (contender_scenario, contender["clip"]),
+            )
+            if chosen_clip is contender["clip"]:
+                winner = contender
+
+        winner_ref = clip_duplicate_ref(
+            str(case_payload.get("case_id") or ""),
+            str(winner["scenario_id"] or ""),
+            winner["clip"],
+        )
+        removed_for_winner = 0
+        for contender in component_entries:
+            scenario_id = str(contender["scenario_id"] or "")
+            scenario = next((item for item in scenarios if item.get("scenario_id") == scenario_id), None)
+            if contender is winner:
+                contender["clip"]["deduped"] = False
+                contender["clip"]["duplicate_of"] = ""
+                contender["clip"]["overlap_ratio"] = 0.0
+                continue
+            overlap = interval_overlap_ratio(contender["clip"], winner["clip"])
+            contender["clip"]["deduped"] = True
+            contender["clip"]["duplicate_of"] = winner_ref
+            contender["clip"]["overlap_ratio"] = round(overlap, 4)
+            if scenario is not None:
+                scenario["selection"]["removed_duplicates_count"] = int(
+                    scenario["selection"].get("removed_duplicates_count", 0) or 0
+                ) + 1
+            duplicates_removed += 1
+            removed_for_winner += 1
+        winner["clip"]["removed_duplicates_count"] = removed_for_winner
+
+    for scenario in scenarios:
+        clips = scenario.get("selection", {}).get("clips") or []
+        kept_count = sum(1 for clip in clips if not clip.get("deduped"))
+        scenario["selection"]["kept_clip_count_after_dedup"] = kept_count
+
+    summary = {
+        "overlap_threshold": overlap_threshold,
+        "duplicate_groups": duplicate_groups,
+        "duplicates_removed": duplicates_removed,
+    }
+    case_payload["deduplication"] = summary
+    return summary
+
+
 def summarize_score_distribution(values: list[float]) -> dict[str, float]:
     if not values:
         return {
@@ -363,10 +512,14 @@ def dedupe_preserve_order(items: list[str]) -> list[str]:
     return ordered
 
 
-def build_case_scenarios(case: BenchmarkCase) -> list[dict[str, str]]:
-    scenario_types = ["auto", case.expected_content_type, *case.comparison_content_types]
-    if case.include_generic_baseline:
-        scenario_types.append("generic")
+def build_case_scenarios(
+    case: BenchmarkCase,
+    *,
+    include_compare_strategies: bool = False,
+) -> list[dict[str, str]]:
+    scenario_types = ["auto"]
+    if include_compare_strategies:
+        scenario_types.extend([item for item in [case.expected_content_type, *case.comparison_content_types] if item == "podcast"])
     scenarios = []
     for content_type in dedupe_preserve_order(scenario_types):
         scenarios.append(
@@ -422,8 +575,9 @@ def load_cases(config_path: Path) -> list[BenchmarkCase]:
                 transcript_source=resolve_path(raw_case.get("transcript_source"), PROJECT_ROOT),
                 expected_speaker_mode=expected_speaker_mode,
                 comparison_content_types=comparison_content_types,
-                include_generic_baseline=bool(raw_case.get("include_generic_baseline", True)),
+                include_generic_baseline=False,
                 notes=str(raw_case.get("notes") or "").strip(),
+                review_batch=str(raw_case.get("review_batch") or "old_baseline").strip() or "old_baseline",
             )
         )
     return cases
@@ -744,6 +898,33 @@ def summarize_selection_metrics(
                 "local_features": window.get("local_features") or {},
                 "boundary_metadata": window.get("boundary_metadata") or {},
                 "summary": window.get("summary"),
+                "deduped": bool(window.get("deduped", False)),
+                "duplicate_of": str(window.get("duplicate_of") or ""),
+                "overlap_ratio": round(float(window.get("overlap_ratio", 0.0) or 0.0), 4),
+                "removed_duplicates_count": int(window.get("removed_duplicates_count", 0) or 0),
+                "semantic_director_used": bool(window.get("semantic_director_used", False)),
+                "semantic_model": str(window.get("semantic_model") or ""),
+                "story_score": round(float(window.get("story_score", 0.0) or 0.0), 4),
+                "hook_score": round(float(window.get("hook_score", 0.0) or 0.0), 4),
+                "context_score": round(float(window.get("context_score", 0.0) or 0.0), 4),
+                "payoff_score": round(float(window.get("payoff_score", 0.0) or 0.0), 4),
+                "semantic_reason": str(window.get("semantic_reason") or ""),
+                "semantic_boundary_adjusted": bool(window.get("semantic_boundary_adjusted", False)),
+                "semantic_fallback_reason": str(window.get("semantic_fallback_reason") or ""),
+                "llm_score": round(float(window.get("llm_score", 0.0) or 0.0), 4),
+                "llm_hook_score": round(float(window.get("llm_hook_score", 0.0) or 0.0), 4),
+                "llm_context_score": round(float(window.get("llm_context_score", 0.0) or 0.0), 4),
+                "llm_answer_completeness_score": round(float(window.get("llm_answer_completeness_score", 0.0) or 0.0), 4),
+                "llm_payoff_score": round(float(window.get("llm_payoff_score", 0.0) or 0.0), 4),
+                "llm_standalone_story_score": round(float(window.get("llm_standalone_story_score", 0.0) or 0.0), 4),
+                "llm_viral_potential_score": round(float(window.get("llm_viral_potential_score", 0.0) or 0.0), 4),
+                "llm_boundary_quality_score": round(float(window.get("llm_boundary_quality_score", 0.0) or 0.0), 4),
+                "llm_ending_type": str(window.get("llm_ending_type") or ""),
+                "llm_title_suggestion": str(window.get("llm_title_suggestion") or ""),
+                "llm_story_summary": str(window.get("llm_story_summary") or ""),
+                "llm_viral_reason": str(window.get("llm_viral_reason") or ""),
+                "llm_why_viewer_keeps_watching": str(window.get("llm_why_viewer_keeps_watching") or ""),
+                "llm_boundary_notes": str(window.get("llm_boundary_notes") or ""),
             }
         )
 
@@ -753,6 +934,8 @@ def summarize_selection_metrics(
         "duration_distribution": summarize_score_distribution(durations),
         "temporal_metrics": summarize_temporal_metrics(windows, material_duration=material_duration),
         "selection_reason_counts": dict(reasons.most_common()),
+        "removed_duplicates_count": 0,
+        "kept_clip_count_after_dedup": len(windows),
         "clips": clips,
     }
 
@@ -775,6 +958,8 @@ def summarize_rendering_metrics(
     crop_modes = Counter()
     crop_priorities = Counter()
     layout_modes = Counter()
+    layout_policies = Counter()
+    layout_modes_used = Counter()
     tracking_modes = Counter()
     face_tracking_used_count = 0
     center_x_means = []
@@ -796,6 +981,10 @@ def summarize_rendering_metrics(
         ignored_faces_count += int(face_tracking.get("ignored_faces_count") or 0)
         if adjustment.get("layout_mode") or face_tracking.get("layout_mode"):
             layout_modes[str(adjustment.get("layout_mode") or face_tracking.get("layout_mode"))] += 1
+        if adjustment.get("layout_policy") or face_tracking.get("layout_policy"):
+            layout_policies[str(adjustment.get("layout_policy") or face_tracking.get("layout_policy"))] += 1
+        if face_tracking.get("layout_mode_used"):
+            layout_modes_used[str(face_tracking.get("layout_mode_used"))] += 1
         if face_tracking.get("crop_mode"):
             crop_modes[str(face_tracking.get("crop_mode"))] += 1
         if face_tracking.get("crop_priority"):
@@ -839,6 +1028,8 @@ def summarize_rendering_metrics(
         "zoom_samples": zoom_samples,
         "ignored_faces_count": ignored_faces_count,
         "layout_modes": dict(layout_modes),
+        "layout_policies": dict(layout_policies),
+        "layout_modes_used": dict(layout_modes_used),
         "crop_modes": dict(crop_modes),
         "crop_priorities": dict(crop_priorities),
         "tracking_modes": dict(tracking_modes),
@@ -861,6 +1052,11 @@ def summarize_rendering_metrics(
 def summarize_subtitle_styles(
     transcript_path: Path,
     windows: list[dict[str, Any]],
+    *,
+    content_type_hint: str = "",
+    expected_speaker_mode: str = "unknown",
+    subtitle_correction_mode: str = SUBTITLE_CORRECTION_MODE_OFF,
+    semantic_model: str = "models/gemini-2.5-flash",
 ) -> dict[str, Any]:
     import subtitler
 
@@ -868,16 +1064,33 @@ def summarize_subtitle_styles(
     style_counter = Counter()
     multi_speaker_clips = 0
     empty_event_clips = 0
+    speaker_flips_smoothed = 0
+    detected_speaker_counts = []
+    effective_speaker_counts = []
+    speaker_color_map: dict[str, Any] = {}
+    color_modes = Counter()
+    speaker_switch_count = 0
     clip_summaries = []
 
     for index, window in enumerate(windows, start=1):
-        events = subtitler.build_subtitle_events(
+        events, subtitle_debug = subtitler.build_subtitle_events_with_metadata(
             transcript,
             float(window["start"]),
             float(window["duration"]),
+            content_type_hint=content_type_hint,
+            expected_speaker_mode=expected_speaker_mode,
+            subtitle_correction_mode=subtitle_correction_mode,
+            semantic_model=semantic_model,
         )
         speaker_names = sorted({event.get("speaker", "Speaker 0") for event in events})
         style_counter.update(speaker_names)
+        speaker_flips_smoothed += int(subtitle_debug.get("speaker_flips_smoothed") or 0)
+        speaker_switch_count += int(subtitle_debug.get("speaker_switch_count") or 0)
+        if subtitle_debug.get("speaker_color_mode"):
+            color_modes[str(subtitle_debug.get("speaker_color_mode"))] += 1
+        detected_speaker_counts.append(int(subtitle_debug.get("detected_speaker_count") or 0))
+        effective_speaker_counts.append(int(subtitle_debug.get("effective_speaker_count") or 0))
+        speaker_color_map.update(subtitle_debug.get("speaker_color_map") or {})
         if len(speaker_names) >= 2:
             multi_speaker_clips += 1
         if not events:
@@ -887,6 +1100,23 @@ def summarize_subtitle_styles(
                 "index": index,
                 "event_count": len(events),
                 "speakers": speaker_names,
+                "speaker_flips_smoothed": int(subtitle_debug.get("speaker_flips_smoothed") or 0),
+                "detected_speaker_count": int(subtitle_debug.get("detected_speaker_count") or 0),
+                "effective_speaker_count": int(subtitle_debug.get("effective_speaker_count") or 0),
+                "speaker_smoothing_enabled": bool(subtitle_debug.get("speaker_smoothing_enabled", False)),
+                "speaker_smoothing_window": float(subtitle_debug.get("speaker_smoothing_window") or 0.0),
+                "speaker_color_map": subtitle_debug.get("speaker_color_map") or {},
+                "speaker_color_mode": str(subtitle_debug.get("speaker_color_mode") or ""),
+                "subtitle_color_policy": str(subtitle_debug.get("subtitle_color_policy") or ""),
+                "speaker_color_fallback_reason": str(subtitle_debug.get("speaker_color_fallback_reason") or ""),
+                "speaker_switch_count": int(subtitle_debug.get("speaker_switch_count") or 0),
+                "speaker_switch_ratio": float(subtitle_debug.get("speaker_switch_ratio") or 0.0),
+                "merged_low_duration_speakers": subtitle_debug.get("merged_low_duration_speakers") or [],
+                "speaker_stability_reason": str(subtitle_debug.get("speaker_stability_reason") or ""),
+                "subtitles_corrected": bool(subtitle_debug.get("subtitles_corrected", False)),
+                "subtitle_corrector_used": str(subtitle_debug.get("subtitle_corrector_used") or ""),
+                "corrected_segments_count": int(subtitle_debug.get("corrected_segments_count") or 0),
+                "correction_fallback_reason": str(subtitle_debug.get("correction_fallback_reason") or ""),
             }
         )
 
@@ -894,6 +1124,56 @@ def summarize_subtitle_styles(
         "speaker_styles_used": dict(style_counter),
         "multi_speaker_clips": multi_speaker_clips,
         "empty_event_clips": empty_event_clips,
+        "speaker_flips_smoothed": speaker_flips_smoothed,
+        "detected_speaker_count": max(detected_speaker_counts) if detected_speaker_counts else 0,
+        "effective_speaker_count": max(effective_speaker_counts) if effective_speaker_counts else 0,
+        "speaker_color_map": speaker_color_map,
+        "speaker_color_modes": dict(color_modes),
+        "speaker_color_mode": next(iter(color_modes.keys()), ""),
+        "subtitle_color_policy": next(
+            (
+                str(clip_summary.get("subtitle_color_policy") or "")
+                for clip_summary in clip_summaries
+                if clip_summary.get("subtitle_color_policy")
+            ),
+            "",
+        ),
+        "speaker_switch_count": speaker_switch_count,
+        "speaker_smoothing_enabled": True,
+        "speaker_smoothing_window": float(getattr(subtitler, "DEFAULT_SPEAKER_SMOOTHING_WINDOW", 0.0)),
+        "merged_low_duration_speakers": sorted(
+            {
+                speaker
+                for clip_summary in clip_summaries
+                for speaker in (clip_summary.get("merged_low_duration_speakers") or [])
+            }
+        ),
+        "speaker_stability_reason": next(
+            (
+                str(clip_summary.get("speaker_stability_reason") or "")
+                for clip_summary in clip_summaries
+                if clip_summary.get("speaker_stability_reason")
+            ),
+            "",
+        ),
+        "subtitles_corrected": any(bool(clip_summary.get("subtitles_corrected")) for clip_summary in clip_summaries),
+        "subtitle_corrector_used": next(
+            (
+                str(clip_summary.get("subtitle_corrector_used") or "")
+                for clip_summary in clip_summaries
+                if clip_summary.get("subtitle_corrector_used")
+            ),
+            "off",
+        ),
+        "corrected_segments_count": sum(int(clip_summary.get("corrected_segments_count") or 0) for clip_summary in clip_summaries),
+        "correction_fallback_reason": next(
+            (
+                str(clip_summary.get("correction_fallback_reason") or "")
+                for clip_summary in clip_summaries
+                if clip_summary.get("correction_fallback_reason")
+            ),
+            "",
+        ),
         "clip_event_summary": clip_summaries,
     }
 
@@ -910,6 +1190,8 @@ def build_human_review_rows(
 ) -> list[dict[str, Any]]:
     rows = []
     for clip in selected_clips:
+        if bool(clip.get("deduped")):
+            continue
         clip_index = int(clip["index"])
         matching_files = sorted(subtitle_dir.glob(f"segment_{clip_index}_*.mp4"))
         clip_file = str(matching_files[0].relative_to(PROJECT_ROOT)) if matching_files else ""
@@ -976,6 +1258,42 @@ def row_has_human_input(row: dict[str, Any]) -> bool:
     if any(str(row.get(field, "") or "").strip() for field in HUMAN_REVIEW_SCORE_FIELDS):
         return True
     return bool(str(row.get("notes", "") or "").strip())
+
+
+def row_has_complete_human_scores(row: dict[str, Any]) -> bool:
+    return all(parse_optional_review_score(row.get(field)) is not None for field in HUMAN_REVIEW_SCORE_FIELDS)
+
+
+def extract_human_review_rows_from_results(results_payload: dict[str, Any]) -> list[dict[str, Any]]:
+    human_review = results_payload.get("human_review") if isinstance(results_payload, dict) else None
+    scored_rows = human_review.get("scored_rows", []) if isinstance(human_review, dict) else []
+    rows: list[dict[str, Any]] = []
+    if not isinstance(scored_rows, list):
+        return rows
+
+    fieldnames = [
+        "case_id",
+        "case_label",
+        "expected_content_type",
+        "scenario_id",
+        "scenario_label",
+        "clip_index",
+        "clip_start",
+        "clip_end",
+        "local_score",
+        "clip_file",
+        "human_relevance_score",
+        "human_boundary_score",
+        "human_crop_score",
+        "notes",
+    ]
+    for row in scored_rows:
+        if not isinstance(row, dict):
+            continue
+        preserved = {field: row.get(field, "") for field in fieldnames}
+        if row_has_human_input(preserved):
+            rows.append(preserved)
+    return rows
 
 
 def merge_human_review_rows(
@@ -1077,6 +1395,8 @@ def build_review_clip_lookup(case_payloads: list[dict[str, Any]]) -> dict[tuple[
                 continue
             subtitle_dir = scenario.get("artifacts", {}).get("subtitle_dir") or ""
             for clip in scenario.get("selection", {}).get("clips", []):
+                if bool(clip.get("deduped")):
+                    continue
                 clip_index = int(clip.get("index") or 0)
                 clip_file = ""
                 if subtitle_dir:
@@ -1099,6 +1419,9 @@ def build_review_clip_lookup(case_payloads: list[dict[str, Any]]) -> dict[tuple[
                     "selection_strategy": clip.get("selection_strategy"),
                     "selection_source": clip.get("selection_source"),
                     "boundary_metadata": clip.get("boundary_metadata") or {},
+                    "deduped": bool(clip.get("deduped", False)),
+                    "duplicate_of": clip.get("duplicate_of"),
+                    "overlap_ratio": clip.get("overlap_ratio"),
                     "strategy_render_hints": scenario.get("classification", {}).get("strategy_render_hints") or {},
                 }
                 lookup.setdefault(human_review_row_key(row), row)
@@ -1132,6 +1455,74 @@ def _average_triplet(rows: list[dict[str, Any]]) -> dict[str, float]:
         "boundary": round(sum(float(row["human_boundary_score"]) for row in rows) / len(rows), 4),
         "crop": round(sum(float(row["human_crop_score"]) for row in rows) / len(rows), 4),
     }
+
+
+def _scenario_review_priority(row: dict[str, Any]) -> int:
+    scenario_id = str(row.get("scenario_id", "") or "")
+    expected_type = str(row.get("expected_content_type", "") or "")
+    if scenario_id == "auto":
+        return 0
+    if scenario_id == f"manual_{expected_type}":
+        return 1
+    if scenario_id.startswith("compare_"):
+        return 2
+    return 3
+
+
+def build_next_human_review_targets(review_rows: list[dict[str, Any]], *, limit: int = 12) -> list[dict[str, Any]]:
+    candidates = [row for row in review_rows if not row_has_complete_human_scores(row)]
+    candidates.sort(
+        key=lambda row: (
+            _scenario_review_priority(row),
+            HUMAN_REVIEW_TARGET_CASE_PRIORITY.get(str(row.get("case_id", "") or ""), 99),
+            str(row.get("case_id", "")),
+            -float(parse_optional_review_score(row.get("local_score")) or 0.0),
+            int(row.get("clip_index", 0) or 0),
+        )
+    )
+
+    ordered_rows = []
+    used_keys = set()
+    for case_id in HUMAN_REVIEW_TARGET_CASE_PRIORITY:
+        row = next(
+            (
+                candidate
+                for candidate in candidates
+                if str(candidate.get("case_id", "") or "") == case_id
+                and str(candidate.get("scenario_id", "") or "") == "auto"
+            ),
+            None,
+        )
+        if row is None:
+            continue
+        key = human_review_row_key(row)
+        used_keys.add(key)
+        ordered_rows.append(row)
+
+    for row in candidates:
+        key = human_review_row_key(row)
+        if key in used_keys:
+            continue
+        used_keys.add(key)
+        ordered_rows.append(row)
+        if len(ordered_rows) >= limit:
+            break
+
+    targets = []
+    for row in ordered_rows[:limit]:
+        targets.append(
+            {
+                "case_id": row.get("case_id", ""),
+                "expected_content_type": row.get("expected_content_type", ""),
+                "scenario_id": row.get("scenario_id", ""),
+                "clip_index": row.get("clip_index", ""),
+                "clip_start": row.get("clip_start", ""),
+                "clip_end": row.get("clip_end", ""),
+                "local_score": row.get("local_score", ""),
+                "clip_file": row.get("clip_file", ""),
+            }
+        )
+    return targets
 
 
 def summarize_human_review(
@@ -1184,6 +1575,11 @@ def summarize_human_review(
         return {
             "scored_record_count": 0,
             "auto_scored_record_count": 0,
+            "minimum_records_for_tuning": MIN_HUMAN_REVIEW_RECORDS_FOR_TUNING,
+            "insufficient_for_weight_tuning": True,
+            "scored_record_count_by_content_type": {},
+            "scored_record_count_by_scenario": {},
+            "scored_record_count_by_expected_content_type": {},
             "averages": {
                 "overall": {"relevance": 0.0, "boundary": 0.0, "crop": 0.0},
                 "by_content_type": {},
@@ -1196,6 +1592,7 @@ def summarize_human_review(
             "largest_remaining_issue": None,
             "review_run_ids": [],
             "matched_clip_metadata_count": 0,
+            "next_review_targets": build_next_human_review_targets(review_rows),
         }
 
     grouped_by_content_type: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -1209,6 +1606,14 @@ def summarize_human_review(
     }
     averages_by_scenario = {
         key: _average_triplet(items)
+        for key, items in sorted(grouped_by_scenario.items())
+    }
+    scored_counts_by_content_type = {
+        key: len(items)
+        for key, items in sorted(grouped_by_content_type.items())
+    }
+    scored_counts_by_scenario = {
+        key: len(items)
         for key, items in sorted(grouped_by_scenario.items())
     }
 
@@ -1263,6 +1668,11 @@ def summarize_human_review(
     return {
         "scored_record_count": len(scored_rows),
         "auto_scored_record_count": sum(1 for row in scored_rows if row["scenario_id"] == "auto"),
+        "minimum_records_for_tuning": MIN_HUMAN_REVIEW_RECORDS_FOR_TUNING,
+        "insufficient_for_weight_tuning": len(scored_rows) < MIN_HUMAN_REVIEW_RECORDS_FOR_TUNING,
+        "scored_record_count_by_content_type": scored_counts_by_content_type,
+        "scored_record_count_by_scenario": scored_counts_by_scenario,
+        "scored_record_count_by_expected_content_type": scored_counts_by_content_type,
         "averages": {
             "overall": overall_avg,
             "by_content_type": averages_by_content_type,
@@ -1278,6 +1688,7 @@ def summarize_human_review(
         "largest_remaining_issue": top_quality_issues[0] if top_quality_issues else None,
         "review_run_ids": sorted({run_id for run_id in (row["review_run_id"] for row in scored_rows) if run_id}),
         "matched_clip_metadata_count": sum(1 for row in scored_rows if row["matched_clip_metadata"]),
+        "next_review_targets": build_next_human_review_targets(review_rows),
     }
 
 
@@ -1331,8 +1742,22 @@ def run_selection_scenario(
         args.layout_mode,
         "--ai-mode",
         args.ai_mode,
+        "--semantic-director-mode",
+        args.semantic_director_mode,
+        "--semantic-model",
+        args.semantic_model,
         "--top",
         str(args.top),
+        "--min-duration",
+        str(args.min_duration),
+        "--max-duration",
+        str(args.max_duration),
+        "--context-margin",
+        str(args.context_margin),
+        "--rerank-pool-size",
+        str(args.rerank_pool_size),
+        "--request-timeout",
+        str(args.request_timeout),
     ]
     analyze_ok, analyze_tail = run_command(analyze_cmd, logs_dir / "analyze.log")
     if not analyze_ok:
@@ -1397,6 +1822,8 @@ def run_selection_scenario(
             str(raw_dir),
             "--cutting-log",
             str(cutting_log_path),
+            "--max-duration",
+            str(args.max_duration),
             "--layout-mode",
             args.layout_mode,
         ]
@@ -1427,6 +1854,14 @@ def run_selection_scenario(
             str(raw_dir),
             "--output-subs",
             str(subtitle_dir),
+            "--content-type",
+            str(content_routing.get("content_type") or case.expected_content_type or "podcast"),
+            "--expected-speaker-mode",
+            str(case.expected_speaker_mode or "unknown"),
+            "--subtitle-correction-mode",
+            args.subtitle_correction_mode,
+            "--semantic-model",
+            args.semantic_model,
         ]
         subs_ok, subs_tail = run_command(subs_cmd, logs_dir / "subtitler.log")
         if not subs_ok:
@@ -1452,7 +1887,14 @@ def run_selection_scenario(
         windows,
         material_duration=ffprobe_duration(case.video),
     )
-    subtitle_style_metrics = summarize_subtitle_styles(transcript_path, windows)
+    subtitle_style_metrics = summarize_subtitle_styles(
+        transcript_path,
+        windows,
+        content_type_hint=str(content_routing.get("content_type") or case.expected_content_type or "podcast"),
+        expected_speaker_mode=str(case.expected_speaker_mode or "unknown"),
+        subtitle_correction_mode=args.subtitle_correction_mode,
+        semantic_model=args.semantic_model,
+    )
 
     manual_override_applied = False
     if scenario["content_type"] != "auto":
@@ -1584,18 +2026,13 @@ def determine_recommendation(report_payload: dict[str, Any]) -> dict[str, str]:
         for case in cases
         if case.get("status") == "completed"
     }
-    missing_core_types = [
-        content_type for content_type in ("podcast", "tutorial") if content_type not in tested_expected_types
-    ]
-    if len(tested_expected_types) < 2 or missing_core_types:
+    if "podcast" not in tested_expected_types:
         return {
             "next_step": "expand_benchmark_corpus",
-            "title": "Collect missing podcast and tutorial benchmark materials before tuning algorithms",
+            "title": "Collect podcast benchmark materials before tuning algorithms",
             "reason": (
-                "The benchmark still lacks representative coverage for "
-                + ", ".join(missing_core_types)
-                + ". The current corpus is useful for gameplay and generic/commentary-like material, "
-                "but it still cannot validate whether the cutter is truly universal across all target types."
+                "The benchmark still lacks completed podcast/talking-head coverage, "
+                "so it cannot validate the current MVP quality target yet."
             ),
         }
 
@@ -1618,10 +2055,9 @@ def determine_recommendation(report_payload: dict[str, Any]) -> dict[str, str]:
     if accuracy < 0.75:
         return {
             "next_step": "improve_classifier",
-            "title": "Improve the heuristic content classifier",
+            "title": "Improve podcast routing",
             "reason": (
-                f"Auto classification accuracy is only {accuracy:.0%} across the tested materials, "
-                "so routing errors are likely to dominate downstream quality."
+                f"Auto routing matched podcast expectations for only {accuracy:.0%} of completed materials."
             ),
         }
     if render_failures > 0:
@@ -1635,6 +2071,15 @@ def determine_recommendation(report_payload: dict[str, Any]) -> dict[str, str]:
             "next_step": "improve_diarization",
             "title": "Improve diarization quality on multi-speaker material",
             "reason": "Transcript diagnostics still show suspicious speaker attribution patterns in benchmark cases.",
+        }
+    if human_review.get("insufficient_for_weight_tuning"):
+        return {
+            "next_step": "more_human_review",
+            "title": "Score more benchmark clips before stronger tuning",
+            "reason": (
+                f"Only {human_review.get('scored_record_count', 0)} complete human-review records are available; "
+                f"at least {human_review.get('minimum_records_for_tuning', MIN_HUMAN_REVIEW_RECORDS_FOR_TUNING)} are recommended before larger scoring changes."
+            ),
         }
     if human_review.get("scored_record_count", 0) > 0:
         largest_issue = (human_review.get("largest_remaining_issue") or {}).get("key")
@@ -1658,10 +2103,10 @@ def determine_recommendation(report_payload: dict[str, Any]) -> dict[str, str]:
             }
     return {
         "next_step": "tune_selection_weights",
-        "title": "Tune local scoring weights per content type",
+        "title": "Tune podcast local scoring weights",
         "reason": (
             "Routing and rendering look stable enough, so the highest leverage next iteration is "
-            "fine-tuning clip scoring and strategy weights with human review data."
+            "fine-tuning podcast story, boundary and subtitle quality with human review data."
         ),
     }
 
@@ -1674,9 +2119,9 @@ def build_markdown_report(report_payload: dict[str, Any]) -> str:
     ]
     configured_case_count = len(report_payload["cases"])
     tested_expected_types = set(report_payload["tested_expected_types"])
-    missing_core_types = [content_type for content_type in ("podcast", "tutorial") if content_type not in tested_expected_types]
+    missing_core_types = [content_type for content_type in ("podcast",) if content_type not in tested_expected_types]
     lines = []
-    lines.append("# AI-Virtual-Cutter Benchmark Report")
+    lines.append("# Podcast Cutter Benchmark Report")
     lines.append("")
     lines.append(f"- Generated at: `{report_payload['generated_at']}`")
     lines.append(f"- Run id: `{report_payload['run_id']}`")
@@ -1693,24 +2138,15 @@ def build_markdown_report(report_payload: dict[str, Any]) -> str:
     for item in benchmark_assets:
         lines.append(f"- Benchmark corpus asset: `{item}`")
     for item in auxiliary_assets:
-        lines.append(f"- Auxiliary smoke asset (not used to claim universality): `{item}`")
+        lines.append(f"- Auxiliary smoke asset (outside podcast MVP scope): `{item}`")
     lines.append(f"- Configured benchmark cases: `{configured_case_count}`")
+    lines.append("- Active MVP content type: `podcast` / `talking-head`.")
     lines.append(f"- Distinct expected content types tested: `{', '.join(sorted(report_payload['tested_expected_types'])) or 'none'}`")
-    if configured_case_count == 4:
-        lines.append("- This iteration expands the real benchmark corpus from `1` to `4` configured materials.")
-    elif configured_case_count > 4:
-        lines.append(
-            f"- This iteration expands the real benchmark corpus to `{configured_case_count}` configured materials."
-        )
-    if "generic" in tested_expected_types and "podcast" not in tested_expected_types and "tutorial" not in tested_expected_types:
-        lines.append(
-            "- The new additions broaden coverage for `generic` / commentary-like material, but they do not replace missing true `podcast` and `tutorial` benchmarks."
-        )
+    if configured_case_count > 0:
+        lines.append(f"- Podcast benchmark corpus size: `{configured_case_count}` configured materials.")
     if missing_core_types:
         lines.append(
-            "- Coverage gap: the corpus still does not include a true "
-            + " and ".join(f"`{content_type}`" for content_type in missing_core_types)
-            + " benchmark case, so universality is still not empirically proven."
+            "- Coverage gap: the corpus still does not include a completed podcast benchmark case."
         )
     lines.append("")
     lines.append("## Classifier Results")
@@ -1732,37 +2168,15 @@ def build_markdown_report(report_payload: dict[str, Any]) -> str:
     lines.append("")
 
     completed_cases = [case for case in report_payload["cases"] if case.get("status") == "completed"]
-    commentary_cases = [case for case in completed_cases if case.get("expected_content_type") == "commentary"]
-    generic_cases = [case for case in completed_cases if case.get("expected_content_type") == "generic"]
     podcast_cases = [case for case in completed_cases if case.get("expected_content_type") == "podcast"]
-    tutorial_cases = [case for case in completed_cases if case.get("expected_content_type") == "tutorial"]
-    commentary_as_podcast = 0
-    commentary_correct = 0
     podcast_correct = 0
-    tutorial_correct = 0
     single_speaker_oversegmented = 0
     multi_speaker_flattened = 0
-    commentary_like_cases = commentary_cases or generic_cases
-    for case in commentary_like_cases:
-        auto = next((scenario for scenario in case.get("scenarios", []) if scenario.get("scenario_id") == "auto"), None)
-        if auto and auto.get("status") == "completed":
-            if auto.get("classification", {}).get("detected_content_type") == "podcast":
-                commentary_as_podcast += 1
-    for case in commentary_cases:
-        auto = next((scenario for scenario in case.get("scenarios", []) if scenario.get("scenario_id") == "auto"), None)
-        if auto and auto.get("status") == "completed":
-            if auto.get("classification", {}).get("detected_content_type") == "commentary":
-                commentary_correct += 1
     for case in podcast_cases:
         auto = next((scenario for scenario in case.get("scenarios", []) if scenario.get("scenario_id") == "auto"), None)
         if auto and auto.get("status") == "completed":
             if auto.get("classification", {}).get("detected_content_type") == "podcast":
                 podcast_correct += 1
-    for case in tutorial_cases:
-        auto = next((scenario for scenario in case.get("scenarios", []) if scenario.get("scenario_id") == "auto"), None)
-        if auto and auto.get("status") == "completed":
-            if auto.get("classification", {}).get("detected_content_type") == "tutorial":
-                tutorial_correct += 1
     for case in completed_cases:
         flags = case.get("transcript_metrics", {}).get("flags") or []
         if case.get("expected_speaker_mode") == "single":
@@ -1774,21 +2188,9 @@ def build_markdown_report(report_payload: dict[str, Any]) -> str:
 
     lines.append("## Key Observations")
     lines.append("")
-    if commentary_like_cases:
-        lines.append(
-            f"- Commentary-like cases routed to `podcast` in `{commentary_as_podcast}/{len(commentary_like_cases)}` cases."
-        )
-    if commentary_cases:
-        lines.append(
-            f"- True commentary cases classified correctly as `commentary`: `{commentary_correct}/{len(commentary_cases)}`."
-        )
     if podcast_cases:
         lines.append(
             f"- True podcast cases classified correctly as `podcast`: `{podcast_correct}/{len(podcast_cases)}`."
-        )
-    if tutorial_cases:
-        lines.append(
-            f"- True tutorial cases classified correctly as `tutorial`: `{tutorial_correct}/{len(tutorial_cases)}`."
         )
     lines.append(
         f"- Expected single-speaker materials flagged as over-segmented by diarization: `{single_speaker_oversegmented}`."
@@ -1969,20 +2371,38 @@ def build_markdown_report(report_payload: dict[str, Any]) -> str:
             )
     lines.append("")
 
-    lines.append("## Human Review Findings")
+    lines.append("## Human Review / Selection Quality")
     lines.append("")
     human_review = report_payload.get("human_review") or {}
     scored_record_count = int(human_review.get("scored_record_count", 0) or 0)
+    minimum_records = int(human_review.get("minimum_records_for_tuning", MIN_HUMAN_REVIEW_RECORDS_FOR_TUNING) or MIN_HUMAN_REVIEW_RECORDS_FOR_TUNING)
     if scored_record_count <= 0:
         lines.append(
             f"- Fill in `{report_payload['human_review_template']}` with `human_relevance_score`, "
             "`human_boundary_score`, `human_crop_score` and notes for each rendered clip."
         )
+        lines.append(f"- Minimum recommended complete records before weight tuning: `{minimum_records}`")
+        targets = human_review.get("next_review_targets") or []
+        if targets:
+            lines.append("- Suggested next clips to review:")
+            for target in targets[:10]:
+                lines.append(
+                    f"  - `{target['case_id']}/{target['scenario_id']}` clip `{target['clip_index']}` "
+                    f"({target['clip_start']} - {target['clip_end']}) | local `{target['local_score']}`"
+                )
         lines.append("")
     else:
         overall = human_review.get("averages", {}).get("overall", {})
         lines.append(f"- Records with complete human scores: `{scored_record_count}`")
+        lines.append(f"- Minimum recommended complete records before weight tuning: `{minimum_records}`")
+        if human_review.get("insufficient_for_weight_tuning"):
+            lines.append("- Human-review signal is still small, so this iteration uses conservative rules and diagnostics rather than aggressive weight tuning.")
         lines.append(f"- Auto records with complete human scores: `{human_review.get('auto_scored_record_count', 0)}`")
+        lines.append(
+            f"- Current template complete records: `{human_review.get('template_complete_record_count', 0)}` / "
+            f"`{human_review.get('template_record_count', 0)}`; archive complete records: "
+            f"`{human_review.get('archive_complete_record_count', 0)}` / `{human_review.get('archive_record_count', 0)}`"
+        )
         lines.append(
             f"- Average human scores: relevance `{overall.get('relevance', 0.0):.2f}`, "
             f"boundary `{overall.get('boundary', 0.0):.2f}`, crop `{overall.get('crop', 0.0):.2f}`"
@@ -1994,13 +2414,15 @@ def build_markdown_report(report_payload: dict[str, Any]) -> str:
         lines.append("### Reviewed Averages")
         lines.append("")
         for content_type, averages in (human_review.get("averages", {}).get("by_content_type") or {}).items():
+            count = (human_review.get("scored_record_count_by_content_type") or {}).get(content_type, 0)
             lines.append(
-                f"- Content type `{content_type}`: relevance `{averages['relevance']:.2f}`, "
+                f"- Content type `{content_type}` (`n={count}`): relevance `{averages['relevance']:.2f}`, "
                 f"boundary `{averages['boundary']:.2f}`, crop `{averages['crop']:.2f}`"
             )
         for scenario_id, averages in (human_review.get("averages", {}).get("by_scenario") or {}).items():
+            count = (human_review.get("scored_record_count_by_scenario") or {}).get(scenario_id, 0)
             lines.append(
-                f"- Scenario `{scenario_id}`: relevance `{averages['relevance']:.2f}`, "
+                f"- Scenario `{scenario_id}` (`n={count}`): relevance `{averages['relevance']:.2f}`, "
                 f"boundary `{averages['boundary']:.2f}`, crop `{averages['crop']:.2f}`"
             )
         lines.append("")
@@ -2046,6 +2468,29 @@ def build_markdown_report(report_payload: dict[str, Any]) -> str:
         for change in report_payload.get("iteration_changes") or []:
             lines.append(f"- {change}")
         lines.append("")
+        lines.append("### Ranking Movement")
+        lines.append("")
+        if human_review.get("insufficient_for_weight_tuning"):
+            lines.append(
+                "- Not enough complete human review exists to claim a statistically strong ranking improvement. "
+                "Use the next review pass to verify whether the new penalties demote setup/ad-like/weak-payoff clips."
+            )
+        elif human_review.get("high_local_low_relevance"):
+            lines.append("- Some high-local-score clips still have low human relevance, so ranking quality remains the main tuning target.")
+        else:
+            lines.append("- Reviewed high-score clips no longer show a high-local/low-relevance pattern in the available scored sample.")
+        lines.append("")
+        targets = human_review.get("next_review_targets") or []
+        if targets:
+            lines.append("### Next Human Review Targets")
+            lines.append("")
+            for target in targets[:12]:
+                lines.append(
+                    f"- `{target['case_id']}/{target['scenario_id']}` clip `{target['clip_index']}` "
+                    f"({target['clip_start']} - {target['clip_end']}) | expected `{target['expected_content_type']}` | "
+                    f"local `{target['local_score']}`"
+                )
+            lines.append("")
         largest_issue = human_review.get("largest_remaining_issue") or {}
         if largest_issue:
             lines.append(
@@ -2053,6 +2498,42 @@ def build_markdown_report(report_payload: dict[str, Any]) -> str:
                 f"({largest_issue.get('label')})"
             )
             lines.append("")
+
+    lines.append("## Selection Quality Tuning")
+    lines.append("")
+    lines.append(f"- Complete human-review records available: `{scored_record_count}`")
+    if scored_record_count < minimum_records:
+        lines.append(
+            "- Tuning basis: defensive heuristics plus the existing human-review notes; "
+            "the scored sample is too small for aggressive weight tuning."
+        )
+    else:
+        lines.append("- Tuning basis: complete human-review rows plus defensive heuristics.")
+    lines.append(
+        "- Scoring focus: context completeness, question/context before answer, clear answer or thesis, "
+        "payoff/closure, sentence-safe boundaries, speaker continuity and subtitle readability."
+    )
+    lines.append(
+        "- Boundary metadata: `original_start`, `original_end`, `refined_start`, `refined_end`, "
+        "`boundary_adjustment_reason`, `sentence_boundary_used`, `speaker_turn_boundary_used`, "
+        "`max_duration_clamped`."
+    )
+    lines.append(
+        "- Boundary behavior: podcast clips are aligned to transcript sentence/segment boundaries "
+        "and should preserve enough context before the payoff."
+    )
+    targets = human_review.get("next_review_targets") or []
+    if targets:
+        lines.append("- Fresh human review should prioritize:")
+        for target in targets[:8]:
+            lines.append(
+                f"  - `{target['case_id']}/{target['scenario_id']}` clip `{target['clip_index']}` "
+                f"({target['clip_start']} - {target['clip_end']}) | expected `{target['expected_content_type']}` | "
+                f"local `{target['local_score']}`"
+            )
+    else:
+        lines.append("- Fresh human review target list will be populated after the next benchmark run.")
+    lines.append("")
     lines.append("## Recommendation")
     lines.append("")
     recommendation = report_payload["recommendation"]
@@ -2066,9 +2547,15 @@ def build_markdown_report(report_payload: dict[str, Any]) -> str:
 def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
     config_path = (PROJECT_ROOT / args.config).resolve() if not Path(args.config).is_absolute() else Path(args.config)
     cases = load_cases(config_path)
+    all_cases = list(cases)
     if args.case:
         requested = set(args.case)
         cases = [case for case in cases if case.case_id in requested]
+    if str(args.review_batch or "").strip():
+        requested_batch = str(args.review_batch).strip()
+        cases = [case for case in cases if case.review_batch == requested_batch]
+        if not cases and requested_batch in {"podcast_api_v1", "podcast_api_v2"}:
+            cases = [case for case in all_cases if case.expected_content_type == "podcast"]
 
     latest_results_path = (PROJECT_ROOT / args.output_dir / "results.json").resolve()
     latest_report_path = (PROJECT_ROOT / args.output_dir / "report.md").resolve()
@@ -2077,6 +2564,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
     existing_results_payload = load_json(latest_results_path, default={}) or {}
     existing_human_review_rows = load_human_review_rows(latest_human_review_path)
     existing_human_review_archive_rows = load_human_review_rows(latest_human_review_archive_path)
+    existing_results_human_review_rows = extract_human_review_rows_from_results(existing_results_payload)
 
     run_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     run_dir = (PROJECT_ROOT / args.output_dir / "runs" / run_id).resolve()
@@ -2135,7 +2623,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
         )
 
         scenarios = []
-        for scenario in build_case_scenarios(case):
+        for scenario in build_case_scenarios(case, include_compare_strategies=bool(args.include_compare_strategies)):
             print(f"[benchmark]   Scenario: {scenario['id']}")
             scenario_result = run_selection_scenario(
                 case,
@@ -2146,18 +2634,6 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                 args,
             )
             scenarios.append(scenario_result)
-            if scenario_result.get("status") == "completed":
-                human_review_rows.extend(
-                    build_human_review_rows(
-                        case_id=case.case_id,
-                        case_label=case.label,
-                        expected_content_type=case.expected_content_type,
-                        scenario_id=scenario_result["scenario_id"],
-                        scenario_label=scenario_result["scenario_label"],
-                        selected_clips=scenario_result["selection"].get("clips", []),
-                        subtitle_dir=Path(PROJECT_ROOT / scenario_result["artifacts"]["subtitle_dir"]),
-                    )
-                )
 
         case_payload = {
             "case_id": case.case_id,
@@ -2185,6 +2661,20 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                 "shared_heatmap": str(heatmap_path.relative_to(PROJECT_ROOT)),
             },
         }
+        annotate_case_duplicates(case_payload)
+        for scenario_result in scenarios:
+            if scenario_result.get("status") == "completed":
+                human_review_rows.extend(
+                    build_human_review_rows(
+                        case_id=case.case_id,
+                        case_label=case.label,
+                        expected_content_type=case.expected_content_type,
+                        scenario_id=scenario_result["scenario_id"],
+                        scenario_label=scenario_result["scenario_label"],
+                        selected_clips=scenario_result["selection"].get("clips", []),
+                        subtitle_dir=Path(PROJECT_ROOT / scenario_result["artifacts"]["subtitle_dir"]),
+                    )
+                )
         case_payload["findings"] = summarize_case_findings(
             case,
             transcript_metrics,
@@ -2204,6 +2694,9 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
         "run_id": run_id,
         "ai_mode": args.ai_mode,
         "subtitle_checker_mode": args.subtitle_checker_mode,
+        "semantic_director_mode": args.semantic_director_mode,
+        "subtitle_correction_mode": args.subtitle_correction_mode,
+        "semantic_model": args.semantic_model,
         "layout_mode": args.layout_mode,
         "available_media": available_media,
         "cases": report_cases,
@@ -2211,7 +2704,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
     }
     merged_human_review_rows, archived_human_review_rows = merge_human_review_rows(
         human_review_rows,
-        existing_human_review_rows + existing_human_review_archive_rows,
+        existing_human_review_rows + existing_human_review_archive_rows + existing_results_human_review_rows,
     )
     report_payload["human_review_template"] = str(latest_human_review_path.relative_to(PROJECT_ROOT))
     report_payload["human_review_archive"] = str(latest_human_review_archive_path.relative_to(PROJECT_ROOT))
@@ -2219,6 +2712,14 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
         merged_human_review_rows + archived_human_review_rows,
         report_cases,
         historical_cases=existing_results_payload.get("cases") or [],
+    )
+    report_payload["human_review"]["template_record_count"] = len(merged_human_review_rows)
+    report_payload["human_review"]["archive_record_count"] = len(archived_human_review_rows)
+    report_payload["human_review"]["template_complete_record_count"] = sum(
+        1 for row in merged_human_review_rows if row_has_complete_human_scores(row)
+    )
+    report_payload["human_review"]["archive_complete_record_count"] = sum(
+        1 for row in archived_human_review_rows if row_has_complete_human_scores(row)
     )
     report_payload["iteration_changes"] = list(ITERATION_CHANGES)
     report_payload["recommendation"] = determine_recommendation(report_payload)
@@ -2232,11 +2733,17 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Local-only benchmark runner for AI-virtual-cutter.")
+    parser = argparse.ArgumentParser(description="Local-only podcast benchmark runner for AI Podcast Clip Cutter.")
     parser.add_argument("--config", default="benchmarks/cases.json", help="Benchmark case config JSON")
     parser.add_argument("--output-dir", default="benchmarks", help="Benchmark output directory")
     parser.add_argument("--case", action="append", default=[], help="Run only selected case id(s)")
+    parser.add_argument("--review-batch", default="", help="Run only cases tagged with the given review_batch")
     parser.add_argument("--top", type=int, default=5, help="How many clips to select per scenario")
+    parser.add_argument(
+        "--include-compare-strategies",
+        action="store_true",
+        help="Include manual/compare benchmark scenarios for diagnostics; default review output stays auto-only.",
+    )
     parser.add_argument(
         "--ai-mode",
         default=AI_MODE_LOCAL_ONLY,
@@ -2255,6 +2762,24 @@ def parse_args() -> argparse.Namespace:
         choices=VALID_LAYOUT_MODES,
         help="Layout override for final 9:16 rendering.",
     )
+    parser.add_argument(
+        "--semantic-director-mode",
+        default=SEMANTIC_DIRECTOR_MODE_OFF,
+        choices=VALID_SEMANTIC_DIRECTOR_MODES,
+        help="Experimental semantic story reviewer prototype. Disabled by default and not part of the recommended production flow.",
+    )
+    parser.add_argument(
+        "--subtitle-correction-mode",
+        default=SUBTITLE_CORRECTION_MODE_OFF,
+        choices=VALID_SUBTITLE_CORRECTION_MODES,
+        help="Experimental subtitle correction prototype. Disabled by default and not part of the recommended production flow.",
+    )
+    parser.add_argument("--semantic-model", default="models/gemini-2.5-flash", help="Experimental Gemini model for the prototype semantic/subtitle flow")
+    parser.add_argument("--min-duration", type=float, default=30.0, help="Minimum selected clip duration in seconds")
+    parser.add_argument("--max-duration", type=float, default=90.0, help="Maximum selected clip duration in seconds")
+    parser.add_argument("--context-margin", type=float, default=90.0, help="Transcript context margin passed to the selector")
+    parser.add_argument("--rerank-pool-size", type=int, default=30, help="Local candidate pool size exposed to API-assisted selection")
+    parser.add_argument("--request-timeout", type=float, default=120.0, help="Timeout in seconds for API-assisted selection calls")
     parser.add_argument("--skip-render", action="store_true", help="Skip cutter/subtitler rendering stages")
     parser.add_argument("--force-transcribe", action="store_true", help="Force fresh local transcription per case")
     parser.add_argument("--transcription-backend", default="faster_whisper", help="Transcription backend")

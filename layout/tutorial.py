@@ -7,6 +7,7 @@ def build_tutorial_layout() -> LayoutProfile:
     return LayoutProfile(
         content_type="tutorial",
         layout_mode="full_frame_blur_background",
+        layout_policy="screen_preserve_blur_bg",
         crop_priority="screen",
         allow_face_tracking=False,
         face_tracking_weight=0.0,

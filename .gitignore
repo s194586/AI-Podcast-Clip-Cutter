@@ -13,6 +13,7 @@ __pycache__/
 htmlcov/
 .venv/
 venv/
+backups/
 
 # OS / editor
 .DS_Store
@@ -29,7 +30,9 @@ metadata/
 transcripts/
 models/
 tmp/
+temp/
 .tools/
+outputs/
 
 # Media outputs
 *.mp4
@@ -44,6 +47,13 @@ tmp/
 
 # Benchmark generated outputs
 benchmarks/runs/
+benchmarks/assets/
+benchmarks/archive/
+benchmarks/results.json
+benchmarks/report.md
+benchmarks/review_dashboard.html
+benchmarks/human_reviews.jsonl
+benchmarks/human_review_template.csv
 benchmarks/human_review_archive.csv
 benchmarks/human_review_recovered_*.csv
 
@@ -51,7 +61,7 @@ benchmarks/human_review_recovered_*.csv
 *.json
 !config.json
 !benchmarks/cases.json
-!benchmarks/results.json
+!benchmarks/cases.example.json
 
 # Logs
 *.log

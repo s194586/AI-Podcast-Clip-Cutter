@@ -7,6 +7,7 @@ def build_generic_layout() -> LayoutProfile:
     return LayoutProfile(
         content_type="generic",
         layout_mode="safe_center_crop",
+        layout_policy="safe_center_crop",
         crop_priority="center",
         allow_face_tracking=False,
         face_tracking_weight=0.0,
