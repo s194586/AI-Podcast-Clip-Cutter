@@ -15,13 +15,13 @@ class ReviewDashboardTests(unittest.TestCase):
             "cases": [
                 {
                     "case_id": "case_a",
-                    "expected_content_type": "gameplay",
+                    "expected_content_type": "podcast",
                     "scenarios": [
                         {
                             "scenario_id": "auto",
                             "status": "completed",
                             "content_type_arg": "auto",
-                            "classification": {"detected_content_type": "gameplay"},
+                            "classification": {"detected_content_type": "podcast"},
                             "artifacts": {"subtitle_dir": "benchmarks/runs/test/case_a/auto/cuts_subtitles"},
                             "selection": {
                                 "clips": [
@@ -140,13 +140,13 @@ class ReviewDashboardTests(unittest.TestCase):
                 "cases": [
                     {
                         "case_id": "case_a",
-                        "expected_content_type": "gameplay",
+                        "expected_content_type": "podcast",
                         "scenarios": [
                             {
                                 "scenario_id": "auto",
                                 "status": "completed",
                                 "content_type_arg": "auto",
-                                "classification": {"detected_content_type": "gameplay"},
+                                "classification": {"detected_content_type": "podcast"},
                                 "artifacts": {"subtitle_dir": "benchmarks/runs/test/case_a/auto/cuts_subtitles"},
                                 "selection": {
                                     "clips": [
@@ -292,7 +292,7 @@ class ReviewDashboardTests(unittest.TestCase):
                                 "boring_setup": False,
                                 "no_payoff": False,
                                 "too_context_dependent": False,
-                                "notes": "speaker colors are better now",
+                                "notes": "speaker framing is stable now",
                             },
                             ensure_ascii=False,
                         ),
@@ -379,7 +379,7 @@ class ReviewDashboardTests(unittest.TestCase):
                 clip_id="clip_a",
                 case_id="case_a",
                 scenario_id="auto",
-                content_type="gameplay",
+                content_type="podcast",
                 start_label="00:10.00",
                 end_label="00:40.00",
                 duration=30.0,
@@ -417,9 +417,9 @@ class ReviewDashboardTests(unittest.TestCase):
             output.write_text(review_dashboard.render_html(clips, output), encoding="utf-8")
 
             html = output.read_text(encoding="utf-8")
-        self.assertIn("AI Virtual Cutter Review Dashboard", html)
+        self.assertIn("Podcast Cutter Review Dashboard", html)
         self.assertIn("case_a", html)
-        self.assertIn("auto / gameplay", html)
+        self.assertIn("auto / podcast", html)
         self.assertIn("id=\"searchInput\"", html)
         self.assertIn("id=\"statusFilter\"", html)
         self.assertIn("id=\"caseFilter\"", html)

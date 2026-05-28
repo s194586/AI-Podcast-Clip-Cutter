@@ -280,6 +280,13 @@ REASON_LABELS = {
 }
 
 
+ACTIVE_SCORING_STRATEGY = "podcast"
+
+
+def normalize_scoring_strategy(strategy_name):
+    return ACTIVE_SCORING_STRATEGY
+
+
 def parse_time(value):
     if isinstance(value, (int, float)):
         return float(value)
@@ -611,7 +618,7 @@ def _podcast_dialogue_payoff_score(sentences, words, *, speaker_switches, hook_s
 
 
 def _contextless_penalty(strategy_name, sentences, words, *, hook_score, payoff_score, boundary_start_penalty, speaker_switches):
-    if strategy_name not in {"commentary", "podcast", "tutorial"} or not sentences:
+    if strategy_name != "podcast" or not sentences:
         return 0.0
     first_words = tokenize(sentences[0])
     first_word = first_words[0] if first_words else ""
@@ -620,9 +627,9 @@ def _contextless_penalty(strategy_name, sentences, words, *, hook_score, payoff_
         penalty += 0.22
     if boundary_start_penalty >= 0.3 and hook_score < 0.45:
         penalty += 0.18
-    if strategy_name in {"commentary", "podcast"} and payoff_score < 0.25:
+    if payoff_score < 0.25:
         penalty += 0.10
-    if strategy_name == "podcast" and speaker_switches <= 0 and len(sentences) >= 3:
+    if speaker_switches <= 0 and len(sentences) >= 3:
         penalty += 0.08
     return clamp(penalty)
 
@@ -634,8 +641,6 @@ def _preamble_penalty(strategy_name, sentences, words, *, hook_score, gameplay_s
     penalty = 0.0
     if first_words and first_words[0] in TRANSITION_ONLY_TOKENS and hook_score < 0.35:
         penalty += 0.14
-    if strategy_name == "gameplay" and gameplay_setup_hits > 0 and hook_score < 0.45:
-        penalty += 0.18
     return clamp(penalty)
 
 
@@ -651,22 +656,9 @@ def _low_payoff_penalty(
     speaker_turn_score,
 ):
     penalty = 0.0
-    if strategy_name == "gameplay":
-        if gameplay_action_score < 0.25 and payoff_score < 0.35:
-            penalty += 0.30
-        if gameplay_action_score < 0.25 and (emotion_score >= 0.55 or speaker_turn_score >= 0.55):
-            penalty += 0.10
-    elif strategy_name == "commentary":
-        if commentary_complete_thought_score < 0.40 and payoff_score < 0.35:
-            penalty += 0.24
-    elif strategy_name == "podcast":
+    if strategy_name == "podcast":
         if podcast_dialogue_payoff_score < 0.40 and payoff_score < 0.35:
             penalty += 0.24
-    elif strategy_name == "tutorial":
-        if tutorial_instruction_score < 0.25:
-            penalty += 0.22
-        if tutorial_instruction_score < 0.35 and payoff_score < 0.25:
-            penalty += 0.10
     return clamp(penalty)
 
 
@@ -692,9 +684,6 @@ def _build_reasons(features, score_weights):
             break
 
     positive_feature_reasons = [
-        ("gameplay_action_score", "contains a clearer gameplay action/payoff signal", 0.45),
-        ("tutorial_instruction_score", "contains concrete tutorial instructions", 0.45),
-        ("commentary_complete_thought_score", "contains a more complete commentary thought", 0.55),
         ("podcast_dialogue_payoff_score", "contains stronger dialogue question/response shape", 0.55),
     ]
     for feature_key, label, threshold in positive_feature_reasons:
@@ -709,8 +698,6 @@ def _build_reasons(features, score_weights):
         reasons.append("penalized for repetitive or filler-heavy wording")
     if features.get("ad_like_penalty", 0.0) >= 0.25:
         reasons.append("penalized for ad/sponsor-like wording")
-    if features.get("gameplay_setup_penalty", 0.0) >= 0.25:
-        reasons.append("penalized for gameplay setup/waiting")
     if features.get("low_payoff_penalty", 0.0) >= 0.25:
         reasons.append("penalized for weak payoff")
     if features.get("contextless_penalty", 0.0) >= 0.20:
@@ -718,7 +705,8 @@ def _build_reasons(features, score_weights):
     return reasons
 
 
-def score_candidate(candidate, transcript_segments, heatmap, *, score_weights=None, strategy_name="generic"):
+def score_candidate(candidate, transcript_segments, heatmap, *, score_weights=None, strategy_name="podcast"):
+    strategy_name = normalize_scoring_strategy(strategy_name)
     score_weights = resolve_score_weights(score_weights)
     start = float(candidate["start"])
     end = float(candidate["end"])
@@ -810,21 +798,11 @@ def score_candidate(candidate, transcript_segments, heatmap, *, score_weights=No
         + chaos_score * score_weights["chaos_score"]
         - repetition_penalty * score_weights["repetition_penalty"]
     )
-    boundary_weight = 0.08 if strategy_name in {"podcast", "tutorial", "commentary"} else 0.05
+    boundary_weight = 0.08
     weighted_score += (boundary_completeness_score - 0.5) * boundary_weight
-    if strategy_name == "gameplay":
-        weighted_score += gameplay_action_score * 0.05
-    elif strategy_name == "tutorial":
-        weighted_score += tutorial_instruction_score * 0.06
-    elif strategy_name == "commentary":
-        weighted_score += commentary_complete_thought_score * 0.05
-    elif strategy_name == "podcast":
-        weighted_score += podcast_dialogue_payoff_score * 0.05
+    weighted_score += podcast_dialogue_payoff_score * 0.05
 
-    ad_penalty_weight = 0.18 if strategy_name == "gameplay" else 0.12
-    weighted_score -= ad_like_penalty * ad_penalty_weight
-    if strategy_name == "gameplay":
-        weighted_score -= gameplay_setup_penalty * 0.20
+    weighted_score -= ad_like_penalty * 0.12
     weighted_score -= low_payoff_penalty * 0.12
     weighted_score -= contextless_penalty * 0.10
     weighted_score -= preamble_penalty * 0.08
@@ -884,7 +862,8 @@ def score_candidate(candidate, transcript_segments, heatmap, *, score_weights=No
     return scored
 
 
-def score_candidates(candidates, transcript, heatmap, *, score_weights=None, strategy_name="generic"):
+def score_candidates(candidates, transcript, heatmap, *, score_weights=None, strategy_name="podcast"):
+    strategy_name = normalize_scoring_strategy(strategy_name)
     transcript_segments = normalize_transcript_segments(transcript)
     scored = [
         score_candidate(

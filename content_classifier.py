@@ -12,8 +12,11 @@ from typing import Any
 import unicodedata
 
 
-VALID_CONTENT_TYPES = ("podcast", "gameplay", "tutorial", "commentary", "generic")
+VALID_CONTENT_TYPES = ("podcast",)
 VALID_CONTENT_TYPE_MODES = ("auto",) + VALID_CONTENT_TYPES
+PODCAST_ONLY_MVP_REASON = (
+    "Podcast-only MVP: active routing is locked to podcast/talking-head material."
+)
 
 WORD_RE = re.compile(r"[^\W_]+(?:['-][^\W_]+)*", re.UNICODE)
 
@@ -223,7 +226,8 @@ def normalize_content_type_mode(value: str | None, default: str = "auto") -> str
     normalized = str(value or default).strip().lower()
     if normalized not in VALID_CONTENT_TYPE_MODES:
         raise ValueError(
-            f"Unsupported content type: {value}. Expected one of: {', '.join(VALID_CONTENT_TYPE_MODES)}"
+            f"Unsupported content type for the podcast-only MVP: {value}. "
+            f"Expected one of: {', '.join(VALID_CONTENT_TYPE_MODES)}"
         )
     return normalized
 
@@ -684,18 +688,22 @@ def classify_from_features(
     forced_content_type: str = "auto",
 ) -> ContentClassificationResult:
     mode = normalize_content_type_mode(forced_content_type)
-    if mode != "auto":
-        return ContentClassificationResult(
-            content_type=mode,
-            confidence=1.0,
-            reasons=[f"Content type manually forced to {mode}."],
-            features=features,
-            scores={mode: 1.0},
-            source="manual_override",
-            strategy_name=mode,
-            forced_content_type=mode,
-        )
+    forced = "podcast" if mode == "podcast" else None
+    return ContentClassificationResult(
+        content_type="podcast",
+        confidence=1.0 if forced else 0.95,
+        reasons=[
+            f"Content type manually forced to {forced}." if forced else PODCAST_ONLY_MVP_REASON
+        ],
+        features=features,
+        scores={"podcast": 1.0},
+        source="manual_override" if forced else "podcast_only_mvp",
+        strategy_name="podcast",
+        forced_content_type=forced,
+    )
 
+    # Deprecated multi-type heuristic path kept as dead code until the old
+    # feature extraction internals can be removed without touching imports.
     scores = {
         "podcast": 0.1,
         "gameplay": 0.12,
@@ -947,7 +955,7 @@ def parse_args() -> argparse.Namespace:
         "--content-type",
         default="auto",
         choices=VALID_CONTENT_TYPE_MODES,
-        help="auto, podcast, gameplay, tutorial, commentary or generic",
+        help="auto or podcast. The MVP routes supported material as podcast/talking-head.",
     )
     parser.add_argument("--output", default=None, help="Optional JSON output path")
     return parser.parse_args()

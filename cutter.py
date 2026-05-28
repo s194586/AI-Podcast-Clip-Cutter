@@ -10,7 +10,7 @@ import cv2
 import mediapipe as mp
 from layout import VALID_LAYOUT_MODES, get_layout_profile, is_vertical_9_16, normalize_layout_mode
 
-MAX_SHORT_DURATION = 60.0
+MAX_SHORT_DURATION = 90.0
 OUTPUT_WIDTH = 1080
 OUTPUT_HEIGHT = 1920
 FACE_SAMPLE_STRIDE = 5
@@ -534,7 +534,7 @@ def resolve_render_plan(cutting_log, requested_layout_mode="auto"):
         content_routing.get("content_type")
         or strategy.get("content_type")
         or strategy_layout.get("content_type")
-        or "generic"
+        or "podcast"
     )
     effective_layout_mode = normalize_layout_mode(
         requested_layout_mode
@@ -1032,6 +1032,7 @@ def parse_args():
     parser.add_argument("--transcript", default="transcripts/final_transcript.json", help="Transcript JSON for boundary protection")
     parser.add_argument("--output-dir", default="cuts/raw", help="Output directory for raw cuts")
     parser.add_argument("--cutting-log", default="metadata/cutting_logic.json", help="Log file for Smart Context Cutter decisions")
+    parser.add_argument("--max-duration", type=float, default=MAX_SHORT_DURATION, help="Maximum rendered clip duration in seconds")
     parser.add_argument(
         "--layout-mode",
         default="auto",
@@ -1052,7 +1053,7 @@ def main():
     for idx, window in enumerate(windows, start=1):
         start = float(window["start"])
         end = float(window["end"])
-        start, end, decisions, word_source = enforce_no_mid_word(start, end, transcript)
+        start, end, decisions, word_source = enforce_no_mid_word(start, end, transcript, max_duration=args.max_duration)
         duration = end - start
         clip_segments = collect_clip_segments(transcript, start, end)
 

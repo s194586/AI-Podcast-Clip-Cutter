@@ -1,84 +1,76 @@
-# New Case Workflow
+# New Podcast Case Workflow
 
-This repository is currently optimized for a clean local-first benchmark workflow:
+The benchmark is now podcast-only. Add only podcast, interview, conversation or talking-head materials.
 
-1. add a new local case
-2. run a local-only benchmark
-3. export the review dashboard
-4. do manual review
+## 1. Add A Case
 
-External providers and semantic prototypes remain optional / experimental. They are not required for the default flow.
-
-## 1. Add a new local benchmark case
-
-Example:
+Use a local source file:
 
 ```powershell
-.\.venv\Scripts\python.exe tools\add_benchmark_case.py --case-id my_gameplay_01 --video-path D:\Videos\gameplay.mp4 --content-type gameplay --review-batch local_v1 --notes "new local test"
+.\.venv\Scripts\python.exe tools\add_benchmark_case.py --case-id my_podcast_case --video-path D:\Videos\podcast.mp4 --content-type podcast --review-batch podcast_only_v1 --notes "new podcast/talking-head test"
 ```
 
-This command:
-- creates `benchmarks/assets/<case_id>/`
-- creates `input/`, `transcripts/`, and `metadata/`
-- copies the local video into `benchmarks/assets/<case_id>/input/source.mp4` or the matching extension
-- updates `benchmarks/cases.json`
+This creates:
+
+- `benchmarks/assets/<case_id>/input/`
+- `benchmarks/assets/<case_id>/transcripts/`
+- `benchmarks/assets/<case_id>/metadata/`
+- a `podcast` entry in `benchmarks/cases.json`
 
 Useful flags:
-- `--source-url` if you want to keep the original source reference
-- `--force` if you really want to overwrite an existing case definition
 
-## 2. Run a local-only benchmark
+- `--source-url` keeps the original source reference
+- `--force` overwrites an existing case definition
 
-Direct command:
+## 2. YouTube Assets
 
-```powershell
-.\.venv\Scripts\python.exe benchmark.py --review-batch local_v1 --ai-mode local_only --subtitle-checker-mode local_only
+`tools\add_benchmark_case.py` expects local files. For YouTube, download one reasonable-quality MP4 and MP3 into:
+
+```text
+benchmarks/assets/<case_id>/input/source.mp4
+benchmarks/assets/<case_id>/input/source.mp3
 ```
 
-Convenience helper:
+Store metadata and heatmap here:
 
-```powershell
-.\.venv\Scripts\python.exe tools\run_local_benchmark.py --review-batch local_v1
+```text
+benchmarks/assets/<case_id>/metadata/source.info.json
+benchmarks/assets/<case_id>/metadata/heatmap.json
 ```
 
-Optional filters:
+If YouTube does not provide a heatmap, a placeholder heatmap is acceptable. The benchmark report will flag that limitation.
+
+## 3. Run Local Benchmark
 
 ```powershell
-.\.venv\Scripts\python.exe tools\run_local_benchmark.py --review-batch local_v1 --top 3 --case my_gameplay_01
+.\.venv\Scripts\python.exe tools\run_local_benchmark.py --review-batch podcast_only_v1
 ```
 
-## 3. Generate the dashboard
+The helper runs local-only selection/subtitle checks by default and exports the dashboard automatically.
 
-If you ran `tools\run_local_benchmark.py`, the dashboard is exported automatically.
-
-Manual command:
-
-```powershell
-.\.venv\Scripts\python.exe review_dashboard.py export-html --results benchmarks\results.json --output benchmarks\review_dashboard.html
-```
-
-Open it:
+## 4. Open Dashboard
 
 ```powershell
 start benchmarks\review_dashboard.html
 ```
 
-## 4. Review clips
+## 5. Manual Review Focus
 
-Use the dashboard and/or:
-- fill `benchmarks/human_review_template.csv`
-- append reviews into `benchmarks/human_reviews.jsonl`
+For each clip, check:
 
-Recommended review focus:
-- context completeness
-- ending/payoff
-- subtitle readability
-- speaker stability
-- whether the clip tells a self-contained story
+- logical start
+- enough context before the answer or thesis
+- clear development and payoff
+- no sentence cut in the middle
+- subtitle sync
+- readable subtitle line breaks
+- stable crop and speaker continuity
+- whether the clip tells a short self-contained story
 
-## 5. What not to commit
+## 6. Do Not Commit Generated Artifacts
 
-Do not commit generated artifacts:
+Do not commit:
+
 - `benchmarks/assets/`
 - `benchmarks/runs/`
 - `benchmarks/results.json`
@@ -88,5 +80,3 @@ Do not commit generated artifacts:
 - `benchmarks/human_review_template.csv`
 - `temp/`
 - `outputs/`
-
-These are intentionally ignored so the repo stays clean between benchmark batches.

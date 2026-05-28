@@ -9,12 +9,7 @@ DEFAULT_OUTPUT_ASPECT_RATIO = "9:16"
 
 VALID_LAYOUT_MODES = (
     "auto",
-    "vertical_crop",
-    "safe_center_crop",
-    "gameplay_priority_crop",
-    "full_frame_blur_background",
     "speaker_face_crop",
-    "stable_subject_crop",
 )
 
 

@@ -1059,14 +1059,14 @@ Przykłady:
         '--content-type',
         choices=VALID_CONTENT_TYPE_MODES,
         default='auto',
-        help='Typ materiału: auto, podcast, gameplay, tutorial, commentary albo generic',
+        help='Typ materialu: auto albo podcast. MVP routuje obie opcje jako podcast/talking-head.',
     )
 
     parser.add_argument(
         '--layout-mode',
         choices=VALID_LAYOUT_MODES,
         default='auto',
-        help='Override layoutu 9:16: auto, full_frame_blur_background, safe_center_crop, gameplay_priority_crop, speaker_face_crop, stable_subject_crop albo vertical_crop',
+        help='Override layoutu 9:16: auto albo speaker_face_crop.',
     )
 
     parser.set_defaults(auto_fix_subtitles=True)

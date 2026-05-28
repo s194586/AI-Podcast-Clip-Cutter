@@ -359,16 +359,17 @@ def build_review_payload(args: argparse.Namespace) -> dict[str, Any]:
 def _penalty_summary(features: dict[str, Any]) -> dict[str, Any]:
     wanted = (
         "ad_like_penalty",
-        "gameplay_setup_penalty",
         "low_payoff_penalty",
         "contextless_penalty",
         "preamble_penalty",
         "repetition_penalty",
+        "boundary_completeness_score",
+        "boundary_start_penalty",
+        "boundary_end_penalty",
+        "hook_score",
         "payoff_score",
-        "gameplay_action_score",
-        "tutorial_instruction_score",
-        "commentary_complete_thought_score",
         "podcast_dialogue_payoff_score",
+        "speaker_turn_score",
     )
     return {key: features[key] for key in wanted if key in features}
 
@@ -512,7 +513,7 @@ def render_html(clips: list[ReviewClip], output_path: Path) -> str:
                     </label>
                     <label><input type="checkbox" class="review-good-clip"> good_clip</label>
                     <label><input type="checkbox" class="review-boundary-issue"> boundary_issue</label>
-                    <label><input type="checkbox" class="review-boring-setup"> boring_setup</label>
+                    <label><input type="checkbox" class="review-boring-setup"> missing_context</label>
                     <label><input type="checkbox" class="review-no-payoff"> no_payoff</label>
                     <label><input type="checkbox" class="review-too-context-dependent"> too_context_dependent</label>
                     <label>notes
@@ -534,7 +535,7 @@ def render_html(clips: list[ReviewClip], output_path: Path) -> str:
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>AI Virtual Cutter Review Dashboard</title>
+  <title>Podcast Cutter Review Dashboard</title>
   <style>
     body {{ font-family: system-ui, sans-serif; margin: 24px; background: #f6f7f9; color: #1f2933; }}
     header, .toolbar, .summary {{ max-width: 1240px; margin: 0 auto 16px; }}
@@ -565,8 +566,9 @@ def render_html(clips: list[ReviewClip], output_path: Path) -> str:
 </head>
 <body>
   <header>
-    <h1>AI Virtual Cutter Review Dashboard</h1>
+    <h1>Podcast Cutter Review Dashboard</h1>
     <p>Use <code>python review_dashboard.py add-review --clip-id CLIP_ID --rating 4 --good-clip true --notes "..."</code> to append feedback to <code>benchmarks/human_reviews.jsonl</code>.</p>
+    <p>Review podcast story quality: logical start, enough context, clear answer or thesis, payoff, clean ending, subtitle sync/readability and stable speaker framing.</p>
   </header>
   <section class="summary">
     <div class="counts">
@@ -837,7 +839,7 @@ def print_review_summary(args: argparse.Namespace) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Local human-review dashboard for AI Virtual Cutter clips.")
+    parser = argparse.ArgumentParser(description="Local human-review dashboard for podcast cutter clips.")
     subparsers = parser.add_subparsers(dest="command")
 
     list_parser = subparsers.add_parser("list", help="List clips discovered from benchmark results.")

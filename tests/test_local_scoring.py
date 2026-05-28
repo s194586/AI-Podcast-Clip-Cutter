@@ -7,56 +7,8 @@ class LocalScoringQualityTests(unittest.TestCase):
     def _heatmap(self):
         return [{"start_time": 0.0, "end_time": 60.0, "value": 0.9}]
 
-    def test_gameplay_setup_without_payoff_is_penalized(self):
-        transcript = [
-            {
-                "start": 0.0,
-                "end": 35.0,
-                "text": "buy menu smoke czekamy utility idziemy dalej no tak",
-                "speaker": "Speaker 0",
-                "importance": 3,
-            }
-        ]
-        weak = score_candidate(
-            {
-                "start": 0.0,
-                "end": 35.0,
-                "duration": 35.0,
-                "avg_value": 0.9,
-                "text": transcript[0]["text"],
-            },
-            transcript,
-            self._heatmap(),
-            strategy_name="gameplay",
-        )
-        strong = score_candidate(
-            {
-                "start": 0.0,
-                "end": 35.0,
-                "duration": 35.0,
-                "avg_value": 0.9,
-                "text": "patrz push hit headshot kill nice clutch!",
-            },
-            [
-                {
-                    "start": 0.0,
-                    "end": 35.0,
-                    "text": "patrz push hit headshot kill nice clutch!",
-                    "speaker": "Speaker 0",
-                    "importance": 4,
-                }
-            ],
-            self._heatmap(),
-            strategy_name="gameplay",
-        )
-
-        self.assertGreater(weak["local_features"]["gameplay_setup_penalty"], 0.2)
-        self.assertGreater(weak["local_features"]["low_payoff_penalty"], 0.0)
-        self.assertGreater(strong["local_features"]["gameplay_action_score"], weak["local_features"]["gameplay_action_score"])
-        self.assertGreater(strong["local_score"], weak["local_score"])
-
-    def test_ad_like_gameplay_clip_gets_sponsor_penalty(self):
-        text = "reklama skiny kod promo link w opisie case changer"
+    def test_legacy_strategy_name_is_normalized_to_podcast(self):
+        text = "dlaczego to bylo wazne? bo wtedy pierwszy raz uslyszalem odpowiedz."
         scored = score_candidate(
             {
                 "start": 0.0,
@@ -66,91 +18,52 @@ class LocalScoringQualityTests(unittest.TestCase):
                 "text": text,
             },
             [
-                {
-                    "start": 0.0,
-                    "end": 35.0,
-                    "text": text,
-                    "speaker": "Speaker 0",
-                    "importance": 3,
-                }
+                {"start": 0.0, "end": 15.0, "text": "dlaczego to bylo wazne?", "speaker": "Speaker 0"},
+                {"start": 15.0, "end": 35.0, "text": "bo wtedy pierwszy raz uslyszalem odpowiedz.", "speaker": "Speaker 1"},
             ],
             self._heatmap(),
             strategy_name="gameplay",
         )
 
+        self.assertEqual(scored["selection_strategy"], "podcast")
+        self.assertEqual(scored["local_features"]["gameplay_setup_penalty"], 0.0)
+
+    def test_podcast_clip_with_question_and_answer_scores_above_contextless_fragment(self):
+        good_text = "dlaczego to bylo wazne? bo wtedy zrozumialem, ze trzeba zmienic decyzje."
+        weak_text = "i wtedy oni to zrobili bez zadnego wyjasnienia dalej"
+        good = score_candidate(
+            {"start": 0.0, "end": 35.0, "duration": 35.0, "avg_value": 0.8, "text": good_text},
+            [
+                {"start": 0.0, "end": 10.0, "text": "dlaczego to bylo wazne?", "speaker": "Speaker 0"},
+                {
+                    "start": 10.0,
+                    "end": 35.0,
+                    "text": "bo wtedy zrozumialem, ze trzeba zmienic decyzje.",
+                    "speaker": "Speaker 1",
+                },
+            ],
+            self._heatmap(),
+        )
+        weak = score_candidate(
+            {"start": 0.0, "end": 35.0, "duration": 35.0, "avg_value": 0.8, "text": weak_text},
+            [{"start": 0.0, "end": 35.0, "text": weak_text, "speaker": "Speaker 0"}],
+            self._heatmap(),
+        )
+
+        self.assertGreater(good["local_features"]["podcast_dialogue_payoff_score"], weak["local_features"]["podcast_dialogue_payoff_score"])
+        self.assertGreater(weak["local_features"]["contextless_penalty"], 0.0)
+        self.assertGreater(good["local_score"], weak["local_score"])
+
+    def test_sponsor_like_podcast_clip_gets_penalty(self):
+        text = "reklama sponsor kod promo link w opisie"
+        scored = score_candidate(
+            {"start": 0.0, "end": 35.0, "duration": 35.0, "avg_value": 0.9, "text": text},
+            [{"start": 0.0, "end": 35.0, "text": text, "speaker": "Speaker 0"}],
+            self._heatmap(),
+        )
+
         self.assertGreater(scored["local_features"]["ad_like_penalty"], 0.5)
         self.assertIn("penalized for ad/sponsor-like wording", scored["selection_reasons"])
-
-    def test_tutorial_instruction_signal_beats_transition_only_clip(self):
-        instructional = score_candidate(
-            {
-                "start": 0.0,
-                "end": 35.0,
-                "duration": 35.0,
-                "avg_value": 0.6,
-                "text": "teraz pokażę, kliknij dodaj, wybierz szablon i ustaw kolor.",
-            },
-            [
-                {
-                    "start": 0.0,
-                    "end": 35.0,
-                    "text": "teraz pokażę, kliknij dodaj, wybierz szablon i ustaw kolor.",
-                    "speaker": "Speaker 0",
-                    "importance": 3,
-                }
-            ],
-            self._heatmap(),
-            strategy_name="tutorial",
-        )
-        transition = score_candidate(
-            {
-                "start": 0.0,
-                "end": 35.0,
-                "duration": 35.0,
-                "avg_value": 0.6,
-                "text": "teraz przejdziemy dalej i za chwilę będzie kolejna część.",
-            },
-            [
-                {
-                    "start": 0.0,
-                    "end": 35.0,
-                    "text": "teraz przejdziemy dalej i za chwilę będzie kolejna część.",
-                    "speaker": "Speaker 0",
-                    "importance": 3,
-                }
-            ],
-            self._heatmap(),
-            strategy_name="tutorial",
-        )
-
-        self.assertGreater(instructional["local_features"]["tutorial_instruction_score"], 0.5)
-        self.assertGreater(transition["local_features"]["low_payoff_penalty"], 0.0)
-        self.assertGreater(instructional["local_score"], transition["local_score"])
-
-    def test_commentary_contextless_fragment_is_penalized(self):
-        scored = score_candidate(
-            {
-                "start": 0.0,
-                "end": 35.0,
-                "duration": 35.0,
-                "avg_value": 0.7,
-                "text": "i wtedy oni to zrobili bez żadnego wyjaśnienia dalej",
-            },
-            [
-                {
-                    "start": 0.0,
-                    "end": 35.0,
-                    "text": "i wtedy oni to zrobili bez żadnego wyjaśnienia dalej",
-                    "speaker": "Speaker 0",
-                    "importance": 3,
-                }
-            ],
-            self._heatmap(),
-            strategy_name="commentary",
-        )
-
-        self.assertGreater(scored["local_features"]["contextless_penalty"], 0.0)
-        self.assertGreater(scored["local_features"]["low_payoff_penalty"], 0.0)
 
 
 if __name__ == "__main__":

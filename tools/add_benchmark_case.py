@@ -14,7 +14,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 BENCHMARKS_ROOT = PROJECT_ROOT / "benchmarks"
 CASES_PATH = BENCHMARKS_ROOT / "cases.json"
 ASSETS_ROOT = BENCHMARKS_ROOT / "assets"
-VALID_CONTENT_TYPES = {"auto", "gameplay", "podcast", "tutorial", "commentary", "generic"}
+VALID_CONTENT_TYPES = {"podcast"}
 CASE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
 
@@ -71,12 +71,12 @@ def build_case_payload(
     case_id: str,
     source_url: str,
     content_type: str,
-    review_batch: str,
+    review_batch: str = "podcast_only_v1",
     notes: str,
     has_local_video: bool,
     video_suffix: str = ".mp4",
 ) -> dict[str, Any]:
-    expected_content_type = "generic" if content_type == "auto" else content_type
+    expected_content_type = "podcast"
     video_rel = f"benchmarks/assets/{case_id}/input/source{video_suffix}"
     return {
         "id": case_id,
@@ -93,7 +93,7 @@ def build_case_payload(
         "info_json": f"benchmarks/assets/{case_id}/metadata/source.info.json",
         "review_batch": review_batch,
         "comparison_content_types": [],
-        "include_generic_baseline": True,
+        "include_generic_baseline": False,
         "notes": notes,
     }
 
@@ -104,7 +104,7 @@ def add_case(
     source_url: str = "",
     video_path: str = "",
     content_type: str,
-    review_batch: str,
+    review_batch: str = "podcast_only_v1",
     notes: str = "",
     force: bool = False,
     cases_path: Path = CASES_PATH,
@@ -143,7 +143,7 @@ def add_case(
         case_id=normalized_case_id,
         source_url=str(source_url or "").strip(),
         content_type=normalized_content_type,
-        review_batch=str(review_batch or "").strip() or "local_v1",
+        review_batch=str(review_batch or "").strip() or "podcast_only_v1",
         notes=str(notes or "").strip(),
         has_local_video=has_local_video,
         video_suffix=video_suffix,
@@ -173,12 +173,12 @@ def add_case(
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Add or update a local benchmark case.")
+    parser = argparse.ArgumentParser(description="Add or update a podcast-only local benchmark case.")
     parser.add_argument("--case-id", required=True)
     parser.add_argument("--source-url", default="")
     parser.add_argument("--video-path", default="")
     parser.add_argument("--content-type", required=True, choices=sorted(VALID_CONTENT_TYPES))
-    parser.add_argument("--review-batch", default="local_v1")
+    parser.add_argument("--review-batch", default="podcast_only_v1")
     parser.add_argument("--notes", default="")
     parser.add_argument("--force", action="store_true")
     return parser

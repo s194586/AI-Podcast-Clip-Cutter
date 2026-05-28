@@ -158,7 +158,7 @@ def smooth_speaker_labels(
 
 
 def collect_speaker_styles(events: List[Dict]) -> List[str]:
-    speaker_names = {DEFAULT_STYLE_NAME, "Speaker 0"}
+    speaker_names = {DEFAULT_STYLE_NAME}
     for event in events:
         speaker = normalize_speaker({"speaker": event.get("speaker")})
         if speaker != DEFAULT_STYLE_NAME:
@@ -188,11 +188,78 @@ def resolve_effective_speaker_cap(
 ) -> int | None:
     if isinstance(max_effective_speakers, int) and max_effective_speakers > 0:
         return max_effective_speakers
-    normalized_content = str(content_type_hint or "").strip().lower()
-    normalized_mode = str(expected_speaker_mode or "unknown").strip().lower()
-    if normalized_mode == "single" or normalized_content in {"commentary", "tutorial"}:
+    normalized_mode = normalize_expected_speaker_mode(expected_speaker_mode)
+    if normalized_mode == "single":
         return 2
     return None
+
+
+def normalize_expected_speaker_mode(value: str | None) -> str:
+    normalized = str(value or "unknown").strip().lower()
+    aliases = {
+        "single_speaker": "single",
+        "single-speaker": "single",
+        "single speaker": "single",
+        "multi_speaker": "multi",
+        "multi-speaker": "multi",
+        "multiple": "multi",
+        "multiple_speakers": "multi",
+    }
+    return aliases.get(normalized, normalized if normalized in {"single", "multi"} else "unknown")
+
+
+def resolve_speaker_color_policy(
+    events: List[Dict],
+    *,
+    expected_speaker_mode: str = "unknown",
+) -> Dict[str, object]:
+    normalized_events = [dict(event) for event in events]
+    speakers = [
+        normalize_speaker({"speaker": event.get("speaker")})
+        for event in normalized_events
+        if normalize_speaker({"speaker": event.get("speaker")}) != DEFAULT_STYLE_NAME
+    ]
+    speaker_sequence = [speaker for speaker in speakers if speaker != DEFAULT_STYLE_NAME]
+    speaker_switch_count = sum(
+        1 for left, right in zip(speaker_sequence, speaker_sequence[1:]) if left != right
+    )
+    speaker_switch_ratio = speaker_switch_count / max(len(speaker_sequence) - 1, 1) if speaker_sequence else 0.0
+    durations: Dict[str, float] = {}
+    short_segments_by_speaker: Dict[str, int] = {}
+    for event in normalized_events:
+        speaker = normalize_speaker({"speaker": event.get("speaker")})
+        if speaker == DEFAULT_STYLE_NAME:
+            continue
+        duration = max(0.0, float(event.get("end", 0.0)) - float(event.get("start", 0.0)))
+        durations[speaker] = durations.get(speaker, 0.0) + duration
+        if duration <= 1.0:
+            short_segments_by_speaker[speaker] = short_segments_by_speaker.get(speaker, 0) + 1
+
+    active_speakers = sorted(durations, key=lambda speaker: durations[speaker], reverse=True)
+    fallback_reasons: list[str] = []
+    expected_mode = normalize_expected_speaker_mode(expected_speaker_mode)
+    if expected_mode == "single":
+        fallback_reasons.append("expected_single_speaker")
+    if len(active_speakers) < 2:
+        fallback_reasons.append("not_enough_speakers_for_color")
+    if len(active_speakers) > 2:
+        fallback_reasons.append("too_many_detected_speakers")
+    if short_segments_by_speaker and sum(short_segments_by_speaker.values()) >= max(2, len(normalized_events) // 4):
+        fallback_reasons.append("many_short_speaker_segments")
+    if speaker_switch_ratio >= 0.7 and sum(short_segments_by_speaker.values()) > 0:
+        fallback_reasons.append("unstable_speaker_switches")
+    if durations and min(durations.values()) < 2.0 and len(active_speakers) > 1:
+        fallback_reasons.append("speaker_duration_too_short")
+
+    mode = "single_style_fallback" if fallback_reasons else "stable_per_speaker"
+    speaker_names = active_speakers[:2] if mode == "stable_per_speaker" else [DEFAULT_STYLE_NAME]
+    return {
+        "speaker_color_mode": mode,
+        "speaker_color_fallback_reason": ",".join(fallback_reasons),
+        "speaker_switch_count": speaker_switch_count,
+        "speaker_switch_ratio": round(float(speaker_switch_ratio), 4),
+        "speaker_styles_used": speaker_names,
+    }
 
 
 def _nearest_kept_speaker(index: int, events: List[Dict], keep_speakers: set[str], dominant_speaker: str) -> str:
@@ -276,7 +343,7 @@ def ass_color(color_value: str) -> str:
 
 def apply_emphasis(text: str, speaker_name: str) -> str:
     color_tag = f"\\c{EMPHASIS_COLOR}&"
-    reset_style = speaker_name if speaker_name != DEFAULT_STYLE_NAME else "Speaker 0"
+    reset_style = speaker_name if speaker_name != DEFAULT_STYLE_NAME else DEFAULT_STYLE_NAME
 
     def repl(match):
         word = match.group(0)
@@ -346,6 +413,7 @@ def build_subtitle_events_with_metadata(
     api_key: str | None = None,
     request_timeout: float = 45.0,
 ) -> Tuple[List[Dict], Dict[str, object]]:
+    normalized_content_type = str(content_type_hint or "").strip().lower()
     raw_events: List[Dict] = []
     segment_end = segment_start + segment_duration
     transcript_for_events, smoothing_metadata = smooth_speaker_labels(
@@ -413,20 +481,58 @@ def build_subtitle_events_with_metadata(
             content_type_hint=content_type_hint,
         )
 
+    color_policy = resolve_speaker_color_policy(
+        corrected_events,
+        expected_speaker_mode=expected_speaker_mode,
+    )
+    if normalized_content_type == "podcast":
+        color_policy = {
+            **color_policy,
+            "speaker_color_mode": "single_style_fallback",
+            "speaker_color_fallback_reason": "podcast_mvp_single_color",
+            "speaker_styles_used": [DEFAULT_STYLE_NAME],
+            "subtitle_color_policy": "single_color_podcast_mvp",
+        }
+    else:
+        color_policy = {
+            **color_policy,
+            "subtitle_color_policy": "dynamic_color_policy",
+        }
+    stable_speakers = set(color_policy.get("speaker_styles_used") or [])
+    use_per_speaker = normalized_content_type != "podcast" and color_policy.get("speaker_color_mode") == "stable_per_speaker"
+
     events: List[Dict] = []
     for event in corrected_events:
-        display_text = event["text"] if int(event.get("importance", 3)) >= 5 else (
-            apply_emphasis(str(event["text"]), str(event["speaker"]))
-            if int(event.get("importance", 3)) >= 4
-            else event["text"]
+        detected_speaker = str(event.get("speaker") or DEFAULT_STYLE_NAME)
+        display_speaker = (
+            normalize_speaker({"speaker": detected_speaker})
+            if use_per_speaker and normalize_speaker({"speaker": detected_speaker}) in stable_speakers
+            else DEFAULT_STYLE_NAME
         )
-        events.append({**event, "text": display_text})
+        if normalized_content_type == "podcast":
+            display_text = str(event["text"])
+            render_style = DEFAULT_STYLE_NAME
+        else:
+            display_text = event["text"] if int(event.get("importance", 3)) >= 5 else (
+                apply_emphasis(str(event["text"]), display_speaker)
+                if int(event.get("importance", 3)) >= 4
+                else event["text"]
+            )
+            render_style = display_speaker
+        events.append({
+            **event,
+            "speaker": display_speaker,
+            "detected_speaker": detected_speaker,
+            "render_style": render_style,
+            "text": display_text,
+        })
 
     speaker_names = collect_speaker_styles(events)
     metadata: Dict[str, object] = {
         **smoothing_metadata,
         **speaker_stability_metadata,
         **correction_metadata,
+        **color_policy,
         "speaker_color_map": speaker_color_map(speaker_names),
         "speaker_smoothing_enabled": bool(smoothing_metadata.get("speaker_smoothing_enabled", False)),
         "speaker_smoothing_window": float(smoothing_metadata.get("speaker_smoothing_window", speaker_smoothing_window)),
@@ -495,7 +601,9 @@ def create_ass_file(events: List[Dict]) -> str:
     for event in events:
         start_time = format_ass_time(event["start"])
         end_time = format_ass_time(event["end"])
-        style = CHAOS_EMPHASIS_STYLE if event.get("importance", 3) >= 5 else event["speaker"]
+        style = str(event.get("render_style") or event.get("speaker") or DEFAULT_STYLE_NAME)
+        if style != DEFAULT_STYLE_NAME and event.get("importance", 3) >= 5:
+            style = CHAOS_EMPHASIS_STYLE
         text = str(event["text"]).replace("\n", r"\N")
         lines.append(f"Dialogue: 0,{start_time},{end_time},{style},,0,0,0,,{text}")
 
@@ -606,12 +714,12 @@ def process_cut_file(
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Add premium subtitles with speaker diarization.")
+    parser = argparse.ArgumentParser(description="Add podcast subtitles with one stable visual style.")
     parser.add_argument("--transcript", default="transcripts/final_transcript.json", help="Transcript JSON path")
     parser.add_argument("--input-dir", default="cuts", help="Input directory with segment videos")
     parser.add_argument("--output-raw", default="cuts/raw", help="Output directory for raw cuts")
     parser.add_argument("--output-subs", default="cuts/subtitles", help="Output directory for subtitled videos")
-    parser.add_argument("--content-type", default="generic", help="Content type hint for subtitle speaker stabilization")
+    parser.add_argument("--content-type", default="podcast", help="Content type hint. The MVP renders one podcast subtitle style.")
     parser.add_argument("--expected-speaker-mode", default="unknown", help="Expected speaker mode hint: single, multi or unknown")
     parser.add_argument("--max-effective-speakers", type=int, default=0, help="Optional cap for subtitle speaker labels")
     parser.add_argument(

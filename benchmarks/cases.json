@@ -1,3 +1,40 @@
 {
-  "cases": []
+  "cases": [
+    {
+      "id": "podcast_j86_semantic_test",
+      "label": "Zgrzyt Makowka podcast test",
+      "source_url": "https://www.youtube.com/watch?v=j86hsM0t9ig",
+      "description": "Podcast / talking-head benchmark material for semantic story, clip boundaries, subtitles and framing.",
+      "expected_content_type": "podcast",
+      "expected_speaker_mode": "multi_speaker",
+      "local_video_path": "benchmarks/assets/podcast_j86_semantic_test/input/source.mp4",
+      "video": "benchmarks/assets/podcast_j86_semantic_test/input/source.mp4",
+      "audio": "benchmarks/assets/podcast_j86_semantic_test/input/source.mp3",
+      "transcript_source": "benchmarks/assets/podcast_j86_semantic_test/transcripts/final_transcript.json",
+      "heatmap": "benchmarks/assets/podcast_j86_semantic_test/metadata/heatmap.json",
+      "info_json": "benchmarks/assets/podcast_j86_semantic_test/metadata/source.info.json",
+      "review_batch": "podcast_only_v1",
+      "comparison_content_types": [],
+      "include_generic_baseline": false,
+      "notes": "Podcast-only MVP case from YouTube. Expected multi-speaker because the material appears to be an interview/conversation format."
+    },
+    {
+      "id": "podcast_rff_semantic_test",
+      "label": "Zurnalista Stonoga interview test",
+      "source_url": "https://www.youtube.com/watch?v=RFfCSmW6A2g",
+      "description": "Podcast / talking-head benchmark material for semantic story, clip boundaries, subtitles and framing.",
+      "expected_content_type": "podcast",
+      "expected_speaker_mode": "multi_speaker",
+      "local_video_path": "benchmarks/assets/podcast_rff_semantic_test/input/source.mp4",
+      "video": "benchmarks/assets/podcast_rff_semantic_test/input/source.mp4",
+      "audio": "benchmarks/assets/podcast_rff_semantic_test/input/source.mp3",
+      "transcript_source": "benchmarks/assets/podcast_rff_semantic_test/transcripts/final_transcript.json",
+      "heatmap": "benchmarks/assets/podcast_rff_semantic_test/metadata/heatmap.json",
+      "info_json": "benchmarks/assets/podcast_rff_semantic_test/metadata/source.info.json",
+      "review_batch": "podcast_only_v1",
+      "comparison_content_types": [],
+      "include_generic_baseline": false,
+      "notes": "Podcast-only MVP case from YouTube. Expected multi-speaker because the material appears to be an interview/conversation format."
+    }
+  ]
 }

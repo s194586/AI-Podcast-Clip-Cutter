@@ -4,8 +4,8 @@
       "id": "new_case_id",
       "label": "Short descriptive label",
       "source_url": "https://www.youtube.com/watch?v=...",
-      "description": "What kind of material this is and why it matters.",
-      "expected_content_type": "commentary",
+      "description": "Podcast or talking-head material used to judge story completeness, boundaries, subtitles and framing.",
+      "expected_content_type": "podcast",
       "expected_speaker_mode": "single_speaker",
       "local_video_path": "benchmarks/assets/new_case_id/input/source.mp4",
       "video": "benchmarks/assets/new_case_id/input/source.mp4",
@@ -13,10 +13,10 @@
       "transcript_source": "benchmarks/assets/new_case_id/transcripts/final_transcript.json",
       "heatmap": "benchmarks/assets/new_case_id/metadata/heatmap.json",
       "info_json": "benchmarks/assets/new_case_id/metadata/source.info.json",
-      "review_batch": "local_v1",
+      "review_batch": "podcast_only_v1",
       "comparison_content_types": [],
-      "include_generic_baseline": true,
-      "notes": "Free-form notes for the benchmark corpus."
+      "include_generic_baseline": false,
+      "notes": "Free-form notes for the podcast-only benchmark corpus."
     }
   ]
 }

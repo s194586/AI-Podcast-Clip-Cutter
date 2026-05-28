@@ -39,7 +39,7 @@ Keep `benchmarks/review_dashboard.html`:
 Run a new benchmark from scratch after cleanup:
 
 ```powershell
-.\.venv\Scripts\python.exe benchmark.py --ai-mode local_only --subtitle-checker-mode local_only
+.\.venv\Scripts\python.exe tools\run_local_benchmark.py --review-batch podcast_only_v1
 ```
 
 ## Regenerate Dashboard
