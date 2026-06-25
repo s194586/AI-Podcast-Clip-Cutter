@@ -26,7 +26,7 @@ class LocalScoringQualityTests(unittest.TestCase):
         )
 
         self.assertEqual(scored["selection_strategy"], "podcast")
-        self.assertEqual(scored["local_features"]["gameplay_setup_penalty"], 0.0)
+        self.assertEqual(scored["local_features"]["setup_penalty"], 0.0)
 
     def test_podcast_clip_with_question_and_answer_scores_above_contextless_fragment(self):
         good_text = "dlaczego to bylo wazne? bo wtedy zrozumialem, ze trzeba zmienic decyzje."

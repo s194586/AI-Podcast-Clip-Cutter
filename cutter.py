@@ -668,8 +668,6 @@ def filter_faces_for_render_mode(faces, frame_width, frame_height, render_hints)
     if not faces:
         return [], 0
 
-    crop_priority = str(render_hints.get("crop_priority") or "").lower()
-    crop_mode = str(render_hints.get("crop_mode") or "").lower()
     ignore_edge_faces = bool(render_hints.get("ignore_edge_faces"))
     min_face_area = float(render_hints.get("min_face_area_for_tracking") or 0.0)
 
@@ -685,13 +683,7 @@ def filter_faces_for_render_mode(faces, frame_width, frame_height, render_hints)
 
         near_horizontal_edge = x_ratio <= 0.18 or x_ratio >= 0.82
         near_vertical_edge = y_ratio <= 0.18 or y_ratio >= 0.82
-        likely_facecam_overlay = (
-            (crop_priority == "gameplay" or crop_mode == "gameplay_balanced")
-            and area_ratio <= 0.12
-            and near_horizontal_edge
-            and near_vertical_edge
-        )
-        if likely_facecam_overlay or (ignore_edge_faces and near_horizontal_edge and near_vertical_edge):
+        if ignore_edge_faces and near_horizontal_edge and near_vertical_edge:
             ignored_faces += 1
             continue
         filtered.append(face)

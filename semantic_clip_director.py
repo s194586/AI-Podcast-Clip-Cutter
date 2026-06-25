@@ -155,7 +155,7 @@ class ClipDirector:
         story_score = clamp_score((hook_score + context_score + payoff_score) / 3.0, default=0.48)
         ad_hits = float(local_features.get("ad_like_hits", 0) or 0)
         boring_setup = bool(
-            float(local_features.get("gameplay_setup_penalty", 0.0) or 0.0) >= 0.25
+            float(local_features.get("setup_penalty", 0.0) or 0.0) >= 0.25
             or float(local_features.get("preamble_penalty", 0.0) or 0.0) >= 0.2
         )
         too_context_dependent = bool(float(local_features.get("contextless_penalty", 0.0) or 0.0) >= 0.15)

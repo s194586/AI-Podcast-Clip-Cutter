@@ -33,6 +33,8 @@ tmp/
 temp/
 .tools/
 outputs/
+data/projects/
+top_windows.json
 
 # Media outputs
 *.mp4
@@ -46,6 +48,7 @@ outputs/
 *.ass
 
 # Benchmark generated outputs
+benchmarks/
 benchmarks/runs/
 benchmarks/assets/
 benchmarks/archive/
@@ -60,8 +63,8 @@ benchmarks/human_review_recovered_*.csv
 # JSON defaults: ignore generated JSON, then allow committed config/report files
 *.json
 !config.json
-!benchmarks/cases.json
-!benchmarks/cases.example.json
+!examples/
+!examples/*.json
 
 # Logs
 *.log

@@ -311,7 +311,7 @@ def generate_gemini_text(prompt, model_name, api_key, request_timeout):
         prompt,
         model_name,
         api_key,
-        "Podcast viral moment selector",
+        "Podcast shorts moment selector",
         request_timeout=request_timeout,
         response_mime_type="application/json",
         temperature=0.15,
@@ -752,7 +752,7 @@ def _contains_any_phrase(text, phrases):
     return any(phrase in lower_text for phrase in phrases)
 
 
-def _is_low_value_gameplay_lead(text):
+def _is_low_value_intro_or_ad_lead(text):
     return _contains_any_token(text, GAMEPLAY_LOW_VALUE_LEAD_TOKENS) or _contains_any_phrase(
         text,
         (
@@ -768,7 +768,7 @@ def _is_low_value_gameplay_lead(text):
     )
 
 
-def _has_gameplay_payoff(text):
+def _has_action_payoff(text):
     return _contains_any_token(text, GAMEPLAY_PAYOFF_TOKENS) or _contains_any_phrase(
         text,
         (
@@ -833,7 +833,7 @@ def detect_podcast_ending_type(last_text, combined_text):
     return "closed"
 
 
-def is_low_viral_podcast_candidate(local_features):
+def is_low_value_podcast_candidate(local_features):
     features = local_features or {}
     hook_score = float(features.get("hook_score", 0.0) or 0.0)
     emotion_score = float(features.get("emotion_score", 0.0) or 0.0)
@@ -855,8 +855,8 @@ def validate_podcast_candidate(window, boundary_metadata, *, source):
     ending_type = str(boundary_metadata.get("ending_type") or "")
     if ending_type != "closed":
         reasons.append(f"ending_type_{ending_type or 'unknown'}")
-    if source == "local_ranking" and is_low_viral_podcast_candidate(window.get("local_features")):
-        reasons.append("local_viral_filter_reject")
+    if source == "local_ranking" and is_low_value_podcast_candidate(window.get("local_features")):
+        reasons.append("local_podcast_filter_reject")
     if source == "gemini_batch_rerank":
         if bool(window.get("llm_reject_if_boring")):
             reasons.append("llm_reject_if_boring")
@@ -1004,7 +1004,7 @@ def enforce_story_bounds(start, end, context, fallback, max_duration):
     return adjusted_start, adjusted_end, decisions
 
 
-def trim_gameplay_low_value_lead(start, end, context, *, min_duration):
+def trim_low_value_intro_lead(start, end, context, *, min_duration):
     if not context:
         return start, []
     inside = [item for item in context if item["end"] > start and item["start"] < end]
@@ -1016,10 +1016,10 @@ def trim_gameplay_low_value_lead(start, end, context, *, min_duration):
     for item in inside:
         if item["end"] <= start:
             continue
-        if _has_gameplay_payoff(item.get("text", "")):
+        if _has_action_payoff(item.get("text", "")):
             first_payoff = item
             break
-        if _is_low_value_gameplay_lead(item.get("text", "")):
+        if _is_low_value_intro_or_ad_lead(item.get("text", "")):
             low_value_prefix.append(item)
             continue
         break
@@ -1036,25 +1036,19 @@ def trim_gameplay_low_value_lead(start, end, context, *, min_duration):
         return start, []
     return proposed_start, [
         (
-            "Trimmed low-value gameplay setup before the action while keeping a short pre-roll "
+            "Trimmed low-value setup before the useful moment while keeping a short pre-roll "
             f"from {format_time(start)} to {format_time(proposed_start)}."
         )
     ]
 
 
 def apply_context_padding(start, end, context, *, strategy_name, max_duration):
-    if strategy_name not in {"commentary", "podcast", "tutorial"} or not context:
+    strategy_name = "podcast"
+    if not context:
         return start, end, [], {"preroll_added": 0.0, "postroll_added": 0.0, "context_padding_reason": ""}
 
-    if strategy_name == "commentary":
-        target_preroll = 1.5
-        target_postroll = 1.2
-    elif strategy_name == "podcast":
-        target_preroll = 1.2
-        target_postroll = 1.5
-    else:
-        target_preroll = 0.8
-        target_postroll = 1.0
+    target_preroll = 1.2
+    target_postroll = 1.5
     current_duration = max(0.0, end - start)
     available_budget = max(0.0, max_duration - current_duration)
     if available_budget <= 0.0:
@@ -1095,17 +1089,12 @@ def apply_context_padding(start, end, context, *, strategy_name, max_duration):
 
 
 def align_to_transcript_segment_bounds(start, end, context, *, strategy_name, max_duration):
+    strategy_name = "podcast"
     if not context:
         return start, end, [], {
             "segment_boundary_aligned": False,
             "sentence_boundary_aligned": False,
             "fallback_alignment_reason": "no_transcript_context",
-        }
-    if strategy_name not in {"commentary", "podcast", "tutorial"}:
-        return start, end, [], {
-            "segment_boundary_aligned": False,
-            "sentence_boundary_aligned": False,
-            "fallback_alignment_reason": "",
         }
 
     aligned_start = start
@@ -1148,6 +1137,7 @@ def refine_story_bounds_for_strategy(
     min_duration=20.0,
     strategy_name="podcast",
 ):
+    strategy_name = "podcast"
     adjusted_start, adjusted_end, decisions, metadata = enforce_story_bounds_with_metadata(
         start,
         end,
@@ -1155,17 +1145,6 @@ def refine_story_bounds_for_strategy(
         fallback,
         max_duration,
     )
-    if strategy_name == "gameplay":
-        trimmed_start, trim_decisions = trim_gameplay_low_value_lead(
-            adjusted_start,
-            adjusted_end,
-            context,
-            min_duration=min_duration,
-        )
-        if trim_decisions:
-            adjusted_start = trimmed_start
-            decisions.extend(trim_decisions)
-
     adjusted_start, adjusted_end, segment_decisions, segment_metadata = align_to_transcript_segment_bounds(
         adjusted_start,
         adjusted_end,
@@ -1186,23 +1165,15 @@ def refine_story_bounds_for_strategy(
     if padding_decisions:
         decisions.extend(padding_decisions)
 
-    if strategy_name == "podcast":
-        repaired_end, repair_decisions, repair_metadata = repair_podcast_end_boundary(
-            adjusted_start,
-            adjusted_end,
-            context,
-            max_duration=max_duration,
-        )
-        if repair_decisions:
-            decisions.extend(repair_decisions)
-        adjusted_end = repaired_end
-    else:
-        repair_metadata = {
-            "end_expanded": False,
-            "end_expansion_reason": "",
-            "payoff_detected": False,
-            "ending_type": "closed",
-        }
+    repaired_end, repair_decisions, repair_metadata = repair_podcast_end_boundary(
+        adjusted_start,
+        adjusted_end,
+        context,
+        max_duration=max_duration,
+    )
+    if repair_decisions:
+        decisions.extend(repair_decisions)
+    adjusted_end = repaired_end
 
     if adjusted_end - adjusted_start > max_duration:
         metadata["max_duration_clamped"] = True
@@ -1316,7 +1287,10 @@ def normalize_ai_choice(raw_choice):
     payoff_score = _normalize_llm_score_1_5(raw_choice.get("payoff_score"), 0.0)
     answer_score = _normalize_llm_score_1_5(raw_choice.get("answer_completeness_score"), 0.0)
     story_score = _normalize_llm_score_1_5(raw_choice.get("standalone_story_score"), 0.0)
-    viral_score = _normalize_llm_score_1_5(raw_choice.get("viral_potential_score"), 0.0)
+    clip_score = _normalize_llm_score_1_5(
+        raw_choice.get("clip_potential_score", raw_choice.get("viral_potential_score")),
+        0.0,
+    )
     selected = _normalize_bool(raw_choice.get("selected"), True)
     reject_if_boring = _normalize_bool(raw_choice.get("reject_if_boring"), False)
     reject_reason = str(raw_choice.get("reject_reason") or "").strip()
@@ -1332,9 +1306,9 @@ def normalize_ai_choice(raw_choice):
     if story_score and story_score < 3.0:
         selected = False
         reject_reason = reject_reason or "standalone_story_below_threshold"
-    if viral_score and viral_score < 3.0:
+    if clip_score and clip_score < 3.0:
         selected = False
-        reject_reason = reject_reason or "viral_potential_below_threshold"
+        reject_reason = reject_reason or "clip_potential_below_threshold"
     if ending_type and ending_type != "closed":
         selected = False
         reject_reason = reject_reason or f"ending_type_{ending_type}"
@@ -1351,7 +1325,7 @@ def normalize_ai_choice(raw_choice):
         "answer_completeness_score": answer_score,
         "payoff_score": payoff_score,
         "standalone_story_score": story_score,
-        "viral_potential_score": viral_score,
+        "clip_potential_score": clip_score,
         "boundary_quality_score": _normalize_llm_score_1_5(raw_choice.get("boundary_quality_score"), 0.0),
         "recommended_start_time": raw_choice.get("recommended_start_time", raw_choice.get("hook_start")),
         "recommended_end_time": raw_choice.get("recommended_end_time", raw_choice.get("punchline_end")),
@@ -1360,7 +1334,7 @@ def normalize_ai_choice(raw_choice):
         "story_summary": str(raw_choice.get("story_summary") or raw_choice.get("reason") or "").strip(),
         "payoff_summary": str(raw_choice.get("payoff_summary") or raw_choice.get("ending_reason") or "").strip(),
         "ending_type": ending_type or "closed",
-        "viral_reason": str(raw_choice.get("viral_reason") or "").strip(),
+        "clip_reason": str(raw_choice.get("clip_reason") or raw_choice.get("viral_reason") or "").strip(),
         "why_viewer_keeps_watching": str(raw_choice.get("why_viewer_keeps_watching") or "").strip(),
         "reject_if_boring": reject_if_boring,
         "boundary_notes": str(raw_choice.get("boundary_notes") or "").strip(),
@@ -1398,7 +1372,7 @@ def rerank_candidate_packets_with_ai(packets, *, top_count, model_name, max_dura
         '      "answer_completeness_score": 1,\n'
         '      "payoff_score": 1,\n'
         '      "standalone_story_score": 1,\n'
-        '      "viral_potential_score": 1,\n'
+        '      "clip_potential_score": 1,\n'
         '      "boundary_quality_score": 1,\n'
         '      "ending_type": "closed",\n'
         '      "recommended_start_time": 0.0,\n'
@@ -1407,7 +1381,7 @@ def rerank_candidate_packets_with_ai(packets, *, top_count, model_name, max_dura
         '      "hook_summary": "",\n'
         '      "story_summary": "",\n'
         '      "payoff_summary": "",\n'
-        '      "viral_reason": "",\n'
+        '      "clip_reason": "",\n'
         '      "why_viewer_keeps_watching": "",\n'
         '      "reject_if_boring": false,\n'
         '      "boundary_notes": "",\n'
@@ -1751,12 +1725,12 @@ def apply_batch_ai_selection(
             "llm_answer_completeness_score": round(float(ai_choice.get("answer_completeness_score", 0.0) or 0.0), 4),
             "llm_payoff_score": round(float(ai_choice.get("payoff_score", 0.0) or 0.0), 4),
             "llm_standalone_story_score": round(float(ai_choice.get("standalone_story_score", 0.0) or 0.0), 4),
-            "llm_viral_potential_score": round(float(ai_choice.get("viral_potential_score", 0.0) or 0.0), 4),
+            "llm_clip_potential_score": round(float(ai_choice.get("clip_potential_score", 0.0) or 0.0), 4),
             "llm_boundary_quality_score": round(float(ai_choice.get("boundary_quality_score", 0.0) or 0.0), 4),
             "llm_ending_type": str(ai_choice.get("ending_type") or "closed"),
             "llm_title_suggestion": str(ai_choice.get("title_suggestion") or "").strip(),
             "llm_story_summary": str(ai_choice.get("story_summary") or "").strip(),
-            "llm_viral_reason": str(ai_choice.get("viral_reason") or "").strip(),
+            "llm_clip_reason": str(ai_choice.get("clip_reason") or "").strip(),
             "llm_why_viewer_keeps_watching": str(ai_choice.get("why_viewer_keeps_watching") or "").strip(),
             "llm_reject_if_boring": bool(ai_choice.get("reject_if_boring", False)),
             "llm_boundary_notes": str(ai_choice.get("boundary_notes") or "").strip(),
@@ -1795,7 +1769,7 @@ def apply_batch_ai_selection(
         "llm_ending_type": refined_window["llm_ending_type"],
         "llm_title_suggestion": refined_window["llm_title_suggestion"],
         "llm_story_summary": refined_window["llm_story_summary"],
-        "llm_viral_reason": refined_window["llm_viral_reason"],
+        "llm_clip_reason": refined_window["llm_clip_reason"],
         "llm_boundary_notes": refined_window["llm_boundary_notes"],
         "final_start": start,
         "final_end": end,
@@ -2278,7 +2252,7 @@ def save_top_windows(windows, output_path):
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Analyze viral fragments using transcript and heatmap.")
+    parser = argparse.ArgumentParser(description="Analyze podcast clip candidates using transcript and heatmap.")
     parser.add_argument("--transcript", default="transcripts/final_transcript.json", help="Transcript JSON path")
     parser.add_argument("--heatmap", default="metadata/heatmap.json", help="Heatmap JSON path")
     parser.add_argument("--video", default=None, help="Optional video path for content classification")
@@ -2344,7 +2318,7 @@ def main():
     content_routing["title"] = Path(args.video).stem if args.video else ""
 
     print(
-        f"  Content classification: {content_routing['content_type']} "
+        f"  Podcast profile: {content_routing['content_type']} "
         f"(confidence={content_routing['confidence']:.2f}, source={content_routing['source']})"
     )
     if content_routing["reasons"]:
@@ -2419,7 +2393,7 @@ def main():
         )
         print("  AI rerank skipped: local_only mode is active.")
 
-    print(f"\nTop {len(top_windows)} moments for Shorts:")
+    print(f"\nTop {len(top_windows)} podcast clip candidates:")
     for index, window in enumerate(top_windows, start=1):
         print(f"Clip {index}:")
         print(f'  Range: {format_time(window["start"])} - {format_time(window["end"])}')

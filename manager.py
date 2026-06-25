@@ -13,7 +13,7 @@ Workflow:
   2. Pobiera wideo (download_content.py)
   3. Transkrybuje audio (transcribe_podcast.py)
   4. Sprawdza transkrypcję i timing napisów (subtitler_checker.py)
-  5. Analizuje viralowe momenty (analyze_virals.py)
+  5. Scores podcast clip candidates (analyze_virals.py)
   6. Wycina segmenty (cutter.py)
   7. Dodaje napisy (subtitler.py)
   8. Opcjonalnie: czyszcze pliki z input/ (--cleanup)
@@ -650,7 +650,7 @@ class WorkflowManager:
         return self.run_command(cmd, "3️⃣  AI Subtitler Checker")
     
     def analyze_virals(self) -> bool:
-        """Krok 4: Przeanalizuj i znajdź viralowe momenty."""
+        """Score podcast clip candidates."""
         if not self.transcript_file.exists():
             print(f"✗ Plik transkrypcji nie istnieje: {self.transcript_file}")
             return False
@@ -676,7 +676,7 @@ class WorkflowManager:
         if self.skip_smart_context:
             cmd.append('--skip-smart-context')
         
-        return self.run_command(cmd, "5️⃣  Analiza viralowych momentów")
+        return self.run_command(cmd, "5. Podcast clip analysis")
     
     def classify_content(self) -> bool:
         """Krok 4: Zbuduj lokalny profil typu materiaĹ‚u."""
@@ -696,7 +696,7 @@ class WorkflowManager:
         if video_file:
             cmd.extend(['--video', str(video_file)])
 
-        return self.run_command(cmd, "4. Content classification")
+        return self.run_command(cmd, "4. Podcast profile")
 
     def cut_segments(self) -> bool:
         """Krok 5: Wytnij segmenty z wideo."""
@@ -905,7 +905,7 @@ class WorkflowManager:
 
             steps.extend([
                 (self.classify_content, "Klasyfikacja typu materiału"),
-                (self.analyze_virals, "Analiza"),
+                (self.analyze_virals, "Analiza podcastowych klipow"),
                 (self.cut_segments, "Wycinanie"),
                 (self.add_subtitles, "Napisy"),
             ])
@@ -1059,7 +1059,7 @@ Przykłady:
         '--content-type',
         choices=VALID_CONTENT_TYPE_MODES,
         default='auto',
-        help='Typ materialu: auto albo podcast. MVP routuje obie opcje jako podcast/talking-head.',
+        help='Typ materialu: auto albo podcast. Obie opcje uruchamiaja podcast/talking-head pipeline.',
     )
 
     parser.add_argument(

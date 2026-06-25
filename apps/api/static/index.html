@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Podcast Shorts Cutter</title>
+    <link rel="stylesheet" href="/static/style.css">
+  </head>
+  <body>
+    <main class="editor-shell">
+      <header class="topbar">
+        <div>
+          <h1>Podcast Shorts Cutter</h1>
+          <p>AI draft clips + human review + final render</p>
+        </div>
+        <span id="sourceStatus" class="source-status">Loading</span>
+      </header>
+
+      <p id="sourceWarning" class="source-warning" hidden></p>
+
+      <section class="workspace">
+        <aside class="clip-sidebar">
+          <div class="sidebar-heading">
+            <h2>Draft clips</h2>
+            <span id="clipCount">0</span>
+          </div>
+          <div id="clipList" class="clip-list" aria-label="AI draft clips"></div>
+        </aside>
+
+        <section class="trim-editor" aria-live="polite">
+          <div class="preview-wrap">
+            <video id="previewVideo" controls playsinline></video>
+            <div id="emptyPreview" class="empty-preview">Select a clip to preview</div>
+          </div>
+
+          <div class="readout-grid">
+            <div>
+              <span>Current</span>
+              <strong id="currentTime">0.00s</strong>
+            </div>
+            <div>
+              <span>Start</span>
+              <strong id="editedStart">0.00s</strong>
+            </div>
+            <div>
+              <span>End</span>
+              <strong id="editedEnd">0.00s</strong>
+            </div>
+            <div>
+              <span>Duration</span>
+              <strong id="editedDuration">0.00s</strong>
+            </div>
+          </div>
+
+          <section class="timeline-panel" aria-label="Trim timeline">
+            <div class="timeline-rail">
+              <div id="timelineRange" class="timeline-range"></div>
+              <div id="playhead" class="playhead"></div>
+            </div>
+
+            <label class="slider-row">
+              <span>Preview</span>
+              <input id="previewTime" type="range" step="0.01">
+            </label>
+            <label class="slider-row">
+              <span>Start handle</span>
+              <input id="startSlider" type="range" step="0.01">
+            </label>
+            <label class="slider-row">
+              <span>End handle</span>
+              <input id="endSlider" type="range" step="0.01">
+            </label>
+          </section>
+
+          <div class="controls">
+            <button id="playPause" type="button">Play</button>
+            <button id="jumpStart" type="button">Jump to Start</button>
+            <button id="loopToggle" type="button" aria-pressed="true">Loop Preview: ON</button>
+            <button id="acceptButton" type="button">Accept</button>
+            <button id="rejectButton" type="button">Reject</button>
+          </div>
+
+          <div class="number-controls">
+            <label>
+              <span>Start</span>
+              <input id="startInput" type="number" step="0.01">
+            </label>
+            <label>
+              <span>End</span>
+              <input id="endInput" type="number" step="0.01">
+            </label>
+            <button id="renderButton" type="button">Render Short</button>
+          </div>
+
+          <p id="validationMessage" class="validation-message" role="status"></p>
+
+          <section class="selected-copy">
+            <h2 id="selectedTitle">No clip selected</h2>
+            <p id="selectedStatus" class="selected-status"></p>
+            <p id="selectedSummary"></p>
+            <details id="scoreDetails">
+              <summary>Score and reasons</summary>
+              <p id="selectedScore"></p>
+              <ul id="selectedReasons"></ul>
+            </details>
+            <details id="transcriptDetails">
+              <summary>Transcript excerpt</summary>
+              <p id="selectedTranscript"></p>
+            </details>
+          </section>
+
+          <pre id="renderResult" class="render-result" hidden></pre>
+        </section>
+      </section>
+    </main>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>

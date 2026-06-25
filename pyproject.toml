@@ -1,11 +1,12 @@
 [project]
-name = "viral-cutter-ai"
+name = "podcast-shorts-cutter"
 version = "0.1.0"
-description = "Add your description here"
+description = "Local-first human-in-the-loop podcast shorts cutter"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
     "certifi>=2026.4.22",
+    "fastapi>=0.115.0",
     "ffmpeg-python>=0.2.0",
     "faster-whisper>=1.2.1",
     "google-generativeai>=0.8.6",
@@ -13,5 +14,6 @@ dependencies = [
     "numpy>=2.3.4",
     "opencv-python-headless>=4.13.0.92",
     "python-dotenv>=1.2.2",
+    "uvicorn>=0.30.0",
     "yt-dlp>=2026.3.17",
 ]

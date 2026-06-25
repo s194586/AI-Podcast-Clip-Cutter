@@ -36,7 +36,7 @@ def get_duration(path: Path) -> float:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Local transcription pipeline for Viral Cutter AI")
+    parser = argparse.ArgumentParser(description="Local transcription pipeline for Podcast Shorts Cutter")
     parser.add_argument("--file", required=True, help="Input audio/video file")
     parser.add_argument("--out", default="transcripts/final_transcript.json", help="Output transcript JSON path")
     parser.add_argument(

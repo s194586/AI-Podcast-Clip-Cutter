@@ -569,7 +569,7 @@ def create_style_line(
 def create_ass_file(events: List[Dict]) -> str:
     lines: List[str] = [
         "[Script Info]",
-        "Title: Viral Cutter AI Subtitles",
+        "Title: Podcast Shorts Cutter Subtitles",
         "ScriptType: v4.00+",
         "WrapStyle: 2",
         "ScaledBorderAndShadow: yes",
