@@ -240,10 +240,9 @@ def _overlap_seconds(start: float, end: float, item_start: float, item_end: floa
 
 
 def _segments_for_window(transcript_segments: list[dict[str, Any]], start: float, end: float) -> list[dict[str, Any]]:
-    normalized = normalize_transcript_segments(transcript_segments)
     return [
         segment
-        for segment in normalized
+        for segment in transcript_segments
         if _overlap_seconds(start, end, float(segment["start"]), float(segment["end"])) > 0
     ]
 
