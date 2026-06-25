@@ -5,6 +5,12 @@ import subtitler
 
 
 class SubtitlerSpeakerTests(unittest.TestCase):
+    def test_extract_segment_time_accepts_long_podcast_minutes(self):
+        start, end = subtitler.extract_segment_time_from_filename("segment_2_106-29_78_107-15_68.mp4")
+
+        self.assertAlmostEqual(start, 6389.78)
+        self.assertAlmostEqual(end, 6435.68)
+
     def test_speaker_style_is_deterministic_per_label(self):
         self.assertEqual(subtitler.speaker_style("Speaker 1"), subtitler.speaker_style("Speaker 1"))
         self.assertNotEqual(subtitler.speaker_style("Speaker 0"), subtitler.speaker_style("Speaker 1"))

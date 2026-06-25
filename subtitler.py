@@ -612,7 +612,7 @@ def create_ass_file(events: List[Dict]) -> str:
 
 def extract_segment_time_from_filename(filename: str) -> Tuple[float, float]:
     name = Path(filename).stem
-    pattern = r"segment_\d+_(\d{2})-(\d{2}_\d+)_(\d{2})-(\d{2}_\d+)"
+    pattern = r"segment_\d+_(\d+)-(\d{2}_\d+)_(\d+)-(\d{2}_\d+)"
     match = re.search(pattern, name)
     if not match:
         raise ValueError(f"Could not parse timestamps from filename: {filename}")
