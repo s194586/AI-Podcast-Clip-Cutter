@@ -34,7 +34,18 @@ temp/
 .tools/
 outputs/
 data/projects/
+data/*.db
+data/*.sqlite
+data/*.sqlite3
 top_windows.json
+airflow.db
+airflow.cfg
+airflow-webserver.pid
+airflow_home/
+logs/
+orchestration/airflow/logs/
+orchestration/airflow/airflow.db
+orchestration/airflow/airflow.cfg
 
 # Media outputs
 *.mp4

@@ -9,3 +9,6 @@ opencv-python-headless
 certifi
 numpy
 faster-whisper
+SQLAlchemy>=2.0
+langgraph
+langchain-core

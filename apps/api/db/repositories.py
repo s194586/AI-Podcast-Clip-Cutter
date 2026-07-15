@@ -1,0 +1,246 @@
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
+
+from .models import Artifact, Clip, ClipEvaluation, Job, Project, utc_now
+
+
+class ProjectRepository:
+    def __init__(self, session: Session) -> None:
+        self.session = session
+
+    def count(self) -> int:
+        return int(self.session.scalar(select(func.count(Project.id))) or 0)
+
+    def create(
+        self,
+        *,
+        source_url: str = "",
+        title: str | None = None,
+        status: str = "draft",
+        source_video_path: str | None = None,
+        transcript_path: str | None = None,
+        candidate_source_path: str | None = None,
+    ) -> Project:
+        project = Project(
+            source_url=source_url,
+            title=title,
+            status=status,
+            source_video_path=source_video_path,
+            transcript_path=transcript_path,
+            candidate_source_path=candidate_source_path,
+        )
+        self.session.add(project)
+        self.session.flush()
+        return project
+
+    def get(self, project_id: int) -> Project | None:
+        return self.session.get(Project, project_id)
+
+    def get_default(self) -> Project | None:
+        return self.session.scalars(select(Project).order_by(Project.id.asc()).limit(1)).first()
+
+    def list_newest(self) -> list[Project]:
+        return list(self.session.scalars(select(Project).order_by(Project.created_at.desc(), Project.id.desc())).all())
+
+    def clip_count(self, project_id: int) -> int:
+        return int(self.session.scalar(select(func.count(Clip.id)).where(Clip.project_id == project_id)) or 0)
+
+    def accepted_clip_count(self, project_id: int) -> int:
+        return int(
+            self.session.scalar(
+                select(func.count(Clip.id)).where(Clip.project_id == project_id, Clip.status == "accepted")
+            )
+            or 0
+        )
+
+    def touch(self, project: Project) -> None:
+        project.updated_at = utc_now()
+
+
+class ClipRepository:
+    def __init__(self, session: Session) -> None:
+        self.session = session
+
+    def create_from_dict(self, project_id: int, payload: dict[str, Any]) -> Clip:
+        clip = Clip(
+            project_id=project_id,
+            external_id=str(payload["id"]),
+            clip_index=int(payload["index"]),
+            ai_start=float(payload["ai_start"]),
+            ai_end=float(payload["ai_end"]),
+            edited_start=float(payload["edited_start"]),
+            edited_end=float(payload["edited_end"]),
+            min_start=float(payload["min_start"]),
+            max_start=float(payload["max_start"]),
+            min_end=float(payload["min_end"]),
+            max_end=float(payload["max_end"]),
+            status=str(payload.get("status") or "draft"),
+            render_status=str(payload.get("render_status") or "not_rendered"),
+            summary=str(payload.get("summary") or ""),
+            text=str(payload.get("text") or ""),
+            source=payload.get("source"),
+            candidate_id=str(payload["candidate_id"]) if payload.get("candidate_id") is not None else None,
+            selection_source=payload.get("selection_source"),
+            local_score=float(payload["local_score"]) if payload.get("local_score") is not None else None,
+            local_rank=int(payload["local_rank"]) if payload.get("local_rank") is not None else None,
+            selection_reasons=list(payload.get("selection_reasons") or []),
+            local_features=dict(payload.get("local_features") or {}),
+            raw_outputs=list(payload.get("raw_outputs") or []),
+            subtitled_outputs=list(payload.get("subtitled_outputs") or []),
+            last_render_output_dir=payload.get("last_render_output_dir"),
+            last_render_warnings=list(payload.get("last_render_warnings") or []),
+        )
+        self.session.add(clip)
+        self.session.flush()
+        return clip
+
+    def get_by_external_id(self, project_id: int, external_id: str) -> Clip | None:
+        return self.session.scalars(
+            select(Clip).where(Clip.project_id == project_id, Clip.external_id == external_id).limit(1)
+        ).first()
+
+    def list_for_project(self, project_id: int) -> list[Clip]:
+        return list(
+            self.session.scalars(
+                select(Clip).where(Clip.project_id == project_id).order_by(Clip.clip_index.asc(), Clip.id.asc())
+            ).all()
+        )
+
+    def touch(self, clip: Clip) -> None:
+        clip.updated_at = utc_now()
+
+
+class JobRepository:
+    def __init__(self, session: Session) -> None:
+        self.session = session
+
+    def create(
+        self,
+        *,
+        project_id: int,
+        job_type: str,
+        status: str = "draft",
+        stage: str | None = None,
+        progress: float = 0.0,
+        error_message: str | None = None,
+    ) -> Job:
+        job = Job(
+            project_id=project_id,
+            job_type=job_type,
+            status=status,
+            stage=stage,
+            progress=progress,
+            error_message=error_message,
+        )
+        self.session.add(job)
+        self.session.flush()
+        return job
+
+    def latest_failed_error(self, project_id: int) -> str | None:
+        job = self.session.scalars(
+            select(Job)
+            .where(Job.project_id == project_id, Job.status == "failed", Job.error_message.is_not(None))
+            .order_by(Job.updated_at.desc(), Job.id.desc())
+            .limit(1)
+        ).first()
+        return job.error_message if job is not None else None
+
+
+class ClipEvaluationRepository:
+    def __init__(self, session: Session) -> None:
+        self.session = session
+
+    def create(
+        self,
+        *,
+        project_id: int,
+        external_clip_id: str,
+        clip_id: int | None = None,
+        decision: str,
+        quality_score: float,
+        context_score: float,
+        hook_score: float,
+        payoff_score: float,
+        boundary_score: float,
+        privacy_risk: str,
+        recommended_action: str,
+        suggested_start: float | None,
+        suggested_end: float | None,
+        crop_advice: str,
+        needs_more_context: bool,
+        reasons_json: list[Any],
+        warnings_json: list[Any],
+        raw_result_json: dict[str, Any],
+    ) -> ClipEvaluation:
+        evaluation = ClipEvaluation(
+            project_id=project_id,
+            clip_id=clip_id,
+            external_clip_id=external_clip_id,
+            decision=decision,
+            quality_score=quality_score,
+            context_score=context_score,
+            hook_score=hook_score,
+            payoff_score=payoff_score,
+            boundary_score=boundary_score,
+            privacy_risk=privacy_risk,
+            recommended_action=recommended_action,
+            suggested_start=suggested_start,
+            suggested_end=suggested_end,
+            crop_advice=crop_advice,
+            needs_more_context=needs_more_context,
+            reasons_json=list(reasons_json or []),
+            warnings_json=list(warnings_json or []),
+            raw_result_json=dict(raw_result_json or {}),
+        )
+        self.session.add(evaluation)
+        self.session.flush()
+        return evaluation
+
+    def latest_for_clip(self, project_id: int, external_clip_id: str) -> ClipEvaluation | None:
+        return self.session.scalars(
+            select(ClipEvaluation)
+            .where(
+                ClipEvaluation.project_id == project_id,
+                ClipEvaluation.external_clip_id == external_clip_id,
+            )
+            .order_by(ClipEvaluation.created_at.desc(), ClipEvaluation.id.desc())
+            .limit(1)
+        ).first()
+
+
+class ArtifactRepository:
+    def __init__(self, session: Session) -> None:
+        self.session = session
+
+    def create(
+        self,
+        *,
+        project_id: int,
+        artifact_type: str,
+        path: str,
+        clip_id: int | None = None,
+        filename: str | None = None,
+        media_type: str | None = None,
+    ) -> Artifact:
+        artifact = Artifact(
+            project_id=project_id,
+            clip_id=clip_id,
+            artifact_type=artifact_type,
+            path=path,
+            filename=filename or Path(path).name,
+            media_type=media_type,
+        )
+        self.session.add(artifact)
+        self.session.flush()
+        return artifact
+
+    def list_for_project(self, project_id: int) -> list[Artifact]:
+        return list(self.session.scalars(select(Artifact).where(Artifact.project_id == project_id)).all())
+
+    def list_for_clip(self, clip_id: int) -> list[Artifact]:
+        return list(self.session.scalars(select(Artifact).where(Artifact.clip_id == clip_id)).all())

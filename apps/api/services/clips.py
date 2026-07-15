@@ -5,13 +5,7 @@ import math
 from pathlib import Path
 from typing import Any
 
-from .project_state import (
-    DEFAULT_PROJECT_ID,
-    PROJECT_ROOT,
-    append_render_job,
-    load_project_state,
-    save_project_state,
-)
+from .project_state import DEFAULT_PROJECT_ID, PROJECT_ROOT
 
 WINDOW_MARGIN_SECONDS = 20.0
 MIN_EDITED_DURATION_SECONDS = 10.0
@@ -243,16 +237,9 @@ def load_clips(
     project_root: Path = PROJECT_ROOT,
     project_id: str = DEFAULT_PROJECT_ID,
 ) -> list[dict[str, Any]]:
-    state = load_project_state(project_id, project_root)
-    state_clips = state.get("clips")
-    if isinstance(state_clips, list) and state_clips:
-        return [_normalize_project_clip(clip, index) for index, clip in enumerate(state_clips, start=1)]
+    from .clip_service import load_clips as load_persisted_clips
 
-    clips, source = _load_clips_from_candidate_files(project_root)
-    state["clips"] = clips
-    state.setdefault("artifacts", {})["candidate_source_path"] = source
-    save_project_state(state, project_id, project_root)
-    return clips
+    return load_persisted_clips(project_id=project_id, project_root=project_root)
 
 
 def find_clip(clips: list[dict[str, Any]], clip_id: str) -> dict[str, Any]:
@@ -299,17 +286,9 @@ def update_clip_bounds(
     project_root: Path = PROJECT_ROOT,
     project_id: str = DEFAULT_PROJECT_ID,
 ) -> dict[str, Any]:
-    clips = load_clips(project_root, project_id)
-    target = find_clip(clips, clip_id)
-    edited_start, edited_end, duration = validate_adjusted_bounds(target, start, end)
-    target["edited_start"] = edited_start
-    target["edited_end"] = edited_end
-    target["duration"] = duration
+    from .clip_service import update_bounds
 
-    state = load_project_state(project_id, project_root)
-    state["clips"] = clips
-    save_project_state(state, project_id, project_root)
-    return target
+    return update_bounds(clip_id, start, end, project_id=project_id, project_root=project_root)
 
 
 def set_clip_status(
@@ -319,18 +298,9 @@ def set_clip_status(
     project_root: Path = PROJECT_ROOT,
     project_id: str = DEFAULT_PROJECT_ID,
 ) -> dict[str, Any]:
-    normalized_status = str(status or "").strip().lower()
-    if normalized_status not in {"draft", "accepted", "rejected"}:
-        raise ClipValidationError("Clip status must be draft, accepted, or rejected.")
+    from .clip_service import set_status
 
-    clips = load_clips(project_root, project_id)
-    target = find_clip(clips, clip_id)
-    target["status"] = normalized_status
-
-    state = load_project_state(project_id, project_root)
-    state["clips"] = clips
-    save_project_state(state, project_id, project_root)
-    return target
+    return set_status(clip_id, status, project_id=project_id, project_root=project_root)
 
 
 def record_render_result(
@@ -340,24 +310,6 @@ def record_render_result(
     project_root: Path = PROJECT_ROOT,
     project_id: str = DEFAULT_PROJECT_ID,
 ) -> dict[str, Any]:
-    clips = load_clips(project_root, project_id)
-    target = find_clip(clips, clip_id)
-    target["render_status"] = str(render_result.get("status") or "completed")
-    target["raw_outputs"] = list(render_result.get("raw_outputs") or [])
-    target["subtitled_outputs"] = list(render_result.get("subtitled_outputs") or [])
-    target["last_render_output_dir"] = render_result.get("output_dir", "")
-    target["last_render_warnings"] = list(render_result.get("warnings") or [])
+    from .clip_service import record_render_result as record_persisted_render_result
 
-    state = load_project_state(project_id, project_root)
-    state["clips"] = clips
-    append_render_job(
-        state,
-        clip_id=clip_id,
-        status=target["render_status"],
-        output_dir=str(render_result.get("output_dir") or ""),
-        raw_outputs=target["raw_outputs"],
-        subtitled_outputs=target["subtitled_outputs"],
-        warnings=target["last_render_warnings"],
-    )
-    save_project_state(state, project_id, project_root)
-    return target
+    return record_persisted_render_result(clip_id, render_result, project_id=project_id, project_root=project_root)
