@@ -1,15 +1,42 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy import delete
 from sqlalchemy.orm import Session
 
-from ..db.models import Project
+from ..db.models import Artifact, Clip, ClipEvaluation, Job, Project
 from ..db.repositories import ArtifactRepository, ClipRepository, ProjectRepository
-from .clips import ClipValidationError, _load_clips_from_candidate_files, _normalize_project_clip
+from .clips import (
+    ClipValidationError,
+    _load_clips_from_candidate_files,
+    _normalize_project_clip,
+    _normalize_window,
+    _read_json,
+    _relative_source,
+    extract_windows,
+)
 from .project_state import DEFAULT_PROJECT_ID, PROJECT_ROOT, load_project_state, project_state_path
+
+
+REAL_CANDIDATE_PATHS = (
+    Path("top_windows.json"),
+    Path("metadata") / "top_windows.json",
+    Path("metadata") / "cutting_logic.json",
+)
+DEMO_CANDIDATE_PATH = Path("examples") / "top_windows.example.json"
+IMPORT_RESET_COMMAND = "python -m apps.api.tools.import_local_project --reset"
+
+
+@dataclass(frozen=True)
+class LocalImportSource:
+    source_type: str
+    source_path: str
+    clip_count: int
+    is_demo: bool = False
 
 
 def _parse_datetime(value: Any) -> datetime | None:
@@ -134,6 +161,100 @@ def import_project_state(
     return project
 
 
+def _project_state_clip_count(*, project_root: Path = PROJECT_ROOT, project_id: str = DEFAULT_PROJECT_ID) -> int:
+    path = project_state_path(project_id, project_root)
+    if not path.exists():
+        return 0
+    state = load_project_state(project_id, project_root)
+    state_clips = state.get("clips") if isinstance(state.get("clips"), list) else []
+    return len([clip for clip in state_clips if isinstance(clip, dict)])
+
+
+def _load_clips_from_candidate_path(project_root: Path, path: Path) -> tuple[list[dict[str, Any]], str]:
+    payload = _read_json(path)
+    windows = extract_windows(payload)
+    source = _relative_source(path, project_root)
+    clips = [_normalize_window(window, index, source) for index, window in enumerate(windows, start=1)]
+    clips = [clip for clip in clips if clip["duration"] > 0]
+    if not clips:
+        raise ClipValidationError(f"{source}: no valid clips")
+    return clips, source
+
+
+def _candidate_source_for_path(project_root: Path, relative_path: Path, *, is_demo: bool) -> LocalImportSource | None:
+    path = project_root / relative_path
+    if not path.exists():
+        return None
+    clips, source = _load_clips_from_candidate_path(project_root, path)
+    return LocalImportSource(
+        source_type="candidate_file",
+        source_path=source,
+        clip_count=len(clips),
+        is_demo=is_demo,
+    )
+
+
+def find_local_import_source(
+    *,
+    project_root: Path = PROJECT_ROOT,
+    project_id: str = DEFAULT_PROJECT_ID,
+    allow_demo: bool = False,
+) -> LocalImportSource | None:
+    state_clip_count = _project_state_clip_count(project_root=project_root, project_id=project_id)
+    if state_clip_count > 0:
+        return LocalImportSource(
+            source_type="project_state",
+            source_path=_relative_source(project_state_path(project_id, project_root), project_root),
+            clip_count=state_clip_count,
+            is_demo=False,
+        )
+
+    real_file_exists = False
+    for relative_path in REAL_CANDIDATE_PATHS:
+        path = project_root / relative_path
+        if not path.exists():
+            continue
+        real_file_exists = True
+        try:
+            return _candidate_source_for_path(project_root, relative_path, is_demo=False)
+        except ClipValidationError:
+            continue
+
+    if allow_demo or not real_file_exists:
+        try:
+            return _candidate_source_for_path(project_root, DEMO_CANDIDATE_PATH, is_demo=True)
+        except ClipValidationError:
+            return None
+    return None
+
+
+def import_candidate_file(session: Session, *, project_root: Path, source_path: str) -> Project | None:
+    path = project_root / source_path
+    try:
+        clips, source = _load_clips_from_candidate_path(project_root, path)
+    except ClipValidationError:
+        return None
+
+    project = ProjectRepository(session).create(
+        source_url="",
+        title="Local podcast project",
+        status="ready" if clips else "draft",
+        candidate_source_path=source,
+    )
+    ArtifactRepository(session).create(
+        project_id=project.id,
+        artifact_type="candidate_windows",
+        path=source,
+        filename=Path(source).name,
+        media_type="application/json",
+    )
+
+    clip_repo = ClipRepository(session)
+    for clip_payload in clips:
+        clip_repo.create_from_dict(project.id, clip_payload)
+    return project
+
+
 def import_candidate_windows(session: Session, *, project_root: Path = PROJECT_ROOT) -> Project | None:
     try:
         clips, source = _load_clips_from_candidate_files(project_root)
@@ -161,6 +282,52 @@ def import_candidate_windows(session: Session, *, project_root: Path = PROJECT_R
     return project
 
 
+def clear_sqlite_project_rows(session: Session) -> None:
+    for model in (ClipEvaluation, Artifact, Job, Clip, Project):
+        session.execute(delete(model))
+
+
+def import_selected_local_source(
+    session: Session,
+    *,
+    project_root: Path = PROJECT_ROOT,
+    project_id: str = DEFAULT_PROJECT_ID,
+    allow_demo: bool = False,
+) -> Project | None:
+    source = find_local_import_source(project_root=project_root, project_id=project_id, allow_demo=allow_demo)
+    if source is None:
+        return None
+    if source.source_type == "project_state":
+        return import_project_state(session, project_root=project_root, project_id=project_id)
+    return import_candidate_file(session, project_root=project_root, source_path=source.source_path)
+
+
+def _looks_like_demo_clip(clip: Clip) -> bool:
+    return (
+        clip.external_id == "clip_001"
+        and round(float(clip.ai_start), 2) == 100.0
+        and round(float(clip.ai_end), 2) == 140.0
+        and "clear podcast answer" in str(clip.summary or "").lower()
+    )
+
+
+def stale_demo_warning(session: Session, *, project_root: Path = PROJECT_ROOT) -> str | None:
+    project_repo = ProjectRepository(session)
+    project = project_repo.get_default()
+    if project is None:
+        return None
+    clips = ClipRepository(session).list_for_project(project.id)
+    if len(clips) != 1 or not _looks_like_demo_clip(clips[0]):
+        return None
+    source = find_local_import_source(project_root=project_root, allow_demo=False)
+    if source is None or source.is_demo:
+        return None
+    return (
+        "SQLite contains demo data while real candidate files exist. "
+        f"Run: {IMPORT_RESET_COMMAND}"
+    )
+
+
 def bootstrap_legacy_state_if_needed(
     session: Session,
     *,
@@ -171,7 +338,4 @@ def bootstrap_legacy_state_if_needed(
     if project_repo.count() > 0:
         return project_repo.get_default()
 
-    imported = import_project_state(session, project_root=project_root, project_id=project_id)
-    if imported is not None:
-        return imported
-    return import_candidate_windows(session, project_root=project_root)
+    return import_selected_local_source(session, project_root=project_root, project_id=project_id)

@@ -81,6 +81,16 @@ SQLite stores projects, clips, jobs, clip evaluations, and generated artifact me
 
 `data/projects/local/project_state.json` is now a legacy compatibility import format only. If the database is empty, the editor can import that file once. After SQLite contains project data, SQLite wins and the JSON file is not rewritten by the editor.
 
+## Refresh Local SQLite After Running Pipeline
+
+If the pipeline generated new `project_state.json` or `top_windows.json` files but the editor still shows stale demo clips, refresh the local SQLite database:
+
+```powershell
+python -m apps.api.tools.import_local_project --reset
+```
+
+This command only replaces SQLite project/clip/artifact/evaluation rows. It does not delete local media, transcripts, cuts, metadata, or `data/projects/local/project_state.json`.
+
 ## Run The Editor
 
 ```powershell

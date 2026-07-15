@@ -39,9 +39,12 @@ def project_to_dict(project: Project, *, include_counts: bool = False, project_r
 def initialize_application_state(*, project_root: Path = PROJECT_ROOT) -> None:
     init_database()
     with session_scope() as session:
-        from .legacy_import_service import bootstrap_legacy_state_if_needed
+        from .legacy_import_service import bootstrap_legacy_state_if_needed, stale_demo_warning
 
         bootstrap_legacy_state_if_needed(session, project_root=project_root)
+        warning = stale_demo_warning(session, project_root=project_root)
+        if warning:
+            print(warning)
 
 
 def create_project(*, source_url: str, title: str | None = None) -> dict[str, Any]:
