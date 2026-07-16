@@ -7,12 +7,17 @@ from pathlib import Path
 from typing import Any
 
 from .context import DEFAULT_REVIEW_CONTEXT_SECONDS
-from .providers import DEFAULT_GEMINI_MODEL, LOCAL_STUB_MODEL
+from .providers import (
+    DEFAULT_GEMINI_MODEL,
+    DEFAULT_GEMINI_REQUEST_TIMEOUT_SECONDS,
+    LOCAL_STUB_MODEL,
+)
 from .schemas import ReviewMode
 
 
 DEFAULT_REVIEW_MODE: ReviewMode = "local_stub"
 DEFAULT_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_GEMINI_BATCH_TIMEOUT_SECONDS = 1800
 
 
 class ReviewConfigError(RuntimeError):
@@ -24,10 +29,14 @@ class ReviewConfig:
     mode: ReviewMode
     gemini_model: str
     context_seconds: float
+    request_timeout_seconds: int = DEFAULT_GEMINI_REQUEST_TIMEOUT_SECONDS
+    batch_timeout_seconds: int = DEFAULT_GEMINI_BATCH_TIMEOUT_SECONDS
     api_key: str | None = field(default=None, repr=False)
     mode_source: str = "default"
     model_source: str = "default"
     context_seconds_source: str = "default"
+    request_timeout_source: str = "default"
+    batch_timeout_source: str = "default"
     api_key_source: str = "unset"
     env_path: Path | None = None
     warnings: tuple[str, ...] = ()
@@ -57,9 +66,13 @@ class ReviewConfig:
             "model": self.model,
             "gemini_model": self.gemini_model,
             "context_seconds": self.context_seconds,
+            "request_timeout_seconds": self.request_timeout_seconds,
+            "batch_timeout_seconds": self.batch_timeout_seconds,
             "mode_source": self.mode_source,
             "model_source": self.model_source,
             "context_seconds_source": self.context_seconds_source,
+            "request_timeout_source": self.request_timeout_source,
+            "batch_timeout_source": self.batch_timeout_source,
             "gemini_api_key_configured": self.api_key_configured,
             "gemini_api_key_source": self.api_key_source,
             "env_path": str(self.env_path) if self.env_path else None,
@@ -101,6 +114,31 @@ def load_review_config(
     )
     context_seconds = _parse_context_seconds(raw_context)
 
+    raw_request_timeout, request_timeout_source = _resolve_value(
+        "GEMINI_REQUEST_TIMEOUT_SECONDS",
+        dotenv_values,
+        default_value=str(DEFAULT_GEMINI_REQUEST_TIMEOUT_SECONDS),
+    )
+    request_timeout_seconds = _parse_positive_integer(
+        raw_request_timeout,
+        name="GEMINI_REQUEST_TIMEOUT_SECONDS",
+    )
+
+    raw_batch_timeout, batch_timeout_source = _resolve_value(
+        "GEMINI_BATCH_TIMEOUT_SECONDS",
+        dotenv_values,
+        default_value=str(DEFAULT_GEMINI_BATCH_TIMEOUT_SECONDS),
+    )
+    batch_timeout_seconds = _parse_positive_integer(
+        raw_batch_timeout,
+        name="GEMINI_BATCH_TIMEOUT_SECONDS",
+    )
+    if batch_timeout_seconds < request_timeout_seconds:
+        raise ReviewConfigError(
+            "GEMINI_BATCH_TIMEOUT_SECONDS must be greater than or equal to "
+            "GEMINI_REQUEST_TIMEOUT_SECONDS."
+        )
+
     api_key, api_key_source = _resolve_value(
         "GEMINI_API_KEY",
         dotenv_values,
@@ -112,10 +150,14 @@ def load_review_config(
         mode=normalized_mode,
         gemini_model=gemini_model,
         context_seconds=context_seconds,
+        request_timeout_seconds=request_timeout_seconds,
+        batch_timeout_seconds=batch_timeout_seconds,
         api_key=stripped_key,
         mode_source=mode_source,
         model_source=model_source,
         context_seconds_source=context_source,
+        request_timeout_source=request_timeout_source,
+        batch_timeout_source=batch_timeout_source,
         api_key_source=api_key_source if stripped_key else "unset",
         env_path=env_path if env_path.exists() else None,
         warnings=tuple(warnings),
@@ -184,9 +226,29 @@ def _parse_context_seconds(value: str | None) -> float:
         ) from exc
 
 
+def _parse_positive_integer(value: str | None, *, name: str) -> int:
+    raw_value = str(value or "").strip()
+    try:
+        parsed = int(raw_value)
+    except ValueError as exc:
+        raise ReviewConfigError(
+            f"{name} must be a positive integer, got {raw_value!r}."
+        ) from exc
+    if parsed <= 0:
+        raise ReviewConfigError(f"{name} must be a positive integer greater than zero.")
+    return parsed
+
+
 def _override_warnings(dotenv_values: Mapping[str, str | None]) -> list[str]:
     warnings: list[str] = []
-    for name in ("CLIP_REVIEW_MODE", "GEMINI_MODEL", "CLIP_REVIEW_CONTEXT_SECONDS", "GEMINI_API_KEY"):
+    for name in (
+        "CLIP_REVIEW_MODE",
+        "GEMINI_MODEL",
+        "CLIP_REVIEW_CONTEXT_SECONDS",
+        "GEMINI_REQUEST_TIMEOUT_SECONDS",
+        "GEMINI_BATCH_TIMEOUT_SECONDS",
+        "GEMINI_API_KEY",
+    ):
         env_value = os.environ.get(name)
         dotenv_value = dotenv_values.get(name)
         if not str(env_value or "").strip() or not str(dotenv_value or "").strip():

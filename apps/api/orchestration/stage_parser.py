@@ -1,38 +1,20 @@
 from __future__ import annotations
 
-STAGE_PROGRESS = {
-    "waiting": 0.0,
-    "downloading": 10.0,
-    "transcribing": 30.0,
-    "validating_transcript": 45.0,
-    "generating_candidates": 60.0,
-    "importing_candidates": 75.0,
-    "reviewing_with_ai": 85.0,
-    "ready": 100.0,
-    "failed": 100.0,
-    "cancelled": 100.0,
-}
-
-STAGE_MESSAGES = {
-    "waiting": "Waiting to start",
-    "downloading": "Downloading source media",
-    "transcribing": "Transcribing podcast",
-    "validating_transcript": "Validating transcript",
-    "generating_candidates": "Generating candidate clips",
-    "importing_candidates": "Importing candidate clips",
-    "reviewing_with_ai": "Reviewing boundaries with AI",
-    "ready": "Ready for review",
-    "failed": "Failed",
-    "cancelled": "Cancelled",
-}
+from apps.pipeline.events import (
+    STAGE_MESSAGES,
+    STAGE_PROGRESS,
+    PipelineEvent,
+    message_for_stage,
+    parse_pipeline_event,
+)
 
 
 def progress_for_stage(stage: str) -> float:
-    return STAGE_PROGRESS.get(stage, 0.0)
+    return float(STAGE_PROGRESS.get(stage, 0.0))
 
 
-def message_for_stage(stage: str) -> str:
-    return STAGE_MESSAGES.get(stage, stage.replace("_", " ").title())
+def parse_structured_pipeline_event(line: str) -> PipelineEvent | None:
+    return parse_pipeline_event(line)
 
 
 def parse_manager_stage(line: str) -> str | None:

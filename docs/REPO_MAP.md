@@ -4,7 +4,7 @@ This project is a local-first podcast clip cutter. The media pipeline proposes c
 
 ## `manager.py`
 
-`manager.py` is the local CLI orchestrator for the deterministic preparation pipeline. It creates runtime folders, downloads or reuses source media, runs local transcription, writes a podcast content profile, generates candidate windows, cuts raw vertical clips, and burns subtitles.
+`manager.py` is a thin compatibility CLI for the deterministic preparation pipeline. It keeps the existing arguments and root-level behavior, creates a `PipelineContext`, invokes `PipelineRunner`, prints a human-readable summary, and returns the runner exit code. Stage business logic lives under `apps/pipeline`.
 
 It also supports `--workspace-dir` for isolated runtime output and `--analysis-only` for stopping after candidate generation. Without those flags, the original root-level local workflow remains unchanged.
 
@@ -40,6 +40,17 @@ Important root modules:
 - `subtitler_checker.py` and `semantic_clip_director.py`: optional Gemini-assisted subtitle/context checks used by the legacy pipeline modes.
 
 Transcription device selection is controlled by `TRANSCRIPTION_DEVICE`. The default `auto` mode prefers CUDA, then falls back once to CPU int8 for missing CUDA runtime libraries. Explicit `cpu` never initializes CUDA; explicit `cuda` does not fall back.
+
+## `apps/pipeline`
+
+- `context.py`: explicit project id, source URL, repository root, isolated workspace, review setting, and pipeline options.
+- `config.py`: normalized safe options; it contains no API keys.
+- `events.py`: versioned structured lifecycle markers and coarse product progress.
+- `results.py` and `exceptions.py`: typed stage/run results and controlled failure categories.
+- `runner.py`: ordered stage execution with dependency stop-on-failure behavior.
+- `entrypoint.py`: dedicated project worker invoked with `python -m apps.pipeline.entrypoint`.
+- `persistence.py`: project-state updates for direct entrypoint runs; job state remains orchestrator-owned.
+- `stages/`: download, transcribe, transcript validation, candidate generation/import, direct review, readiness, and legacy rendering wrappers.
 
 ## `apps/api`
 
@@ -101,13 +112,13 @@ The app runs with Vite and proxies local backend calls to `http://127.0.0.1:8010
 
 ## `orchestration/airflow`
 
-Airflow is optional and isolated from the main requirements.
+This is an inactive future-integration placeholder. Airflow is not installed or enabled by v0.6.
 
-- `dags/podcast_pipeline_dag.py`: DAG wiring.
-- `pipeline_tasks.py`: Python task helpers for download, transcription, candidate generation, SQLite import, and Gemini batch review.
-- `README.md`: Airflow-specific setup and run notes.
+- `dags/podcast_pipeline_dag.py`: inactive DAG prototype; it is not loaded by the product runtime.
+- `pipeline_tasks.py`: thin importable adapters over `apps.pipeline` services; no copied stage algorithms.
+- `README.md`: placeholder status and the future integration boundary.
 
-Install Airflow only when needed with `requirements-airflow.txt`.
+The active product path does not use this directory. LangGraph is also not implemented.
 
 ## Runtime Directories
 

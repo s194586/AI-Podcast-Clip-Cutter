@@ -397,8 +397,10 @@ def _update_clip_from_payload(clip: Clip, payload: dict[str, Any]) -> None:
     clip.clip_index = int(payload["index"])
     clip.ai_start = float(payload["ai_start"])
     clip.ai_end = float(payload["ai_end"])
-    clip.reviewed_start = float(payload["reviewed_start"]) if payload.get("reviewed_start") is not None else None
-    clip.reviewed_end = float(payload["reviewed_end"]) if payload.get("reviewed_end") is not None else None
+    if payload.get("reviewed_start") is not None:
+        clip.reviewed_start = float(payload["reviewed_start"])
+    if payload.get("reviewed_end") is not None:
+        clip.reviewed_end = float(payload["reviewed_end"])
     if str(clip.boundary_source or "heuristic") == "heuristic":
         clip.edited_start = float(payload["edited_start"])
         clip.edited_end = float(payload["edited_end"])

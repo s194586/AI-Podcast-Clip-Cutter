@@ -8,7 +8,9 @@ The main media pipeline is deterministic. It is not an agent. The agentic compon
 
 ## Pipeline Modules
 
-`manager.py` orchestrates the CLI workflow. It prepares folders, finds or downloads media, runs transcription, builds a podcast profile, scores candidate moments, cuts clips, and applies subtitles.
+`apps/pipeline` owns the deterministic workflow. `PipelineContext` carries explicit project/workspace data and safe options, stage services wrap existing algorithms, and `PipelineRunner` executes them while emitting structured lifecycle events.
+
+`manager.py` is now a thin backwards-compatible CLI. It parses the historical flags, creates a legacy `PipelineContext`, invokes `PipelineRunner`, prints readable output, and returns an exit code. Root-level defaults, `--workspace-dir`, skip flags, transcription options, and `--analysis-only` remain compatible.
 
 `transcribe.py` creates transcript JSON from source audio using Faster-Whisper. The transcript is the main input for candidate scoring, boundary checks, and subtitles.
 
@@ -29,31 +31,14 @@ FastAPI now exposes a local Project Flow through `apps/api/orchestration`.
 ```text
 create project
 -> start LocalPipelineOrchestrator
--> run manager.py in a project workspace
--> import candidates into SQLite
--> optional Gemini batch review
+-> run python -m apps.pipeline.entrypoint in a project workspace
+-> PipelineRunner executes reusable stages
+-> import candidates into the same SQLite project
+-> optionally call ReviewAgentService directly
 -> ready for editor review/render
 ```
 
-`LocalPipelineOrchestrator` uses `sys.executable`, `subprocess.Popen(..., shell=False)`, persisted SQLite jobs, and per-project logs. It is the normal app-driven path for local users.
-
-The deterministic workflow can be orchestrated by Apache Airflow through `orchestration/airflow/dags/podcast_pipeline_dag.py`.
-
-The DAG prepares reviewed candidate clips:
-
-```text
-validate config
--> download media
--> transcribe audio
--> generate candidates
--> import candidates to SQLite
--> review candidates with Gemini
--> mark project ready
-```
-
-Rendering remains human-triggered in the editor. The Airflow DAG does not render every candidate automatically.
-
-Airflow is optional. It is installed from `requirements-airflow.txt` and is not required for the FastAPI app or unit tests.
+`LocalPipelineOrchestrator` uses `sys.executable`, `subprocess.Popen(..., shell=False)`, a safe argument list, persisted SQLite jobs, structured event markers, and per-project logs. The subprocess boundary keeps heavy transcription/FFmpeg work and cancellation isolated from FastAPI. Rendering remains human-triggered in the editor.
 
 The shared abstraction is:
 
@@ -61,8 +46,13 @@ The shared abstraction is:
 flowchart TB
   A[FastAPI] --> B[PipelineOrchestrator]
   B --> C[LocalPipelineOrchestrator]
-  B -. future .-> D[AirflowPipelineOrchestrator]
+  C --> D[apps.pipeline.entrypoint]
+  D --> E[PipelineRunner]
+  E --> F[Reusable stages]
+  G[Future Airflow DAG] -. imports .-> F
 ```
+
+Apache Airflow and LangGraph are not implemented in v0.6. The existing Airflow directory remains an inactive prototype placeholder; its importable Python adapters delegate to the reusable stage services.
 
 ## Clip Review Agent
 
@@ -81,6 +71,8 @@ flowchart LR
 ```
 
 Default mode is `local_stub`, which requires no API keys and is intended for offline development and tests. `CLIP_REVIEW_MODE=gemini` uses the official `google-genai` SDK. In Gemini mode, `GEMINI_API_KEY` is required and missing configuration fails clearly without falling back.
+
+Gemini calls use a configured per-attempt HTTP timeout (`GEMINI_REQUEST_TIMEOUT_SECONDS`, default 300 seconds), one SDK attempt, and a killable child-process deadline. The project batch has a separate deadline (`GEMINI_BATCH_TIMEOUT_SECONDS`, default 1800 seconds). Review emits safe per-clip events and coarse progress from 85 through 95 percent. HTTP 499 is treated as a controlled upstream-cancelled request for that clip, not success and not an infinite retry.
 
 Gemini receives only nearby transcript segments, candidate timestamps, and numbered transcript boundary options. It does not receive local scores, heatmaps, filesystem paths, database objects, full transcripts, video frames, or API keys. It does not calculate quality/privacy scores and does not return crop advice.
 
@@ -188,7 +180,7 @@ The project demonstrates:
 - testable FastAPI endpoints,
 - explicit local_stub and Gemini modes,
 - human-in-the-loop review,
-- Airflow DAG orchestration.
+- structured lifecycle events and reusable pipeline stages.
 
 It does not claim that the whole application is autonomous or multi-agent. The editor remains the final decision point before rendering.
 

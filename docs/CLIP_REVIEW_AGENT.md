@@ -155,7 +155,7 @@ There is no standard **Apply suggestion** button. Safe Gemini decisions are alre
 
 ## Airflow
 
-Airflow remains optional. The DAG calls the Python batch review service directly:
+Airflow is not installed, enabled, or implemented as a product orchestrator in v0.6. The inactive DAG prototype illustrates the future stage order and delegates through thin adapters over `apps.pipeline` when imported in an Airflow environment:
 
 ```mermaid
 flowchart LR
@@ -167,4 +167,4 @@ flowchart LR
   F --> G[ready]
 ```
 
-The review task does not depend on a manually running FastAPI server and does not render videos. Rendering remains deterministic and happens later from `edited_start`/`edited_end`.
+The active product path uses `LocalPipelineOrchestrator`, not this prototype. Review does not render videos; rendering remains deterministic and happens later from `edited_start`/`edited_end`.

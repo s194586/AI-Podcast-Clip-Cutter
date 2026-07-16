@@ -3,11 +3,13 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from .schemas import BoundaryOption, ClipTranscriptContext, TranscriptSegment
+from .schemas import BoundaryOption, BoundaryOptionPair, ClipTranscriptContext, TranscriptSegment
 from .tools import load_transcript_segments
 
 
 DEFAULT_REVIEW_CONTEXT_SECONDS = 20.0
+DEFAULT_MIN_REVIEW_DURATION_SECONDS = 10.0
+DEFAULT_MAX_REVIEW_DURATION_SECONDS = 90.0
 
 
 def build_clip_transcript_context(
@@ -17,6 +19,12 @@ def build_clip_transcript_context(
     context_seconds: float = DEFAULT_REVIEW_CONTEXT_SECONDS,
     *,
     clip_id: str | None = None,
+    allowed_start_min: float | None = None,
+    allowed_start_max: float | None = None,
+    allowed_end_min: float | None = None,
+    allowed_end_max: float | None = None,
+    min_duration_seconds: float = DEFAULT_MIN_REVIEW_DURATION_SECONDS,
+    max_duration_seconds: float = DEFAULT_MAX_REVIEW_DURATION_SECONDS,
 ) -> dict[str, Any]:
     """Build the compact transcript-only payload used by the boundary reviewer."""
 
@@ -27,6 +35,12 @@ def build_clip_transcript_context(
         clip_end,
         context_seconds=context_seconds,
         clip_id=clip_id,
+        allowed_start_min=allowed_start_min,
+        allowed_start_max=allowed_start_max,
+        allowed_end_min=allowed_end_min,
+        allowed_end_max=allowed_end_max,
+        min_duration_seconds=min_duration_seconds,
+        max_duration_seconds=max_duration_seconds,
     )
 
 
@@ -37,6 +51,12 @@ def build_clip_transcript_context_from_segments(
     *,
     context_seconds: float = DEFAULT_REVIEW_CONTEXT_SECONDS,
     clip_id: str | None = None,
+    allowed_start_min: float | None = None,
+    allowed_start_max: float | None = None,
+    allowed_end_min: float | None = None,
+    allowed_end_max: float | None = None,
+    min_duration_seconds: float = DEFAULT_MIN_REVIEW_DURATION_SECONDS,
+    max_duration_seconds: float = DEFAULT_MAX_REVIEW_DURATION_SECONDS,
 ) -> dict[str, Any]:
     start = float(clip_start)
     end = float(clip_end)
@@ -63,12 +83,57 @@ def build_clip_transcript_context_from_segments(
         and float(segment["start"]) >= end
     ]
 
-    start_options = _boundary_options(before + candidate)
-    end_options = _boundary_options(candidate + after)
+    start_min = float(allowed_start_min) if allowed_start_min is not None else context_start
+    start_max = float(allowed_start_max) if allowed_start_max is not None else start + padding
+    end_min = (
+        float(allowed_end_min)
+        if allowed_end_min is not None
+        else max(start + float(min_duration_seconds), end - padding)
+    )
+    end_max = float(allowed_end_max) if allowed_end_max is not None else context_end
+
+    start_options = _filter_boundary_options(
+        _boundary_options(before + candidate),
+        field="start",
+        minimum=start_min,
+        maximum=start_max,
+    )
+    end_options = _filter_boundary_options(
+        _boundary_options(candidate + after),
+        field="end",
+        minimum=end_min,
+        maximum=end_max,
+    )
+    allowed_pairs = _allowed_boundary_pairs(
+        start_options,
+        end_options,
+        min_duration_seconds=min_duration_seconds,
+        max_duration_seconds=max_duration_seconds,
+    )
+    start_options, end_options = _remove_unpaired_options(
+        start_options,
+        end_options,
+        allowed_pairs,
+    )
     earliest_allowed_start = start_options[0]["start"] if start_options else round(start, 2)
     latest_allowed_end = end_options[-1]["end"] if end_options else round(end, 2)
-    current_aligned_start_option = _nearest_option(start_options, start, boundary="start")
-    current_aligned_end_option = _nearest_option(end_options, end, boundary="end")
+    current_pair = _nearest_pair(
+        allowed_pairs,
+        start_options,
+        end_options,
+        target_start=start,
+        target_end=end,
+    )
+    current_aligned_start_option = _option_for_pair(
+        start_options,
+        current_pair,
+        pair_field="start_option_index",
+    ) or _nearest_option(start_options, start, boundary="start")
+    current_aligned_end_option = _option_for_pair(
+        end_options,
+        current_pair,
+        pair_field="end_option_index",
+    ) or _nearest_option(end_options, end, boundary="end")
     current_aligned_start_option_index = (
         int(current_aligned_start_option["option_index"]) if current_aligned_start_option else None
     )
@@ -96,6 +161,7 @@ def build_clip_transcript_context_from_segments(
         current_aligned_end_segment_id=current_aligned_end_segment_id,
         start_boundary_options=[BoundaryOption(**option) for option in start_options],
         end_boundary_options=[BoundaryOption(**option) for option in end_options],
+        allowed_boundary_pairs=[BoundaryOptionPair(**pair) for pair in allowed_pairs],
     )
     return _dump_model(context)
 
@@ -168,6 +234,95 @@ def _boundary_options(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
             }
         )
     return options
+
+
+def _filter_boundary_options(
+    options: list[dict[str, Any]],
+    *,
+    field: str,
+    minimum: float,
+    maximum: float,
+) -> list[dict[str, Any]]:
+    return [
+        option
+        for option in options
+        if float(minimum) <= float(option[field]) <= float(maximum)
+    ]
+
+
+def _allowed_boundary_pairs(
+    start_options: list[dict[str, Any]],
+    end_options: list[dict[str, Any]],
+    *,
+    min_duration_seconds: float,
+    max_duration_seconds: float,
+) -> list[dict[str, int]]:
+    minimum = float(min_duration_seconds)
+    maximum = float(max_duration_seconds)
+    pairs: list[dict[str, int]] = []
+    for start_option in start_options:
+        for end_option in end_options:
+            duration = float(end_option["end"]) - float(start_option["start"])
+            if duration <= 0 or duration < minimum or duration > maximum:
+                continue
+            pairs.append(
+                {
+                    "start_option_index": int(start_option["option_index"]),
+                    "end_option_index": int(end_option["option_index"]),
+                }
+            )
+    return pairs
+
+
+def _remove_unpaired_options(
+    start_options: list[dict[str, Any]],
+    end_options: list[dict[str, Any]],
+    allowed_pairs: list[dict[str, int]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    paired_starts = {int(pair["start_option_index"]) for pair in allowed_pairs}
+    paired_ends = {int(pair["end_option_index"]) for pair in allowed_pairs}
+    return (
+        [option for option in start_options if int(option["option_index"]) in paired_starts],
+        [option for option in end_options if int(option["option_index"]) in paired_ends],
+    )
+
+
+def _nearest_pair(
+    allowed_pairs: list[dict[str, int]],
+    start_options: list[dict[str, Any]],
+    end_options: list[dict[str, Any]],
+    *,
+    target_start: float,
+    target_end: float,
+) -> dict[str, int] | None:
+    if not allowed_pairs:
+        return None
+    starts = {int(option["option_index"]): option for option in start_options}
+    ends = {int(option["option_index"]): option for option in end_options}
+    return min(
+        allowed_pairs,
+        key=lambda pair: (
+            abs(float(starts[int(pair["start_option_index"])]["start"]) - float(target_start))
+            + abs(float(ends[int(pair["end_option_index"])]["end"]) - float(target_end)),
+            abs(float(starts[int(pair["start_option_index"])]["start"]) - float(target_start)),
+            abs(float(ends[int(pair["end_option_index"])]["end"]) - float(target_end)),
+        ),
+    )
+
+
+def _option_for_pair(
+    options: list[dict[str, Any]],
+    pair: dict[str, int] | None,
+    *,
+    pair_field: str,
+) -> dict[str, Any] | None:
+    if pair is None:
+        return None
+    option_index = int(pair[pair_field])
+    return next(
+        (option for option in options if int(option["option_index"]) == option_index),
+        None,
+    )
 
 
 def _nearest_option(options: list[dict[str, Any]], target: float, *, boundary: str) -> dict[str, Any] | None:

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import inspect
+import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +24,7 @@ from .context import build_clip_transcript_context
 from .providers import (
     GeminiBoundaryReviewer,
     LocalStubBoundaryReviewer,
+    ReviewProviderCancelledError,
     ReviewProviderError,
     ReviewProviderOutputError,
 )
@@ -40,8 +44,22 @@ class ClipReviewNotFoundError(ClipReviewError):
     status_code = 404
 
 
+class ClipReviewCancelledError(ClipReviewError):
+    status_code = 409
+
+
+class ReviewBatchTimeoutError(ClipReviewError):
+    status_code = 504
+
+
 class BoundaryOptionSelectionError(ReviewProviderError):
     pass
+
+
+BOUNDARY_VALIDATION_FAILURE_MESSAGE = (
+    "Gemini returned boundaries outside the permitted clip range. "
+    "This clip requires manual review."
+)
 
 
 def normalize_review_mode(value: str | None = None) -> ReviewMode:
@@ -99,7 +117,11 @@ class ReviewAgentService:
         clip_id: str,
         project_id: int | None = None,
         apply_safe_suggestions: bool = True,
+        cancellation_check: Callable[[], bool] | None = None,
+        deadline: float | None = None,
     ) -> dict[str, Any]:
+        _raise_if_cancelled(cancellation_check)
+        _raise_if_deadline_expired(deadline)
         try:
             project, clip = self._load_project_and_clip(project_id=project_id, clip_id=clip_id)
         except LookupError as exc:
@@ -113,96 +135,57 @@ class ReviewAgentService:
             float(clip["ai_end"]),
             context_seconds=context_seconds,
             clip_id=str(clip["id"]),
+            allowed_start_min=float(clip["min_start"]),
+            allowed_start_max=float(clip["max_start"]),
+            allowed_end_min=float(clip["min_end"]),
+            allowed_end_max=float(clip["max_end"]),
+            min_duration_seconds=MIN_EDITED_DURATION_SECONDS,
+            max_duration_seconds=MAX_EDITED_DURATION_SECONDS,
         )
-        provider = self._create_provider()
+        provider = self._create_provider(
+            request_timeout_seconds=_remaining_request_timeout(
+                self.config.request_timeout_seconds,
+                deadline,
+            )
+        )
+
+        def call_provider(corrective_message: str | None = None) -> GeminiBoundaryDecision:
+            _raise_if_cancelled(cancellation_check)
+            timeout_seconds = _remaining_request_timeout(
+                self.config.request_timeout_seconds,
+                deadline,
+            )
+            try:
+                return _call_provider_review(
+                    provider,
+                    context,
+                    corrective_message=corrective_message,
+                    timeout_seconds=timeout_seconds,
+                    cancellation_check=cancellation_check,
+                )
+            except ReviewProviderCancelledError as exc:
+                raise ClipReviewCancelledError("Boundary review cancelled by user.") from exc
 
         debug_metadata = _debug_metadata()
         try:
-            decision = _call_provider_review(provider, context)
-            try:
-                result = self._result_from_decision(
-                    project_id=int(project["id"]),
-                    clip=clip,
-                    context=context,
-                    decision=decision,
-                    provider=provider.provider,
-                    model=provider.model,
-                    apply_safe_suggestions=apply_safe_suggestions,
-                    debug_metadata=debug_metadata,
-                )
-            except BoundaryOptionSelectionError as exc:
-                debug_metadata["retry_used"] = True
-                debug_metadata["provider_attempt_count"] = 2
-                debug_metadata["first_attempt_validation_error"] = str(exc)
-                retry_decision = _call_provider_review(
-                    provider,
-                    context,
-                    corrective_message=_boundary_retry_message(context, str(exc)),
-                )
-                try:
-                    result = self._result_from_decision(
-                        project_id=int(project["id"]),
-                        clip=clip,
-                        context=context,
-                        decision=retry_decision,
-                        provider=provider.provider,
-                        model=provider.model,
-                        apply_safe_suggestions=apply_safe_suggestions,
-                        debug_metadata=debug_metadata,
-                    )
-                except ReviewProviderError as retry_exc:
-                    debug_metadata["final_validation_error"] = str(retry_exc)
-                    result = self._failed_result(
-                        project_id=int(project["id"]),
-                        clip=clip,
-                        context=context,
-                        provider=provider.provider,
-                        model=provider.model,
-                        warning=str(retry_exc),
-                        apply_safe_suggestions=apply_safe_suggestions,
-                        debug_metadata=debug_metadata,
-                    )
-            except ReviewProviderOutputError as exc:
-                debug_metadata["retry_used"] = True
-                debug_metadata["provider_attempt_count"] = 2
-                debug_metadata["first_attempt_validation_error"] = str(exc)
-                try:
-                    retry_decision = _call_provider_review(
-                        provider,
-                        context,
-                        corrective_message=_boundary_retry_message(context, str(exc)),
-                    )
-                    result = self._result_from_decision(
-                        project_id=int(project["id"]),
-                        clip=clip,
-                        context=context,
-                        decision=retry_decision,
-                        provider=provider.provider,
-                        model=provider.model,
-                        apply_safe_suggestions=apply_safe_suggestions,
-                        debug_metadata=debug_metadata,
-                    )
-                except ReviewProviderError as retry_exc:
-                    debug_metadata["final_validation_error"] = str(retry_exc)
-                    result = self._failed_result(
-                        project_id=int(project["id"]),
-                        clip=clip,
-                        context=context,
-                        provider=provider.provider,
-                        model=provider.model,
-                        warning=str(retry_exc),
-                        apply_safe_suggestions=apply_safe_suggestions,
-                        debug_metadata=debug_metadata,
-                    )
-        except ReviewProviderOutputError as exc:
+            decision = call_provider()
+            result = self._result_from_decision(
+                project_id=int(project["id"]),
+                clip=clip,
+                context=context,
+                decision=decision,
+                provider=provider.provider,
+                model=provider.model,
+                apply_safe_suggestions=apply_safe_suggestions,
+                debug_metadata=debug_metadata,
+            )
+        except (ReviewProviderOutputError, BoundaryOptionSelectionError) as exc:
             debug_metadata["retry_used"] = True
             debug_metadata["provider_attempt_count"] = 2
             debug_metadata["first_attempt_validation_error"] = str(exc)
             try:
-                retry_decision = _call_provider_review(
-                    provider,
-                    context,
-                    corrective_message=_boundary_retry_message(context, str(exc)),
+                retry_decision = call_provider(
+                    _boundary_retry_message(context, exc),
                 )
                 result = self._result_from_decision(
                     project_id=int(project["id"]),
@@ -225,6 +208,7 @@ class ReviewAgentService:
                     warning=str(retry_exc),
                     apply_safe_suggestions=apply_safe_suggestions,
                     debug_metadata=debug_metadata,
+                    failure_category=_failure_category(retry_exc),
                 )
         except ReviewProviderError as exc:
             debug_metadata["final_validation_error"] = str(exc)
@@ -252,6 +236,8 @@ class ReviewAgentService:
                 debug_metadata=debug_metadata,
             )
 
+        _raise_if_cancelled(cancellation_check)
+        _raise_if_deadline_expired(deadline)
         saved = save_evaluation(result)
         return saved
 
@@ -260,6 +246,9 @@ class ReviewAgentService:
         *,
         project_id: int,
         apply_safe_suggestions: bool = True,
+        progress_callback: Callable[[str, dict[str, Any]], None] | None = None,
+        cancellation_check: Callable[[], bool] | None = None,
+        skip_completed: bool = False,
     ) -> dict[str, Any]:
         self._ensure_provider_configuration()
         try:
@@ -267,14 +256,57 @@ class ReviewAgentService:
         except ClipValidationError as exc:
             raise ClipReviewNotFoundError(str(exc)) from exc
 
-        results = [
-            self.review_clip(
-                project_id=project_id,
-                clip_id=str(clip["id"]),
-                apply_safe_suggestions=apply_safe_suggestions,
+        deadline = time.monotonic() + self.config.batch_timeout_seconds
+        results: list[dict[str, Any]] = []
+        total = len(clips)
+        for index, clip in enumerate(clips, start=1):
+            _raise_if_cancelled(cancellation_check)
+            _raise_if_deadline_expired(deadline)
+            clip_id = str(clip["id"])
+            _notify_progress(
+                progress_callback,
+                "review_clip_started",
+                clip_id=clip_id,
+                index=index,
+                total=total,
+                provider=self.provider_name,
             )
-            for clip in clips
-        ]
+            if skip_completed and _clip_review_is_complete(clip):
+                result = {
+                    "clip_id": clip_id,
+                    "provider": str(clip.get("latest_review_provider") or self.provider_name),
+                    "decision": str(clip.get("latest_review_decision") or "already_reviewed"),
+                    "retry_used": False,
+                    "failed": False,
+                    "skipped": True,
+                }
+            else:
+                result = self.review_clip(
+                    project_id=project_id,
+                    clip_id=clip_id,
+                    apply_safe_suggestions=apply_safe_suggestions,
+                    cancellation_check=cancellation_check,
+                    deadline=deadline,
+                )
+            results.append(result)
+            event_name = "review_clip_completed"
+            if bool(result.get("failed")):
+                event_name = "review_clip_failed"
+            elif str(result.get("decision") or "") == "manual_review":
+                event_name = "review_clip_manual"
+            _notify_progress(
+                progress_callback,
+                event_name,
+                clip_id=clip_id,
+                index=index,
+                total=total,
+                provider=str(result.get("provider") or self.provider_name),
+                decision=str(result.get("decision") or "unknown"),
+                retry_used=bool(result.get("retry_used")),
+            )
+            _raise_if_cancelled(cancellation_check)
+            if index < total:
+                _raise_if_deadline_expired(deadline)
         return self._batch_summary(project_id=project_id, results=results)
 
     def get_latest_review(self, *, clip_id: str, project_id: int | None = None) -> dict[str, Any]:
@@ -287,10 +319,18 @@ class ReviewAgentService:
             raise ClipReviewNotFoundError(f"No review evaluation exists for clip_id: {clip_id}")
         return latest
 
-    def _create_provider(self) -> Any:
+    def _create_provider(self, *, request_timeout_seconds: float | None = None) -> Any:
         self._ensure_provider_configuration()
         if self.mode == "gemini":
-            return GeminiBoundaryReviewer(api_key=str(self.config.api_key or ""), model=self.model_name)
+            options: dict[str, Any] = {
+                "api_key": str(self.config.api_key or ""),
+                "model": self.model_name,
+            }
+            if _accepts_keyword(GeminiBoundaryReviewer, "request_timeout_seconds"):
+                options["request_timeout_seconds"] = (
+                    request_timeout_seconds or self.config.request_timeout_seconds
+                )
+            return GeminiBoundaryReviewer(**options)
         return LocalStubBoundaryReviewer()
 
     def _ensure_provider_configuration(self) -> None:
@@ -417,10 +457,15 @@ class ReviewAgentService:
         warning: str,
         apply_safe_suggestions: bool,
         debug_metadata: dict[str, Any] | None = None,
+        failure_category: str | None = None,
     ) -> dict[str, Any]:
         warnings = [str(warning)]
         debug = _debug_metadata(debug_metadata)
-        reasoning_summary = "Boundary review could not be safely applied."
+        reasoning_summary = (
+            BOUNDARY_VALIDATION_FAILURE_MESSAGE
+            if failure_category == "boundary_validation"
+            else "Boundary review could not be safely applied."
+        )
         return {
             "project_id": project_id,
             "clip_id": str(clip["id"]),
@@ -444,6 +489,7 @@ class ReviewAgentService:
             "reasons": [reasoning_summary],
             "warnings": warnings,
             "failure_reason": str(warning),
+            "failure_category": failure_category,
             "retry_used": bool(debug["retry_used"]),
             "provider_attempt_count": int(debug["provider_attempt_count"]),
             "first_attempt_validation_error": debug.get("first_attempt_validation_error"),
@@ -456,6 +502,7 @@ class ReviewAgentService:
                 "decision": "manual_review",
                 "failed": True,
                 "failure_reason": str(warning),
+                "failure_category": failure_category,
                 "retry_used": bool(debug["retry_used"]),
                 "provider_attempt_count": int(debug["provider_attempt_count"]),
                 "first_attempt_validation_error": debug.get("first_attempt_validation_error"),
@@ -507,6 +554,7 @@ def _validated_reviewed_bounds(
     duration = reviewed_end - reviewed_start
     if duration < MIN_EDITED_DURATION_SECONDS or duration > MAX_EDITED_DURATION_SECONDS:
         raise BoundaryOptionSelectionError("Gemini returned boundaries outside the editor duration limits.")
+    _ensure_allowed_pair(context, decision)
     return reviewed_start, reviewed_end, selected_start_id, selected_end_id
 
 
@@ -528,18 +576,62 @@ def _selected_options(
             f"Gemini selected unknown end option index {end_index}. "
             f"Valid end option indexes: {_format_option_indexes(end_options)}."
         )
-    return start_options[start_index], end_options[end_index]
+    start_option = start_options[start_index]
+    end_option = end_options[end_index]
+    segments = {
+        str(segment["segment_id"]): segment
+        for key in ("context_before", "candidate_segments", "context_after")
+        for segment in context.get(key) or []
+    }
+    for option, boundary in ((start_option, "start"), (end_option, "end")):
+        segment = segments.get(str(option.get("segment_id") or ""))
+        if segment is None:
+            raise BoundaryOptionSelectionError(
+                f"Gemini selected a {boundary} option that does not map to a transcript segment."
+            )
+        if abs(float(option[boundary]) - float(segment[boundary])) > 0.01:
+            raise BoundaryOptionSelectionError(
+                f"Gemini selected a {boundary} option that does not match its transcript segment boundary."
+            )
+    return start_option, end_option
 
 
 def _derive_segment_ids_for_reject(
     context: dict[str, Any],
     decision: GeminiBoundaryDecision,
 ) -> tuple[str | None, str | None]:
-    try:
-        start_option, end_option = _selected_options(context, decision)
-    except BoundaryOptionSelectionError:
-        return None, None
+    start_option, end_option = _selected_options(context, decision)
+    _ensure_allowed_pair(context, decision)
     return str(start_option["segment_id"]), str(end_option["segment_id"])
+
+
+def _ensure_allowed_pair(
+    context: dict[str, Any],
+    decision: GeminiBoundaryDecision,
+) -> None:
+    selected_pair = (
+        int(decision.selected_start_option_index),
+        int(decision.selected_end_option_index),
+    )
+    if selected_pair not in _allowed_pair_indexes(context):
+        raise BoundaryOptionSelectionError(
+            "Gemini selected a boundary pair that is not present in allowed_boundary_pairs."
+        )
+
+
+def _allowed_pair_indexes(context: dict[str, Any]) -> set[tuple[int, int]]:
+    indexes: set[tuple[int, int]] = set()
+    for pair in context.get("allowed_boundary_pairs") or []:
+        try:
+            indexes.add(
+                (
+                    int(pair["start_option_index"]),
+                    int(pair["end_option_index"]),
+                )
+            )
+        except (KeyError, TypeError, ValueError):
+            continue
+    return indexes
 
 
 def _option_map(options: list[dict[str, Any]]) -> dict[int, dict[str, Any]]:
@@ -565,29 +657,109 @@ def _call_provider_review(
     provider: Any,
     context: dict[str, Any],
     corrective_message: str | None = None,
+    *,
+    timeout_seconds: float | None = None,
+    cancellation_check: Callable[[], bool] | None = None,
 ) -> GeminiBoundaryDecision:
-    if corrective_message is None:
-        return provider.review(context)
+    options: dict[str, Any] = {}
+    review_method = provider.review
+    if corrective_message is not None and _accepts_keyword(review_method, "corrective_message"):
+        options["corrective_message"] = corrective_message
+    if timeout_seconds is not None and _accepts_keyword(review_method, "timeout_seconds"):
+        options["timeout_seconds"] = timeout_seconds
+    if cancellation_check is not None and _accepts_keyword(review_method, "cancellation_check"):
+        options["cancellation_check"] = cancellation_check
+    return review_method(context, **options)
+
+
+def _accepts_keyword(callable_value: Any, keyword: str) -> bool:
     try:
-        return provider.review(context, corrective_message=corrective_message)
-    except TypeError as exc:
-        if "corrective_message" not in str(exc):
-            raise
-        return provider.review(context)
+        signature = inspect.signature(callable_value)
+    except (TypeError, ValueError):
+        return False
+    return keyword in signature.parameters or any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD
+        for parameter in signature.parameters.values()
+    )
+
+
+def _raise_if_cancelled(cancellation_check: Callable[[], bool] | None) -> None:
+    if cancellation_check is not None and cancellation_check():
+        raise ClipReviewCancelledError("Boundary review cancelled by user.")
+
+
+def _raise_if_deadline_expired(deadline: float | None) -> None:
+    if deadline is not None and time.monotonic() >= deadline:
+        raise ReviewBatchTimeoutError("Automatic boundary review exceeded its batch timeout.")
+
+
+def _remaining_request_timeout(configured_timeout: float, deadline: float | None) -> float:
+    timeout = max(0.001, float(configured_timeout))
+    if deadline is None:
+        return timeout
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise ReviewBatchTimeoutError("Automatic boundary review exceeded its batch timeout.")
+    return max(0.001, min(timeout, remaining))
+
+
+def _notify_progress(
+    callback: Callable[[str, dict[str, Any]], None] | None,
+    event_name: str,
+    **metadata: Any,
+) -> None:
+    if callback is not None:
+        callback(event_name, metadata)
+
+
+def _clip_review_is_complete(clip: dict[str, Any]) -> bool:
+    if str(clip.get("boundary_source") or "") == "user":
+        return True
+    if str(clip.get("status") or "") in {"accepted", "rejected"}:
+        return True
+    decision = str(clip.get("latest_review_decision") or "")
+    return bool(decision and decision != "manual_review" and not clip.get("latest_review_failed"))
 
 
 def _boundary_retry_message(
     context: dict[str, Any],
-    error_message: str,
+    error: Exception | str,
 ) -> str:
     return (
-        f"{error_message} You must return selected_start_option_index and selected_end_option_index as non-null "
+        f"{_concise_boundary_correction(error)} You must return selected_start_option_index and "
+        "selected_end_option_index as non-null "
         "integers. Choose the start index only from START OPTIONS and the end index only from END OPTIONS. "
+        "Choose one exact pair from allowed_boundary_pairs. "
         f"Valid start option indexes: {_format_option_indexes(_option_map(context.get('start_boundary_options') or []))}. "
         f"Valid end option indexes: {_format_option_indexes(_option_map(context.get('end_boundary_options') or []))}. "
         f"For reject, use current_aligned_start_option_index={context.get('current_aligned_start_option_index')} "
         f"and current_aligned_end_option_index={context.get('current_aligned_end_option_index')}."
     )
+
+
+def _concise_boundary_correction(error: Exception | str) -> str:
+    message = str(error).casefold()
+    if "must not exceed" in message or "duration" in message and "90" in message:
+        return "The selected boundary pair is invalid because its duration exceeds 90 seconds."
+    if "end must stay" in message or "end after the allowed" in message:
+        return "The selected end is outside the permitted clip range."
+    if "start must stay" in message or "start before the allowed" in message:
+        return "The selected start is outside the permitted clip range."
+    if "reversed" in message or "end must be greater" in message:
+        return "The selected boundary pair is invalid because the end must be after the start."
+    if "allowed_boundary_pairs" in message or "boundary pair" in message:
+        return "The selected boundary pair is not allowed."
+    if "unknown start option" in message or "unknown end option" in message:
+        return "The selected boundary option index is not available."
+    return "The prior structured boundary response was invalid."
+
+
+def _failure_category(error: Exception) -> str:
+    if isinstance(error, BoundaryOptionSelectionError):
+        return "boundary_validation"
+    if isinstance(error, ReviewProviderOutputError):
+        return "structured_output"
+    return "provider"
 
 
 def _delta(reviewed_value: Any, original_value: Any) -> float | None:

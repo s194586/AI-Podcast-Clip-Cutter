@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import multiprocessing
 import re
-from typing import Any, Callable, Protocol
+import time
+from collections.abc import Callable
+from typing import Any, Protocol
 
 from pydantic import ValidationError
 
@@ -10,6 +13,7 @@ from .schemas import GeminiBoundaryDecision
 
 
 DEFAULT_GEMINI_MODEL = "gemini-3.5-flash"
+DEFAULT_GEMINI_REQUEST_TIMEOUT_SECONDS = 300
 LOCAL_STUB_MODEL = "local_stub"
 
 
@@ -21,11 +25,34 @@ class ReviewProviderOutputError(ReviewProviderError):
     pass
 
 
+class ReviewProviderTimeoutError(ReviewProviderError):
+    pass
+
+
+class ReviewProviderCancelledError(ReviewProviderError):
+    """Raised when the local pipeline explicitly cancels an in-flight request."""
+
+
+class ReviewProviderRequestCancelledError(ReviewProviderError):
+    """Raised when the remote service reports a cancelled request such as HTTP 499."""
+
+
+class ReviewProviderQuotaError(ReviewProviderError):
+    """Raised when Gemini rejects a request because quota or rate limits were reached."""
+
+
 class BoundaryReviewProvider(Protocol):
     provider: str
     model: str
 
-    def review(self, context: dict[str, Any], corrective_message: str | None = None) -> GeminiBoundaryDecision:
+    def review(
+        self,
+        context: dict[str, Any],
+        corrective_message: str | None = None,
+        *,
+        timeout_seconds: float | None = None,
+        cancellation_check: Callable[[], bool] | None = None,
+    ) -> GeminiBoundaryDecision:
         ...
 
 
@@ -33,7 +60,12 @@ class LocalStubBoundaryReviewer:
     provider = "local_stub"
     model = LOCAL_STUB_MODEL
 
-    def review(self, context: dict[str, Any], corrective_message: str | None = None) -> GeminiBoundaryDecision:
+    def review(
+        self,
+        context: dict[str, Any],
+        corrective_message: str | None = None,
+        **_: Any,
+    ) -> GeminiBoundaryDecision:
         candidate_segments = list(context.get("candidate_segments") or [])
         before_segments = list(context.get("context_before") or [])
         after_segments = list(context.get("context_after") or [])
@@ -68,6 +100,11 @@ class LocalStubBoundaryReviewer:
 
         if selected_start is None or selected_end is None:
             raise ReviewProviderError("Local stub could not resolve transcript boundary option indexes.")
+        selected_start, selected_end = _coerce_local_stub_to_allowed_pair(
+            context,
+            selected_start,
+            selected_end,
+        )
 
         changed = (
             selected_start["segment_id"] != candidate_segments[0]["segment_id"]
@@ -96,50 +133,95 @@ class GeminiBoundaryReviewer:
         api_key: str,
         model: str = DEFAULT_GEMINI_MODEL,
         client_factory: Callable[[str], Any] | None = None,
+        request_timeout_seconds: float = DEFAULT_GEMINI_REQUEST_TIMEOUT_SECONDS,
     ) -> None:
         if not str(api_key or "").strip():
             raise ReviewProviderError("GEMINI_API_KEY is required when CLIP_REVIEW_MODE=gemini.")
         self.api_key = api_key
         self.model = str(model or DEFAULT_GEMINI_MODEL)
         self._client_factory = client_factory
+        self.request_timeout_seconds = max(0.001, float(request_timeout_seconds))
         self.last_prompt_payload: dict[str, Any] | None = None
 
-    def review(self, context: dict[str, Any], corrective_message: str | None = None) -> GeminiBoundaryDecision:
+    def review(
+        self,
+        context: dict[str, Any],
+        corrective_message: str | None = None,
+        *,
+        timeout_seconds: float | None = None,
+        cancellation_check: Callable[[], bool] | None = None,
+    ) -> GeminiBoundaryDecision:
         prompt_payload = build_gemini_prompt_payload(context)
         self.last_prompt_payload = prompt_payload
         prompt = build_gemini_prompt(prompt_payload, corrective_message=corrective_message)
-        response = self._create_structured_response(prompt)
+        effective_timeout = max(
+            0.001,
+            min(self.request_timeout_seconds, float(timeout_seconds or self.request_timeout_seconds)),
+        )
+        if cancellation_check is not None and cancellation_check():
+            raise ReviewProviderCancelledError("Gemini boundary review was cancelled.")
+        if self._client_factory is None:
+            return _run_gemini_request_in_process(
+                api_key=self.api_key,
+                model=self.model,
+                prompt=prompt,
+                timeout_seconds=effective_timeout,
+                cancellation_check=cancellation_check,
+            )
+        response = self._create_structured_response(prompt, timeout_seconds=effective_timeout)
         return _parse_boundary_decision(response)
 
-    def _create_structured_response(self, prompt: str) -> Any:
-        client = self._client_factory(self.api_key) if self._client_factory else _create_genai_client(self.api_key)
-        schema = _model_json_schema(GeminiBoundaryDecision)
+    def _create_structured_response(self, prompt: str, *, timeout_seconds: float) -> Any:
+        client = self._client_factory(self.api_key) if self._client_factory else _create_genai_client(
+            self.api_key,
+            timeout_seconds=timeout_seconds,
+        )
         try:
-            if hasattr(client, "interactions"):
-                return client.interactions.create(
-                    model=self.model,
-                    input=prompt,
-                    response_format={
-                        "type": "text",
-                        "mime_type": "application/json",
-                        "schema": schema,
-                    },
-                )
+            return _request_structured_response(
+                client,
+                model=self.model,
+                prompt=prompt,
+                timeout_seconds=timeout_seconds,
+            )
+        except Exception as exc:
+            raise _provider_error_from_exception(exc) from exc
 
-            if hasattr(client, "models"):
-                from google.genai import types  # type: ignore
 
-                return client.models.generate_content(
-                    model=self.model,
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        response_mime_type="application/json",
-                        response_schema=GeminiBoundaryDecision,
-                    ),
-                )
-        except Exception as exc:  # pragma: no cover - network/client dependent
-            raise ReviewProviderError(f"Gemini boundary review failed: {exc}") from exc
-        raise ReviewProviderError("google-genai client does not expose interactions or models APIs.")
+def _request_structured_response(
+    client: Any,
+    *,
+    model: str,
+    prompt: str,
+    timeout_seconds: float,
+) -> Any:
+    schema = _model_json_schema(GeminiBoundaryDecision)
+    if hasattr(client, "interactions"):
+        return client.interactions.create(
+            model=model,
+            input=prompt,
+            response_format={
+                "type": "text",
+                "mime_type": "application/json",
+                "schema": schema,
+            },
+        )
+
+    if hasattr(client, "models"):
+        from google.genai import types  # type: ignore
+
+        return client.models.generate_content(
+            model=model,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=GeminiBoundaryDecision,
+                http_options=types.HttpOptions(
+                    timeout=_timeout_milliseconds(timeout_seconds),
+                    retry_options=types.HttpRetryOptions(attempts=1),
+                ),
+            ),
+        )
+    raise ReviewProviderError("google-genai client does not expose interactions or models APIs.")
 
 
 def build_gemini_prompt_payload(context: dict[str, Any]) -> dict[str, Any]:
@@ -157,6 +239,7 @@ def build_gemini_prompt_payload(context: dict[str, Any]) -> dict[str, Any]:
         "context_after": _segments_for_prompt(context.get("context_after") or []),
         "start_boundary_options": _boundary_options_for_prompt(context.get("start_boundary_options") or []),
         "end_boundary_options": _boundary_options_for_prompt(context.get("end_boundary_options") or []),
+        "allowed_boundary_pairs": _boundary_pairs_for_prompt(context.get("allowed_boundary_pairs") or []),
     }
 
 
@@ -170,6 +253,7 @@ def build_gemini_prompt(payload: dict[str, Any], corrective_message: str | None 
         "You only decide whether the clip forms a coherent standalone excerpt and which supplied transcript "
         "segment boundaries should be used.\n\n"
         "Choose boundaries only from the supplied START OPTIONS and END OPTIONS.\n"
+        "The selected start and end option indexes must match one entry in ALLOWED BOUNDARY PAIRS.\n"
         "The current_aligned_start_option_index and current_aligned_end_option_index identify the transcript "
         "boundary options nearest to the original candidate start and end.\n\n"
         "You must make the editorial decision yourself.\n"
@@ -220,18 +304,203 @@ def build_gemini_prompt(payload: dict[str, Any], corrective_message: str | None 
         "CONTEXT AFTER\n" + _json_for_prompt(payload.get("context_after") or []),
         "ALLOWED START OPTIONS\n" + _json_for_prompt(payload.get("start_boundary_options") or []),
         "ALLOWED END OPTIONS\n" + _json_for_prompt(payload.get("end_boundary_options") or []),
+        "ALLOWED BOUNDARY PAIRS\n" + _json_for_prompt(payload.get("allowed_boundary_pairs") or []),
     ]
     if corrective_message:
         sections.append("CORRECTION\n" + str(corrective_message).strip())
     return "\n\n".join(sections)
 
 
-def _create_genai_client(api_key: str) -> Any:
+def _create_genai_client(api_key: str, *, timeout_seconds: float) -> Any:
     try:
         from google import genai  # type: ignore
+        from google.genai import types  # type: ignore
     except Exception as exc:  # pragma: no cover - depends on environment
         raise ReviewProviderError("google-genai is not installed. Install the google-genai package.") from exc
-    return genai.Client(api_key=api_key)
+    return genai.Client(
+        api_key=api_key,
+        http_options=types.HttpOptions(
+            timeout=_timeout_milliseconds(timeout_seconds),
+            retry_options=types.HttpRetryOptions(attempts=1),
+        ),
+    )
+
+
+def _run_gemini_request_in_process(
+    *,
+    api_key: str,
+    model: str,
+    prompt: str,
+    timeout_seconds: float,
+    cancellation_check: Callable[[], bool] | None,
+) -> GeminiBoundaryDecision:
+    payload = _run_bounded_process(
+        _gemini_request_worker,
+        (api_key, model, prompt, timeout_seconds),
+        timeout_seconds=timeout_seconds,
+        cancellation_check=cancellation_check,
+    )
+    if bool(payload.get("ok")):
+        return _validate_decision(dict(payload.get("decision") or {}))
+    category = str(payload.get("category") or "ReviewProviderError")
+    message = str(payload.get("message") or "Gemini boundary review failed.")
+    error_types = {
+        "ReviewProviderTimeoutError": ReviewProviderTimeoutError,
+        "ReviewProviderRequestCancelledError": ReviewProviderRequestCancelledError,
+        "ReviewProviderQuotaError": ReviewProviderQuotaError,
+        "ReviewProviderOutputError": ReviewProviderOutputError,
+    }
+    raise error_types.get(category, ReviewProviderError)(message)
+
+
+def _run_bounded_process(
+    target: Callable[..., None],
+    args: tuple[Any, ...],
+    *,
+    timeout_seconds: float,
+    cancellation_check: Callable[[], bool] | None = None,
+) -> dict[str, Any]:
+    process_context = multiprocessing.get_context("spawn")
+    receive_connection, send_connection = process_context.Pipe(duplex=False)
+    process = process_context.Process(
+        target=target,
+        args=(send_connection, *args),
+        daemon=True,
+    )
+    deadline = time.monotonic() + max(0.001, float(timeout_seconds))
+    try:
+        try:
+            process.start()
+        except OSError as exc:
+            raise ReviewProviderError("Gemini request worker could not start.") from exc
+        send_connection.close()
+        while True:
+            if cancellation_check is not None and cancellation_check():
+                _terminate_process(process)
+                raise ReviewProviderCancelledError("Gemini boundary review was cancelled.")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                _terminate_process(process)
+                raise ReviewProviderTimeoutError(
+                    f"Gemini boundary review timed out after {float(timeout_seconds):g} seconds."
+                )
+            if receive_connection.poll(min(0.1, remaining)):
+                try:
+                    payload = receive_connection.recv()
+                except EOFError as exc:
+                    raise ReviewProviderError(
+                        "Gemini request worker closed without a response."
+                    ) from exc
+                process.join(timeout=1.0)
+                if process.is_alive():
+                    _terminate_process(process)
+                return dict(payload or {})
+            if not process.is_alive():
+                process.join(timeout=1.0)
+                if receive_connection.poll():
+                    try:
+                        return dict(receive_connection.recv() or {})
+                    except EOFError as exc:
+                        raise ReviewProviderError(
+                            "Gemini request worker closed without a response."
+                        ) from exc
+                raise ReviewProviderError("Gemini request worker exited without a response.")
+    finally:
+        send_connection.close()
+        receive_connection.close()
+        if process.is_alive():
+            _terminate_process(process)
+
+
+def _gemini_request_worker(
+    send_connection: Any,
+    api_key: str,
+    model: str,
+    prompt: str,
+    timeout_seconds: float,
+) -> None:
+    client = None
+    try:
+        client = _create_genai_client(api_key, timeout_seconds=timeout_seconds)
+        response = _request_structured_response(
+            client,
+            model=model,
+            prompt=prompt,
+            timeout_seconds=timeout_seconds,
+        )
+        decision = _parse_boundary_decision(response)
+        decision_payload = (
+            decision.model_dump() if hasattr(decision, "model_dump") else decision.dict()
+        )
+        send_connection.send({"ok": True, "decision": decision_payload})
+    except Exception as exc:
+        error = _provider_error_from_exception(exc)
+        send_connection.send(
+            {
+                "ok": False,
+                "category": error.__class__.__name__,
+                "message": str(error),
+            }
+        )
+    finally:
+        try:
+            if client is not None and hasattr(client, "close"):
+                client.close()
+        finally:
+            send_connection.close()
+
+
+def _terminate_process(process: Any) -> None:
+    if not process.is_alive():
+        process.join(timeout=0.2)
+        return
+    process.terminate()
+    process.join(timeout=1.0)
+    if process.is_alive() and hasattr(process, "kill"):
+        process.kill()
+        process.join(timeout=1.0)
+
+
+def _timeout_milliseconds(timeout_seconds: float) -> int:
+    return max(1, int(float(timeout_seconds) * 1000))
+
+
+def _provider_error_from_exception(exc: Exception) -> ReviewProviderError:
+    if isinstance(exc, ReviewProviderError):
+        return exc
+    status_values = [
+        getattr(exc, "status_code", None),
+        getattr(exc, "code", None),
+        getattr(getattr(exc, "response", None), "status_code", None),
+    ]
+    message = _safe_provider_error_message(exc)
+    if 429 in status_values or re.search(r"\b429\b", message):
+        return ReviewProviderQuotaError(
+            "Gemini quota or rate limit was exceeded (HTTP 429). Retry review later."
+        )
+    if 499 in status_values or re.search(r"\b499\b", message):
+        return ReviewProviderRequestCancelledError(
+            "Gemini request was cancelled by the upstream service (HTTP 499)."
+        )
+    class_name = exc.__class__.__name__.casefold()
+    if isinstance(exc, TimeoutError) or "timeout" in class_name or "timed out" in message.casefold():
+        return ReviewProviderTimeoutError("Gemini boundary review request timed out.")
+    return ReviewProviderError(f"Gemini boundary review failed: {message}")
+
+
+def _safe_provider_error_message(exc: Exception) -> str:
+    message = " ".join(str(exc).split()) or exc.__class__.__name__
+    message = re.sub(
+        r"(?i)([?&](?:key|api[_-]?key|token|access_token|authorization)=)([^&\s\"']+)",
+        r"\1<redacted>",
+        message,
+    )
+    message = re.sub(
+        r"(?i)(api[_-]?key|password|secret|token)\s*=\s*([^\s,;]+)",
+        r"\1=<redacted>",
+        message,
+    )
+    return message[:500]
 
 
 def _parse_boundary_decision(response: Any) -> GeminiBoundaryDecision:
@@ -300,6 +569,53 @@ def _boundary_options_for_prompt(options: list[dict[str, Any]]) -> list[dict[str
         }
         for option in options
     ]
+
+
+def _boundary_pairs_for_prompt(pairs: list[dict[str, Any]]) -> list[dict[str, int]]:
+    return [
+        {
+            "start_option_index": int(pair.get("start_option_index") or 0),
+            "end_option_index": int(pair.get("end_option_index") or 0),
+        }
+        for pair in pairs
+    ]
+
+
+def _coerce_local_stub_to_allowed_pair(
+    context: dict[str, Any],
+    selected_start: dict[str, Any],
+    selected_end: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    allowed_pairs = [dict(pair) for pair in context.get("allowed_boundary_pairs") or []]
+    selected_pair = (
+        int(selected_start["option_index"]),
+        int(selected_end["option_index"]),
+    )
+    allowed_indexes = {
+        (int(pair["start_option_index"]), int(pair["end_option_index"]))
+        for pair in allowed_pairs
+    }
+    if selected_pair in allowed_indexes or not allowed_pairs:
+        return selected_start, selected_end
+
+    current_pair = (
+        int(context.get("current_aligned_start_option_index") or 0),
+        int(context.get("current_aligned_end_option_index") or 0),
+    )
+    first_allowed = allowed_pairs[0]
+    fallback_pair = current_pair if current_pair in allowed_indexes else (
+        int(first_allowed["start_option_index"]),
+        int(first_allowed["end_option_index"]),
+    )
+    starts = {
+        int(option["option_index"]): option
+        for option in context.get("start_boundary_options") or []
+    }
+    ends = {
+        int(option["option_index"]): option
+        for option in context.get("end_boundary_options") or []
+    }
+    return starts[fallback_pair[0]], ends[fallback_pair[1]]
 
 
 def _model_json_schema(model: Any) -> dict[str, Any]:

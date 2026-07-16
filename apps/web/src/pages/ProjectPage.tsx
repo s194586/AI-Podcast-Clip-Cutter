@@ -29,6 +29,7 @@ export function ProjectPage() {
   const [logs, setLogs] = useState<ProjectLogTail | null>(null)
   const [logsLoading, setLogsLoading] = useState(false)
   const pollingInFlight = useRef(false)
+  const actionInFlight = useRef(false)
 
   const loadProject = useCallback(
     async (signal?: AbortSignal) => {
@@ -108,8 +109,9 @@ export function ProjectPage() {
   const progress = status?.progress_percent ?? project?.progress_percent ?? 0
   const message = status?.message ?? stageLabel(currentStage)
 
-  const canStart = runStatus === 'created'
-  const canCancel = runStatus === 'created' || runStatus === 'queued' || runStatus === 'running'
+  const processing = runStatus === 'queued' || runStatus === 'running'
+  const canStart = runStatus === 'created' && !processing
+  const canCancel = processing
   const canRetry = runStatus === 'failed' || runStatus === 'cancelled'
   const ready = runStatus === 'ready'
 
@@ -128,9 +130,10 @@ export function ProjectPage() {
   }, [projectId])
 
   async function runAction(nextAction: 'start' | 'cancel' | 'retry') {
-    if (projectId === null) {
+    if (projectId === null || actionInFlight.current) {
       return
     }
+    actionInFlight.current = true
     setAction(nextAction)
     setActionError(null)
     setActionMessage(null)
@@ -143,6 +146,9 @@ export function ProjectPage() {
       setActionError(getErrorMessage(actionFailure, 'Project action failed.'))
     } finally {
       setAction(null)
+      window.setTimeout(() => {
+        actionInFlight.current = false
+      }, 0)
     }
   }
 
@@ -192,8 +198,8 @@ export function ProjectPage() {
                 <p className="mt-1 text-sm text-app-text">{project.auto_review ? 'Automatic' : 'Manual trigger'}</p>
               </div>
             </div>
-            {project.error_message || status?.last_error ? (
-              <p className="rounded-md border border-app-danger/50 bg-app-danger/10 p-3 text-sm text-red-100">{project.error_message ?? status?.last_error}</p>
+            {project.error_message || status?.error_message || status?.last_error ? (
+              <p className="rounded-md border border-app-danger/50 bg-app-danger/10 p-3 text-sm text-red-100">{project.error_message ?? status?.error_message ?? status?.last_error}</p>
             ) : null}
           </div>
         </div>
