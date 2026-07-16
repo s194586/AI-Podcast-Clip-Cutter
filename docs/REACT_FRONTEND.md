@@ -55,6 +55,8 @@ npm run dev
 
 The app shell includes project navigation, a New Project action, backend status, and the configured AI reviewer indicator.
 
+On the project processing page, Start Processing is disabled while a job is queued or running, Cancel remains available, and a synchronous action guard prevents duplicate start/cancel requests. Polling displays persisted per-clip review progress from 85 through 95 percent. Failed or timed-out review stops polling, removes action spinners, shows the product error, and keeps the technical log details available.
+
 ## API Proxy
 
 Vite development proxy forwards backend routes to:

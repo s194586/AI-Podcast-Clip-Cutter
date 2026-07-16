@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import signal
 import subprocess
 import sys
 import threading
@@ -9,12 +10,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from apps.review_agent.service import ReviewAgentService
+from apps.pipeline.events import redact_text
 
 from ..db.database import init_database, session_scope
 from ..db.models import utc_now
 from ..db.repositories import JobRepository, ProjectRepository
-from ..services.legacy_import_service import import_candidate_file_into_project
 from ..services.project_service import (
     PROJECT_ROOT,
     ProjectNotFoundError,
@@ -23,7 +23,12 @@ from ..services.project_service import (
     safe_relative_path,
 )
 from .base import JobResult, PipelineStatus, ProjectAlreadyRunningError, ProjectOrchestratorNotFoundError
-from .stage_parser import message_for_stage, parse_manager_stage, progress_for_stage
+from .stage_parser import (
+    message_for_stage,
+    parse_manager_stage,
+    parse_structured_pipeline_event,
+    progress_for_stage,
+)
 
 PIPELINE_JOB_TYPE = "local_pipeline"
 ACTIVE_STATUSES = {"queued", "running"}
@@ -148,7 +153,7 @@ class LocalPipelineOrchestrator:
                 worker.cancel_requested = True
                 process = worker.process
                 if process is not None and process.poll() is None:
-                    process.terminate()
+                    self._terminate_process_tree(process)
 
         now = utc_now()
         with session_scope() as session:
@@ -159,19 +164,22 @@ class LocalPipelineOrchestrator:
                 raise ProjectOrchestratorNotFoundError(f"Unknown project_id: {project_id}")
             active_job = job_repo.active_for_project(project.id, PIPELINE_JOB_TYPE)
             if active_job is not None:
+                cancelled_progress = float(active_job.progress or 0.0)
                 job_repo.update_state(
                     active_job,
                     status="cancelled",
                     current_stage="cancelled",
-                    progress=progress_for_stage("cancelled"),
+                    progress=cancelled_progress,
                     finished_at=now,
+                    process_id=None,
                     error_message="Cancelled by user.",
                 )
+            cancelled_progress = float(project.progress_percent or 0.0)
             project_repo.update_flow_state(
                 project,
                 status="cancelled",
                 current_stage="cancelled",
-                progress_percent=progress_for_stage("cancelled"),
+                progress_percent=cancelled_progress,
                 error_message="Cancelled by user.",
                 completed_at=now,
             )
@@ -198,21 +206,23 @@ class LocalPipelineOrchestrator:
             for job in job_repo.list_active(PIPELINE_JOB_TYPE):
                 if job.project_id in active_worker_ids:
                     continue
+                failed_progress = float(job.progress or 0.0)
                 job_repo.update_state(
                     job,
                     status="failed",
                     current_stage="failed",
-                    progress=progress_for_stage("failed"),
+                    progress=failed_progress,
                     finished_at=now,
                     error_message=message,
                 )
                 project = project_repo.get(job.project_id)
                 if project is not None and project.status in ACTIVE_STATUSES:
+                    failed_progress = float(project.progress_percent or 0.0)
                     project_repo.update_flow_state(
                         project,
                         status="failed",
                         current_stage="failed",
-                        progress_percent=progress_for_stage("failed"),
+                        progress_percent=failed_progress,
                         error_message=message,
                         completed_at=now,
                     )
@@ -222,6 +232,12 @@ class LocalPipelineOrchestrator:
     def _run_job(self, project_id: int, job_id: int) -> None:
         try:
             self._execute_job(project_id, job_id)
+        except Exception as exc:
+            self._mark_failed(
+                project_id,
+                job_id,
+                f"Project pipeline worker failed: {_safe_error_message(exc)}",
+            )
         finally:
             with self._lock:
                 self._workers.pop(project_id, None)
@@ -230,62 +246,78 @@ class LocalPipelineOrchestrator:
         project_data = self._prepare_running_state(project_id, job_id)
         workspace = self._resolve_project_path(str(project_data["workspace_path"]))
         log_path = self._resolve_project_path(str(project_data["log_path"]))
-        command = self._build_manager_command(project_data["source_url"], workspace)
-        self._append_log(log_path, f"$ {' '.join(_display_command_part(part) for part in command)}\n")
+        command = self._build_pipeline_command(
+            project_id,
+            project_data["source_url"],
+            workspace,
+            auto_review=bool(project_data["auto_review"]),
+        )
+        self._append_log(log_path, f"$ {_display_command(command)}\n")
 
+        popen_options: dict[str, Any] = {
+            "cwd": str(self.project_root),
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.STDOUT,
+            "text": True,
+            "encoding": "utf-8",
+            "errors": "replace",
+            "bufsize": 1,
+            "shell": False,
+            "env": self._subprocess_env(),
+        }
+        if os.name == "nt":
+            popen_options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            popen_options["start_new_session"] = True
         process = self.popen_factory(
             command,
-            cwd=str(self.project_root),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            bufsize=1,
-            shell=False,
-            env=self._subprocess_env(),
+            **popen_options,
         )
         self._set_process(project_id, job_id, process)
 
+        structured_event_seen = False
+        pipeline_completed = False
+        failure_message: str | None = None
         assert process.stdout is not None
-        for raw_line in process.stdout:
-            line = _redact_log_line(raw_line)
-            self._append_log(log_path, line)
-            stage = parse_manager_stage(line)
-            if stage in {"downloading", "transcribing", "validating_transcript", "generating_candidates"}:
-                self._mark_running_stage(project_id, job_id, stage)
+        try:
+            for raw_line in process.stdout:
+                line = _redact_log_line(raw_line)
+                self._append_log(log_path, line)
+                event = parse_structured_pipeline_event(line)
+                if event is not None:
+                    structured_event_seen = True
+                    if event.event == "stage_failed":
+                        failure_message = event.message
+                    if event.event == "pipeline_completed" and event.success:
+                        pipeline_completed = True
+                    self._apply_pipeline_event(project_id, job_id, event)
+                    continue
+                stage = parse_manager_stage(line)
+                if stage in {"downloading", "transcribing", "validating_transcript", "generating_candidates"}:
+                    self._mark_running_stage(project_id, job_id, stage)
+        finally:
+            process.stdout.close()
 
         exit_code = process.wait()
         if self._is_cancel_requested(project_id):
             self._mark_cancelled(project_id, job_id)
             return
         if exit_code != 0:
-            self._mark_failed(project_id, job_id, f"manager.py exited with code {exit_code}.", exit_code=exit_code)
+            self._mark_failed(
+                project_id,
+                job_id,
+                failure_message or f"Project pipeline exited with code {exit_code}.",
+                exit_code=exit_code,
+            )
             return
-
-        self._mark_running_stage(project_id, job_id, "importing_candidates")
-        self._append_log(log_path, "\nImporting candidate clips into SQLite.\n")
-        imported = self._import_candidates(project_id, workspace)
-        if not imported:
-            self._mark_failed(project_id, job_id, "No candidate clips were imported from the project workspace.", exit_code=exit_code)
+        if structured_event_seen and not pipeline_completed:
+            self._mark_failed(
+                project_id,
+                job_id,
+                "Project pipeline exited without a successful completion event.",
+                exit_code=exit_code,
+            )
             return
-
-        if bool(project_data["auto_review"]):
-            self._mark_running_stage(project_id, job_id, "reviewing_with_ai")
-            self._append_log(log_path, "Reviewing imported clips with configured AI boundary reviewer.\n")
-            try:
-                review_result = ReviewAgentService(project_root=self.project_root).review_project_clips(
-                    project_id=project_id,
-                    apply_safe_suggestions=True,
-                )
-                self._append_log(log_path, f"AI review completed: {review_result}\n")
-            except Exception as exc:
-                self._append_log(log_path, f"AI review failed: {_safe_error_message(exc)}\n")
-                self._mark_failed(project_id, job_id, f"AI boundary review failed: {_safe_error_message(exc)}", exit_code=exit_code)
-                return
-        else:
-            self._append_log(log_path, "Auto review disabled; project is ready for manual review.\n")
-
         self._mark_ready(project_id, job_id, exit_code=exit_code)
 
     def _prepare_running_state(self, project_id: int, job_id: int) -> dict[str, Any]:
@@ -303,8 +335,8 @@ class LocalPipelineOrchestrator:
             job_repo.update_state(
                 job,
                 status="running",
-                current_stage="downloading",
-                progress=progress_for_stage("downloading"),
+                current_stage="waiting",
+                progress=progress_for_stage("waiting"),
                 log_path=safe_relative_path(log_path, project_root=self.project_root),
                 started_at=now,
                 error_message=None,
@@ -312,8 +344,8 @@ class LocalPipelineOrchestrator:
             project_repo.update_flow_state(
                 project,
                 status="running",
-                current_stage="downloading",
-                progress_percent=progress_for_stage("downloading"),
+                current_stage="waiting",
+                progress_percent=progress_for_stage("waiting"),
                 error_message=None,
                 started_at=now,
                 completed_at=None,
@@ -325,21 +357,30 @@ class LocalPipelineOrchestrator:
                 "log_path": job.log_path,
             }
 
-    def _build_manager_command(self, source_url: str, workspace: Path) -> list[str]:
-        command = [
+    def _build_pipeline_command(
+        self,
+        project_id: int,
+        source_url: str,
+        workspace: Path,
+        *,
+        auto_review: bool,
+    ) -> list[str]:
+        return [
             sys.executable,
-            str(self.project_root / "manager.py"),
-            "--url",
+            "-m",
+            "apps.pipeline.entrypoint",
+            "--project-id",
+            str(int(project_id)),
+            "--source-url",
             str(source_url),
             "--workspace-dir",
             str(workspace),
-            "--analysis-only",
-            "--ai-mode",
-            "local_only",
+            "--repository-root",
+            str(self.project_root),
+            "--auto-review" if auto_review else "--no-auto-review",
             "--subtitle-checker-mode",
             "local_only",
         ]
-        return command
 
     def _subprocess_env(self) -> dict[str, str]:
         env = os.environ.copy()
@@ -361,8 +402,19 @@ class LocalPipelineOrchestrator:
             worker = self._workers.get(project_id)
             return bool(worker and worker.cancel_requested)
 
-    def _mark_running_stage(self, project_id: int, job_id: int, stage: str) -> None:
-        progress = progress_for_stage(stage)
+    def _mark_running_stage(
+        self,
+        project_id: int,
+        job_id: int,
+        stage: str,
+        *,
+        progress_percent: float | None = None,
+    ) -> None:
+        progress = (
+            max(0.0, min(100.0, float(progress_percent)))
+            if progress_percent is not None
+            else progress_for_stage(stage)
+        )
         with session_scope() as session:
             project_repo = ProjectRepository(session)
             job_repo = JobRepository(session)
@@ -381,6 +433,46 @@ class LocalPipelineOrchestrator:
                 error_message=None,
             )
 
+    def _apply_pipeline_event(self, project_id: int, job_id: int, event) -> None:
+        if event.event in {
+            "review_clip_started",
+            "review_clip_completed",
+            "review_clip_manual",
+            "review_clip_failed",
+        }:
+            self._mark_running_stage(
+                project_id,
+                job_id,
+                "reviewing_with_ai",
+                progress_percent=event.progress_percent,
+            )
+            return
+        if event.event in {"stage_started", "stage_progress", "stage_completed"}:
+            if event.stage in {
+                "waiting",
+                "downloading",
+                "transcribing",
+                "validating_transcript",
+                "generating_candidates",
+                "importing_candidates",
+                "reviewing_with_ai",
+            }:
+                self._mark_running_stage(
+                    project_id,
+                    job_id,
+                    event.stage,
+                    progress_percent=event.progress_percent,
+                )
+            return
+        if event.event == "pipeline_cancelled":
+            self._mark_cancelled(project_id, job_id)
+            return
+        if event.event == "stage_failed":
+            self._mark_failed(project_id, job_id, event.message)
+            return
+        if event.event == "pipeline_completed" and event.success is False:
+            self._mark_failed(project_id, job_id, event.message)
+
     def _mark_ready(self, project_id: int, job_id: int, *, exit_code: int | None = None) -> None:
         now = utc_now()
         with session_scope() as session:
@@ -389,6 +481,8 @@ class LocalPipelineOrchestrator:
             project = project_repo.get(project_id)
             job = job_repo.get(job_id)
             if project is None or job is None:
+                return
+            if project.status == "cancelled" or job.status == "cancelled":
                 return
             job_repo.update_state(
                 job,
@@ -416,23 +510,29 @@ class LocalPipelineOrchestrator:
             job_repo = JobRepository(session)
             project = project_repo.get(project_id)
             job = job_repo.get(job_id)
+            if (project is not None and project.status == "cancelled") or (
+                job is not None and job.status == "cancelled"
+            ):
+                return
             if job is not None:
+                failed_progress = float(job.progress or 0.0)
                 job_repo.update_state(
                     job,
                     status="failed",
                     current_stage="failed",
-                    progress=progress_for_stage("failed"),
+                    progress=failed_progress,
                     finished_at=now,
                     exit_code=exit_code,
                     process_id=None,
                     error_message=message,
                 )
             if project is not None:
+                failed_progress = float(project.progress_percent or 0.0)
                 project_repo.update_flow_state(
                     project,
                     status="failed",
                     current_stage="failed",
-                    progress_percent=progress_for_stage("failed"),
+                    progress_percent=failed_progress,
                     error_message=message,
                     completed_at=now,
                 )
@@ -445,34 +545,26 @@ class LocalPipelineOrchestrator:
             project = project_repo.get(project_id)
             job = job_repo.get(job_id)
             if job is not None:
+                cancelled_progress = float(job.progress or 0.0)
                 job_repo.update_state(
                     job,
                     status="cancelled",
                     current_stage="cancelled",
-                    progress=progress_for_stage("cancelled"),
+                    progress=cancelled_progress,
                     finished_at=now,
                     process_id=None,
                     error_message="Cancelled by user.",
                 )
             if project is not None:
+                cancelled_progress = float(project.progress_percent or 0.0)
                 project_repo.update_flow_state(
                     project,
                     status="cancelled",
                     current_stage="cancelled",
-                    progress_percent=progress_for_stage("cancelled"),
+                    progress_percent=cancelled_progress,
                     error_message="Cancelled by user.",
                     completed_at=now,
                 )
-
-    def _import_candidates(self, project_id: int, workspace: Path) -> bool:
-        with session_scope() as session:
-            project = import_candidate_file_into_project(
-                session,
-                project_id=project_id,
-                project_root=self.project_root,
-                workspace_root=workspace,
-            )
-            return project is not None
 
     def _latest_log_path(self, project_id: int) -> Path | None:
         init_database()
@@ -498,6 +590,31 @@ class LocalPipelineOrchestrator:
         path = Path(value)
         return path.resolve() if path.is_absolute() else (self.project_root / path).resolve()
 
+    def _terminate_process_tree(self, process: subprocess.Popen) -> None:
+        try:
+            if os.name == "nt":
+                process.send_signal(signal.CTRL_BREAK_EVENT)
+            else:
+                os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+            process.wait(timeout=3.0)
+            return
+        except (OSError, ProcessLookupError, subprocess.TimeoutExpired):
+            pass
+
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            return
+        try:
+            os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+        except (OSError, ProcessLookupError):
+            if process.poll() is None:
+                process.kill()
+
 
 def _status_dict_for_project(project_id: int) -> dict[str, Any]:
     try:
@@ -508,15 +625,22 @@ def _status_dict_for_project(project_id: int) -> dict[str, Any]:
 
 def _redact_log_line(line: str) -> str:
     redacted = SECRET_LINE_RE.sub(r"\1=<redacted>", str(line))
-    return redacted
+    return redact_text(redacted)
 
 
 def _safe_error_message(exc: Exception) -> str:
     return _redact_log_line(str(exc)).strip() or exc.__class__.__name__
 
 
-def _display_command_part(value: str) -> str:
-    text = str(value)
-    if " " in text:
-        return f'"{text}"'
-    return text
+def _display_command(command: list[str]) -> str:
+    displayed: list[str] = []
+    mask_next = False
+    for value in command:
+        if mask_next:
+            displayed.append("<source-url>")
+            mask_next = False
+            continue
+        text = str(value)
+        displayed.append(f'"{text}"' if " " in text else text)
+        mask_next = text == "--source-url"
+    return " ".join(displayed)

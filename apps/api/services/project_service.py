@@ -277,7 +277,7 @@ def get_project_status(project_id: int) -> dict[str, Any]:
             "stage": stage,
             "current_stage": stage,
             "progress_percent": progress,
-            "message": STAGE_MESSAGES.get(stage, stage.replace("_", " ").title()),
+            "message": _status_message(stage, progress, clip_count),
             "error_message": project.error_message,
             "started_at": _iso(project.started_at),
             "updated_at": _iso(project.updated_at),
@@ -286,6 +286,14 @@ def get_project_status(project_id: int) -> dict[str, Any]:
             "last_error": JobRepository(session).latest_failed_error(project.id),
             "job": _job_to_status_dict(latest_job) if latest_job is not None else None,
         }
+
+
+def _status_message(stage: str, progress: float, clip_count: int) -> str:
+    if stage == "reviewing_with_ai" and clip_count > 0:
+        completed = round(max(0.0, min(10.0, float(progress) - 85.0)) * clip_count / 10.0)
+        completed = max(0, min(clip_count, int(completed)))
+        return f"Reviewing clip boundaries ({completed} of {clip_count} complete)"
+    return STAGE_MESSAGES.get(stage, stage.replace("_", " ").title())
 
 
 def _job_to_status_dict(job) -> dict[str, Any]:

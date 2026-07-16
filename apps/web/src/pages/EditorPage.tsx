@@ -108,6 +108,8 @@ function clampSeekTarget(target: number, video: HTMLVideoElement | null): number
   return Math.min(lowerBounded, video.duration)
 }
 
+const BOUNDARY_VALIDATION_FAILURE_MESSAGE = 'Gemini returned boundaries outside the permitted clip range. This clip requires manual review.'
+
 export function EditorPage() {
   const projectId = useNumericProjectId()
   const { health, healthError } = useOutletContext<AppShellContext>()
@@ -634,8 +636,23 @@ export function EditorPage() {
                 <InfoRow label="Review decision" value={<StatusBadge value={selectedClip.latest_review_decision ?? 'draft'} />} />
                 <InfoRow label="Boundaries changed" value={selectedClip.latest_review_changed_boundaries ? 'Yes' : 'No'} />
                 <InfoRow label="Manual-review state" value={selectedClip.latest_review_decision === 'manual_review' ? 'Needs manual review' : 'Not flagged'} />
-                <InfoRow label="Technical failure state" value={(selectedClip.latest_review_warnings?.length ?? 0) > 0 ? selectedClip.latest_review_warnings?.join(' ') : 'None'} />
+                <InfoRow label="Technical failure state" value={selectedClip.latest_review_failed ? 'Requires attention' : 'None'} />
               </dl>
+              {selectedClip.latest_review_failed ? (
+                <div className="mt-4 rounded-md border border-app-danger/50 bg-app-danger/10 p-3 text-sm text-red-100">
+                  <p>
+                    {selectedClip.latest_review_failure_category === 'boundary_validation'
+                      ? BOUNDARY_VALIDATION_FAILURE_MESSAGE
+                      : selectedClip.latest_review_reasoning_summary || 'The saved review could not be safely applied.'}
+                  </p>
+                  {(selectedClip.latest_review_warnings?.length ?? 0) > 0 ? (
+                    <details className="mt-3 border-t border-app-danger/30 pt-3 text-app-muted">
+                      <summary className="cursor-pointer font-medium text-app-text">Technical details</summary>
+                      <p className="mt-2 break-words leading-6">{selectedClip.latest_review_warnings?.join(' ')}</p>
+                    </details>
+                  ) : null}
+                </div>
+              ) : null}
               <div className="mt-4 rounded-panel border border-app-border bg-app-panelAlt p-3">
                 <p className="app-label">Concise rationale</p>
                 <p className="mt-2 text-sm leading-6 text-app-muted">{selectedClip.latest_review_reasoning_summary || 'No saved rationale yet.'}</p>

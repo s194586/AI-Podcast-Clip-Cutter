@@ -238,6 +238,55 @@ describe('Product UI v0.5', () => {
     expect(screen.getByText('Generating candidates')).toBeInTheDocument()
   })
 
+  it('disables start, keeps cancel enabled, and prevents duplicate cancel clicks while running', async () => {
+    const runningStatus = projectStatus({ status: 'running', current_stage: 'reviewing_with_ai', stage: 'reviewing_with_ai', progress_percent: 89, message: 'Reviewing clip boundaries (2 of 5 complete)', clip_count: 5 })
+    const cancelledStatus = projectStatus({ status: 'cancelled', current_stage: 'cancelled', stage: 'cancelled', progress_percent: 89, message: 'Cancelled', clip_count: 5 })
+    const api = mockApi([
+      { path: '/health', json: healthGemini },
+      { path: '/projects/3', json: { project: project({ status: 'running', current_stage: 'reviewing_with_ai', progress_percent: 89, clip_count: 5 }) } },
+      { path: '/projects/3/status', json: runningStatus },
+      { method: 'POST', path: '/projects/3/cancel', json: cancelledStatus },
+    ])
+    const user = userEvent.setup()
+
+    renderApp('/projects/3')
+
+    expect(await screen.findByRole('button', { name: 'Start Processing' })).toBeDisabled()
+    const cancelButton = screen.getByRole('button', { name: 'Cancel' })
+    expect(cancelButton).toBeEnabled()
+    await user.dblClick(cancelButton)
+    await screen.findByText('Project cancelled.')
+    expect(api.calls.filter((call) => call.method === 'POST' && call.path === '/projects/3/cancel')).toHaveLength(1)
+  })
+
+  it('shows persisted per-clip review progress', async () => {
+    mockApi([
+      { path: '/health', json: healthGemini },
+      { path: '/projects/3', json: { project: project({ status: 'running', current_stage: 'reviewing_with_ai', progress_percent: 91, clip_count: 5 }) } },
+      { path: '/projects/3/status', json: projectStatus({ status: 'running', current_stage: 'reviewing_with_ai', stage: 'reviewing_with_ai', progress_percent: 91, message: 'Reviewing clip boundaries (3 of 5 complete)', clip_count: 5 }) },
+    ])
+
+    renderApp('/projects/3')
+
+    expect(await screen.findByText('Reviewing clip boundaries (3 of 5 complete)')).toBeInTheDocument()
+  })
+
+  it('shows review timeout failure without leaving action spinners active', async () => {
+    mockApi([
+      { path: '/health', json: healthGemini },
+      { path: '/projects/3', json: { project: project({ status: 'failed', current_stage: 'failed', progress_percent: 91, error_message: 'Automatic boundary review exceeded its configured batch timeout.' }) } },
+      { path: '/projects/3/status', json: projectStatus({ status: 'failed', current_stage: 'failed', stage: 'failed', progress_percent: 91, message: 'Failed', error_message: 'Automatic boundary review exceeded its configured batch timeout.' }) },
+    ])
+
+    const { container } = renderApp('/projects/3')
+
+    expect(await screen.findByText('Automatic boundary review exceeded its configured batch timeout.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Start Processing' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Cancel' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeEnabled()
+    expect(container.querySelector('.animate-spin')).not.toBeInTheDocument()
+  })
+
   it('stops polling when a project becomes ready', async () => {
     let statusCalls = 0
     const api = mockApi([
@@ -528,12 +577,20 @@ describe('Product UI v0.5', () => {
   })
 
   it('shows manual-review clip state', async () => {
-    mockApi(editorRoutes([clip({ latest_review_decision: 'manual_review', latest_review_warnings: ['provider output failed validation'] })], healthLocal))
+    mockApi(editorRoutes([clip({
+      latest_review_decision: 'manual_review',
+      latest_review_failed: true,
+      latest_review_failure_category: 'boundary_validation',
+      latest_review_warnings: ['End must stay within +/-20s of AI end. Adjusted duration must not exceed 90 seconds.'],
+    })], healthLocal))
 
     renderApp('/projects/3/editor')
 
     expect(await screen.findByText('Needs manual review')).toBeInTheDocument()
-    expect(screen.getByText('provider output failed validation')).toBeInTheDocument()
+    expect(screen.getByText('Gemini returned boundaries outside the permitted clip range. This clip requires manual review.')).toBeInTheDocument()
+    const technicalDetails = screen.getByText('Technical details').closest('details')
+    expect(technicalDetails).not.toHaveAttribute('open')
+    expect(screen.getByText('End must stay within +/-20s of AI end. Adjusted duration must not exceed 90 seconds.')).toBeInTheDocument()
   })
 
   it('shows render success', async () => {

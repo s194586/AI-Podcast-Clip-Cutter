@@ -14,6 +14,7 @@ from .project_state import DEFAULT_PROJECT_ID, PROJECT_ROOT
 def clip_to_dict(clip: Clip) -> dict[str, Any]:
     duration = round(float(clip.edited_end) - float(clip.edited_start), 2)
     latest_review = clip.evaluations[0] if clip.evaluations else None
+    latest_review_raw = dict(latest_review.raw_result_json or {}) if latest_review else {}
     return {
         "id": clip.external_id,
         "database_id": clip.id,
@@ -54,6 +55,8 @@ def clip_to_dict(clip: Clip) -> dict[str, Any]:
         "latest_review_start_reason": latest_review.start_reason if latest_review else "",
         "latest_review_end_reason": latest_review.end_reason if latest_review else "",
         "latest_review_warnings": list(latest_review.warnings_json or []) if latest_review else [],
+        "latest_review_failed": bool(latest_review_raw.get("failed")),
+        "latest_review_failure_category": latest_review_raw.get("failure_category"),
         "latest_review_changed_boundaries": _review_changed_boundaries(clip, latest_review),
         "created_at": clip.created_at.isoformat() if clip.created_at else None,
         "updated_at": clip.updated_at.isoformat() if clip.updated_at else None,

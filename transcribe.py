@@ -116,19 +116,42 @@ def build_diarization_backend(args: argparse.Namespace):
     return HeuristicDiarizationBackend(config), config
 
 
-def main() -> None:
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    if hasattr(sys.stderr, "reconfigure"):
-        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-
-    args = parse_args()
-    audio_path = Path(args.file)
-    output_path = Path(args.out)
-
+def transcribe_file(
+    audio_path: Path | str,
+    output_path: Path | str,
+    *,
+    backend: str = "faster_whisper",
+    whisper_model: str = "small",
+    language: str | None = None,
+    device: str = "auto",
+    compute_type: str = "auto",
+    beam_size: int = 5,
+    vad_filter: bool = True,
+    word_timestamps: bool = True,
+    enable_diarization: bool = True,
+    diarization_backend: str = "heuristic_cluster",
+    max_speakers: int = 4,
+    diarization_threshold: float = 0.985,
+) -> dict:
+    audio_path = Path(audio_path)
+    output_path = Path(output_path)
     if not audio_path.exists():
-        print(f"Input file not found: {audio_path}", file=sys.stderr)
-        sys.exit(2)
+        raise FileNotFoundError(f"Input file not found: {audio_path}")
+
+    args = argparse.Namespace(
+        backend=backend,
+        whisper_model=whisper_model,
+        language=language,
+        device=device,
+        compute_type=compute_type,
+        beam_size=beam_size,
+        disable_vad=not vad_filter,
+        disable_word_timestamps=not word_timestamps,
+        enable_diarization=enable_diarization,
+        diarization_backend=diarization_backend,
+        max_speakers=max_speakers,
+        diarization_threshold=diarization_threshold,
+    )
 
     bootstrap_ssl_certificates(quiet=True)
 
@@ -186,6 +209,36 @@ def main() -> None:
         json.dump(payload, file_handle, ensure_ascii=False, indent=2)
 
     print(f"Transcript saved to: {output_path}")
+    return payload
+
+
+def main() -> None:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
+    args = parse_args()
+    try:
+        transcribe_file(
+            args.file,
+            args.out,
+            backend=args.backend,
+            whisper_model=args.whisper_model,
+            language=args.language,
+            device=args.device,
+            compute_type=args.compute_type,
+            beam_size=args.beam_size,
+            vad_filter=not args.disable_vad,
+            word_timestamps=not args.disable_word_timestamps,
+            enable_diarization=args.enable_diarization,
+            diarization_backend=args.diarization_backend,
+            max_speakers=args.max_speakers,
+            diarization_threshold=args.diarization_threshold,
+        )
+    except FileNotFoundError as exc:
+        print(str(exc), file=sys.stderr)
+        raise SystemExit(2) from exc
 
 
 if __name__ == "__main__":

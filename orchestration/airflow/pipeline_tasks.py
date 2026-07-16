@@ -1,154 +1,116 @@
+"""Optional Airflow adapters over the reusable pipeline services.
+
+This module intentionally imports without Apache Airflow installed. The release does
+not add or enable Airflow; the existing DAG placeholder can call these thin helpers.
+"""
+
 from __future__ import annotations
 
 import os
-import subprocess
-import sys
 from pathlib import Path
 from typing import Any
 
-PROJECT_ROOT = Path(os.environ.get("PODCAST_CUTTER_PROJECT_ROOT", Path(__file__).resolve().parents[2])).resolve()
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-
 from apps.api.db.database import init_database, session_scope
-from apps.api.db.repositories import ClipRepository, JobRepository, ProjectRepository
-from apps.api.services.clips import _load_clips_from_candidate_files
-from apps.review_agent.service import ReviewAgentService
+from apps.api.db.models import utc_now
+from apps.api.db.repositories import JobRepository, ProjectRepository
+from apps.api.services.project_service import ensure_project_workspace, safe_relative_path
+from apps.pipeline.config import PipelineConfig
+from apps.pipeline.context import PipelineContext
+from apps.pipeline.events import progress_for_stage
+from apps.pipeline.stages import (
+    DownloadMediaStage,
+    GenerateCandidatesStage,
+    ImportCandidatesStage,
+    MarkProjectReadyStage,
+    ReviewCandidatesStage,
+    TranscribeAudioStage,
+    ValidateTranscriptStage,
+)
 
 
-MEDIA_SUFFIXES = (".mp4", ".mov", ".mkv", ".webm", ".mp3", ".wav", ".m4a")
+PROJECT_ROOT = Path(
+    os.environ.get("PODCAST_CUTTER_PROJECT_ROOT", Path(__file__).resolve().parents[2])
+).resolve()
 
 
 def validate_project_config(dag_conf: dict[str, Any] | None = None) -> dict[str, Any]:
     config = dict(dag_conf or {})
     source_url = str(config.get("source_url") or "").strip()
     project_id = config.get("project_id")
-
     init_database()
     with session_scope() as session:
-        project_repo = ProjectRepository(session)
+        repository = ProjectRepository(session)
         if project_id is None:
             if not source_url:
                 raise ValueError("DAG config must include project_id or source_url.")
-            project = project_repo.create(source_url=source_url, title=config.get("title"), status="queued")
+            project = repository.create(
+                source_url=source_url,
+                title=config.get("title"),
+                status="queued",
+                current_stage="waiting",
+            )
         else:
-            project = project_repo.get(int(project_id))
+            project = repository.get(int(project_id))
             if project is None:
                 raise ValueError(f"Unknown project_id: {project_id}")
             if source_url:
                 project.source_url = source_url
-            project.status = "queued"
-            project_repo.touch(project)
-
-        return {
-            "project_id": project.id,
-            "source_url": project.source_url,
-            "project_root": str(PROJECT_ROOT),
-            "clip_review_mode": str(config.get("clip_review_mode") or os.environ.get("CLIP_REVIEW_MODE") or "gemini"),
-        }
+            repository.update_flow_state(
+                project,
+                status="queued",
+                current_stage="waiting",
+                progress_percent=0.0,
+                error_message=None,
+                completed_at=None,
+            )
+        workspace = ensure_project_workspace(project.id, project_root=PROJECT_ROOT)
+        project.workspace_path = safe_relative_path(workspace, project_root=PROJECT_ROOT)
+        repository.touch(project)
+        config.update(
+            {
+                "project_id": project.id,
+                "source_url": project.source_url,
+                "workspace_dir": str(workspace),
+                "project_root": str(PROJECT_ROOT),
+                "clip_review_mode": str(
+                    config.get("clip_review_mode")
+                    or os.environ.get("CLIP_REVIEW_MODE")
+                    or "gemini"
+                ),
+            }
+        )
+    return config
 
 
 def download_media(config: dict[str, Any]) -> dict[str, Any]:
-    project_id = int(config["project_id"])
-    source_url = str(config.get("source_url") or "").strip()
-    mark_project_status(project_id, "processing")
-    if not source_url:
-        return config
-
-    _run_command(
-        [
-            _python_executable(),
-            "download_content.py",
-            source_url,
-            "--input",
-            str(PROJECT_ROOT / "input"),
-            "--metadata",
-            str(PROJECT_ROOT / "metadata"),
-        ]
-    )
-    latest_media = _find_latest_file(PROJECT_ROOT / "input", MEDIA_SUFFIXES)
-    if latest_media is not None:
-        _update_project_paths(project_id, source_video_path=_relative(latest_media))
-    return config
+    return _run_stage(config, DownloadMediaStage())
 
 
 def transcribe_audio(config: dict[str, Any]) -> dict[str, Any]:
-    project_id = int(config["project_id"])
-    mark_project_status(project_id, "transcribing")
-    media_path = _find_latest_file(PROJECT_ROOT / "input", MEDIA_SUFFIXES)
-    if media_path is None:
-        raise FileNotFoundError("No media file found in input/.")
-
-    transcript_path = PROJECT_ROOT / "transcripts" / "final_transcript.json"
-    transcript_path.parent.mkdir(parents=True, exist_ok=True)
-    _run_command([_python_executable(), "transcribe.py", "--file", str(media_path), "--out", str(transcript_path)])
-    _update_project_paths(project_id, transcript_path=_relative(transcript_path))
-    return config
+    return _run_stage(config, TranscribeAudioStage())
 
 
 def generate_candidates(config: dict[str, Any]) -> dict[str, Any]:
-    project_id = int(config["project_id"])
-    mark_project_status(project_id, "analyzing")
-    transcript_path = PROJECT_ROOT / "transcripts" / "final_transcript.json"
-    heatmap_path = PROJECT_ROOT / "metadata" / "heatmap.json"
-    output_path = PROJECT_ROOT / "top_windows.json"
-    cutting_log_path = PROJECT_ROOT / "metadata" / "cutting_logic.json"
-    if not transcript_path.exists():
-        raise FileNotFoundError(f"Missing transcript: {transcript_path}")
-
-    _run_command(
-        [
-            _python_executable(),
-            "analyze_virals.py",
-            "--transcript",
-            str(transcript_path),
-            "--heatmap",
-            str(heatmap_path),
-            "--save-json",
-            str(output_path),
-            "--cutting-log",
-            str(cutting_log_path),
-            "--ai-mode",
-            "local_only",
-        ]
-    )
-    _update_project_paths(project_id, candidate_source_path=_relative(output_path))
+    context = _context(config)
+    if not context.config.skip_subtitle_checker:
+        _mark_running(context.project_id, "validating_transcript")
+        ValidateTranscriptStage().run(context)
+    _mark_running(context.project_id, "generating_candidates")
+    result = GenerateCandidatesStage().run(context)
+    config["candidate_result"] = _result_dict(result)
     return config
 
 
 def import_candidates_to_sqlite(config: dict[str, Any]) -> dict[str, Any]:
-    project_id = int(config["project_id"])
-    mark_project_status(project_id, "reviewing")
-    clips, source = _load_clips_from_candidate_files(PROJECT_ROOT)
-
-    init_database()
-    with session_scope() as session:
-        project_repo = ProjectRepository(session)
-        clip_repo = ClipRepository(session)
-        project = project_repo.get(project_id)
-        if project is None:
-            raise ValueError(f"Unknown project_id: {project_id}")
-        project.candidate_source_path = source
-        for clip_payload in clips:
-            existing = clip_repo.get_by_external_id(project_id, str(clip_payload["id"]))
-            if existing is None:
-                clip_repo.create_from_dict(project_id, clip_payload)
-                continue
-            _update_clip_from_payload(existing, clip_payload)
-            clip_repo.touch(existing)
-        project_repo.touch(project)
-    return config
+    return _run_stage(config, ImportCandidatesStage())
 
 
 def review_candidates_with_gemini(config: dict[str, Any]) -> dict[str, Any]:
-    project_id = int(config["project_id"])
-    mark_project_status(project_id, "reviewing")
-    mode = str(config.get("clip_review_mode") or os.environ.get("CLIP_REVIEW_MODE") or "gemini")
-    service = ReviewAgentService(project_root=PROJECT_ROOT, mode=mode)
-    config["review_summary"] = service.review_project_clips(
-        project_id=project_id,
-        apply_safe_suggestions=bool(config.get("apply_safe_suggestions", True)),
-    )
+    context = _context(config, auto_review=True)
+    _mark_running(context.project_id, "reviewing_with_ai")
+    stage = ReviewCandidatesStage(review_mode=str(config.get("clip_review_mode") or "gemini"))
+    result = stage.run(context)
+    config["review_summary"] = dict(result.metadata)
     return config
 
 
@@ -157,26 +119,45 @@ def review_top_candidates(config: dict[str, Any]) -> dict[str, Any]:
 
 
 def mark_project_ready(config: dict[str, Any]) -> dict[str, Any]:
-    mark_project_status(int(config["project_id"]), "ready")
+    MarkProjectReadyStage().run(_context(config))
     return config
 
 
 def mark_project_status(project_id: int, status: str, error_message: str | None = None) -> None:
+    normalized = str(status or "waiting")
+    stage_aliases = {
+        "processing": "downloading",
+        "analyzing": "generating_candidates",
+        "reviewing": "importing_candidates",
+    }
+    stage = stage_aliases.get(normalized, normalized)
     init_database()
     with session_scope() as session:
-        project_repo = ProjectRepository(session)
-        project = project_repo.get(int(project_id))
+        repository = ProjectRepository(session)
+        project = repository.get(int(project_id))
         if project is None:
             raise ValueError(f"Unknown project_id: {project_id}")
-        project.status = status
-        project_repo.touch(project)
-        if error_message:
+        failed = stage == "failed"
+        repository.update_flow_state(
+            project,
+            status="failed" if failed else ("ready" if stage == "ready" else "running"),
+            current_stage=stage,
+            progress_percent=(
+                float(project.progress_percent or 0.0)
+                if failed
+                else float(progress_for_stage(stage) or 0.0)
+            ),
+            error_message=error_message,
+            completed_at=utc_now() if stage in {"ready", "failed"} else None,
+        )
+        if failed and error_message:
             JobRepository(session).create(
                 project_id=project.id,
                 job_type="airflow_pipeline",
                 status="failed",
-                stage=status,
-                progress=0.0,
+                stage=stage,
+                current_stage=stage,
+                progress=float(project.progress_percent or 0.0),
                 error_message=error_message,
             )
 
@@ -185,67 +166,52 @@ def mark_project_failed(project_id: int, error_message: str) -> None:
     mark_project_status(project_id, "failed", error_message=error_message)
 
 
-def _update_project_paths(project_id: int, **paths: str | None) -> None:
-    init_database()
-    with session_scope() as session:
-        project_repo = ProjectRepository(session)
-        project = project_repo.get(int(project_id))
-        if project is None:
-            raise ValueError(f"Unknown project_id: {project_id}")
-        for key, value in paths.items():
-            if value:
-                setattr(project, key, value)
-        project_repo.touch(project)
+def _context(config: dict[str, Any], *, auto_review: bool | None = None) -> PipelineContext:
+    project_id = int(config["project_id"])
+    root = Path(config.get("project_root") or PROJECT_ROOT).resolve()
+    workspace = Path(
+        config.get("workspace_dir")
+        or ensure_project_workspace(project_id, project_root=root)
+    ).resolve()
+    options = PipelineConfig(
+        ai_mode="local_only",
+        subtitle_checker_mode=str(config.get("subtitle_checker_mode") or "local_only"),
+        skip_subtitle_checker=bool(config.get("skip_subtitle_checker", False)),
+        transcription_backend=str(config.get("transcription_backend") or "faster_whisper"),
+        whisper_model=str(config.get("whisper_model") or "small"),
+        transcription_device=str(config.get("transcription_device") or "auto"),
+        transcription_compute_type=str(config.get("transcription_compute_type") or "auto"),
+    )
+    return PipelineContext(
+        project_id=project_id,
+        source_url=str(config.get("source_url") or "") or None,
+        workspace_path=workspace,
+        repository_root=root,
+        auto_review=bool(True if auto_review is None else auto_review),
+        analysis_only=True,
+        config=options,
+    )
 
 
-def _update_clip_from_payload(clip: Any, payload: dict[str, Any]) -> None:
-    field_map = {
-        "clip_index": "index",
-        "ai_start": "ai_start",
-        "ai_end": "ai_end",
-        "edited_start": "edited_start",
-        "edited_end": "edited_end",
-        "min_start": "min_start",
-        "max_start": "max_start",
-        "min_end": "min_end",
-        "max_end": "max_end",
-        "summary": "summary",
-        "text": "text",
-        "source": "source",
-        "candidate_id": "candidate_id",
-        "selection_source": "selection_source",
-        "local_score": "local_score",
-        "local_rank": "local_rank",
-        "selection_reasons": "selection_reasons",
-        "local_features": "local_features",
+def _run_stage(config: dict[str, Any], stage) -> dict[str, Any]:
+    context = _context(config)
+    _mark_running(context.project_id, stage.stage)
+    result = stage.run(context)
+    config[f"{stage.stage}_result"] = _result_dict(result)
+    return config
+
+
+def _mark_running(project_id: int | None, stage: str) -> None:
+    if project_id is None:
+        raise ValueError("Pipeline stage requires project_id.")
+    mark_project_status(project_id, stage)
+
+
+def _result_dict(result) -> dict[str, Any]:
+    return {
+        "stage": result.stage,
+        "success": result.success,
+        "message": result.message,
+        "produced_artifacts": list(result.produced_artifacts),
+        **dict(result.metadata),
     }
-    for model_field, payload_field in field_map.items():
-        if payload_field in payload:
-            setattr(clip, model_field, payload[payload_field])
-
-
-def _run_command(args: list[str]) -> None:
-    try:
-        subprocess.run(args, cwd=PROJECT_ROOT, check=True)
-    except subprocess.CalledProcessError as exc:
-        raise RuntimeError(f"Pipeline command failed with exit code {exc.returncode}: {' '.join(args)}") from exc
-
-
-def _python_executable() -> str:
-    return os.environ.get("PODCAST_CUTTER_PYTHON") or sys.executable
-
-
-def _find_latest_file(folder: Path, suffixes: tuple[str, ...]) -> Path | None:
-    if not folder.exists():
-        return None
-    files = [path for path in folder.iterdir() if path.is_file() and path.suffix.lower() in suffixes]
-    if not files:
-        return None
-    return max(files, key=lambda path: path.stat().st_mtime)
-
-
-def _relative(path: Path) -> str:
-    try:
-        return str(path.resolve().relative_to(PROJECT_ROOT)).replace("\\", "/")
-    except ValueError:
-        return str(path)

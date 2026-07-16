@@ -16,7 +16,10 @@ from apps.api.db.models import ClipEvaluation
 from apps.api.db.repositories import ClipRepository, JobRepository, ProjectRepository
 from apps.api.main import app
 from apps.api.services import clip_service
-from apps.review_agent.context import build_clip_transcript_context
+from apps.review_agent.context import (
+    build_clip_transcript_context,
+    build_clip_transcript_context_from_segments,
+)
 from apps.review_agent.providers import (
     GeminiBoundaryReviewer,
     ReviewProviderError,
@@ -37,6 +40,13 @@ def _option_index_for_segment(context, option_key, segment_id):
         if option["segment_id"] == segment_id:
             return option["option_index"]
     raise AssertionError(f"No option for segment {segment_id}")
+
+
+def _option_index_for_boundary(context, option_key, boundary_key, value):
+    for option in context[option_key]:
+        if float(option[boundary_key]) == float(value):
+            return option["option_index"]
+    raise AssertionError(f"No {option_key} option with {boundary_key}={value}")
 
 
 class ReviewAgentTests(unittest.TestCase):
@@ -114,6 +124,20 @@ class ReviewAgentTests(unittest.TestCase):
                 )
             return project.id
 
+    def _seed_long_boundary_project(self) -> int:
+        self._write_transcript(
+            [
+                {"start": 80.0, "end": 100.0, "text": "Earlier setup."},
+                {"start": 100.0, "end": 130.0, "text": "Candidate opening."},
+                {"start": 130.0, "end": 170.0, "text": "Candidate explanation."},
+                {"start": 170.0, "end": 180.0, "text": "Candidate payoff."},
+                {"start": 180.0, "end": 205.0, "text": "Later topic."},
+            ]
+        )
+        return self._seed_project(
+            [{"id": "clip_001", "index": 1, "ai_start": 100.0, "ai_end": 180.0}]
+        )
+
     def test_context_extraction_uses_configured_window_and_stable_segment_ids(self):
         context = build_clip_transcript_context(
             self.root / "transcripts" / "final_transcript.json",
@@ -149,6 +173,78 @@ class ReviewAgentTests(unittest.TestCase):
             self.assertIn("end", option)
             self.assertIn("text", option)
             self.assertTrue(option["text"])
+
+    def test_context_exposes_only_range_safe_options_and_duration_safe_pairs(self):
+        context = build_clip_transcript_context_from_segments(
+            [
+                {"start": 75.0, "end": 85.0, "text": "Crosses the start limit."},
+                {"start": 80.0, "end": 100.0, "text": "Allowed early start."},
+                {"start": 100.0, "end": 130.0, "text": "Original opening."},
+                {"start": 130.0, "end": 170.0, "text": "Middle."},
+                {"start": 170.0, "end": 180.0, "text": "Original ending."},
+                {"start": 180.0, "end": 205.0, "text": "Crosses the end limit."},
+            ],
+            100.0,
+            180.0,
+            context_seconds=20.0,
+            clip_id="clip_safe_contract",
+            allowed_start_min=80.0,
+            allowed_start_max=120.0,
+            allowed_end_min=160.0,
+            allowed_end_max=200.0,
+            min_duration_seconds=10.0,
+            max_duration_seconds=90.0,
+        )
+
+        self.assertEqual(context["context_seconds"], 20.0)
+        self.assertTrue(context["allowed_boundary_pairs"])
+        self.assertTrue(
+            all(80.0 <= option["start"] <= 120.0 for option in context["start_boundary_options"])
+        )
+        self.assertTrue(
+            all(160.0 <= option["end"] <= 200.0 for option in context["end_boundary_options"])
+        )
+        start_by_index = {
+            option["option_index"]: option for option in context["start_boundary_options"]
+        }
+        end_by_index = {
+            option["option_index"]: option for option in context["end_boundary_options"]
+        }
+        segment_by_id = {
+            segment["segment_id"]: segment
+            for key in ("context_before", "candidate_segments", "context_after")
+            for segment in context[key]
+        }
+        for option in [*start_by_index.values(), *end_by_index.values()]:
+            self.assertIn(option["segment_id"], segment_by_id)
+        for pair in context["allowed_boundary_pairs"]:
+            start_option = start_by_index[pair["start_option_index"]]
+            end_option = end_by_index[pair["end_option_index"]]
+            self.assertLess(start_option["start"], end_option["end"])
+            self.assertGreaterEqual(end_option["end"] - start_option["start"], 10.0)
+            self.assertLessEqual(end_option["end"] - start_option["start"], 90.0)
+
+        original_pair = (
+            _option_index_for_boundary(context, "start_boundary_options", "start", 100.0),
+            _option_index_for_boundary(context, "end_boundary_options", "end", 180.0),
+        )
+        allowed_pairs = {
+            (pair["start_option_index"], pair["end_option_index"])
+            for pair in context["allowed_boundary_pairs"]
+        }
+        self.assertIn(original_pair, allowed_pairs)
+        self.assertEqual(
+            original_pair,
+            (
+                context["current_aligned_start_option_index"],
+                context["current_aligned_end_option_index"],
+            ),
+        )
+        overlong_pair = (
+            _option_index_for_boundary(context, "start_boundary_options", "start", 80.0),
+            _option_index_for_boundary(context, "end_boundary_options", "end", 180.0),
+        )
+        self.assertNotIn(overlong_pair, allowed_pairs)
 
     def test_gemini_provider_uses_structured_schema_and_compact_payload(self):
         context = build_clip_transcript_context(
@@ -193,6 +289,7 @@ class ReviewAgentTests(unittest.TestCase):
         prompt = calls[0]["input"]
         self.assertIn("CONTEXT BEFORE", prompt)
         self.assertIn("ALLOWED START OPTIONS", prompt)
+        self.assertIn("ALLOWED BOUNDARY PAIRS", prompt)
         self.assertIn("current_aligned_start_option_index", prompt)
         self.assertIn("current_aligned_end_option_index", prompt)
         self.assertIn("selected_start_option_index", calls[0]["response_format"]["schema"]["properties"])
@@ -204,6 +301,8 @@ class ReviewAgentTests(unittest.TestCase):
         self.assertNotIn("source_video_path", prompt)
         self.assertNotIn("This far away setup must not be sent.", prompt)
         self.assertNotIn("secret-key", prompt)
+        self.assertIn("You must make the editorial decision yourself.", prompt)
+        self.assertIn("improving the setup, opening sentence, question, answer completeness, payoff, or ending", prompt)
 
     def test_gemini_mode_without_api_key_fails_clearly_without_fallback(self):
         project_id = self._seed_project()
@@ -536,6 +635,236 @@ class ReviewAgentTests(unittest.TestCase):
         self.assertEqual(clip["reviewed_start"], 95.0)
         self.assertEqual(clip["edited_start"], 95.0)
         self.assertEqual(clip["boundary_source"], "ai_review")
+
+    def test_over_90_second_pair_triggers_one_corrective_retry_and_applies_valid_pair(self):
+        project_id = self._seed_long_boundary_project()
+        os.environ["CLIP_REVIEW_MODE"] = "gemini"
+        os.environ["GEMINI_API_KEY"] = "test-key"
+        calls = []
+
+        class PairChoosingGemini:
+            provider = "gemini"
+
+            def __init__(self, *, api_key, model):
+                self.model = model
+
+            def review(self, context, corrective_message=None):
+                calls.append(corrective_message)
+                start = 80.0 if len(calls) == 1 else 100.0
+                return GeminiBoundaryDecision(
+                    decision="adjust_boundaries",
+                    selected_start_option_index=_option_index_for_boundary(
+                        context, "start_boundary_options", "start", start
+                    ),
+                    selected_end_option_index=_option_index_for_boundary(
+                        context, "end_boundary_options", "end", 180.0
+                    ),
+                    reasoning_summary="Gemini selected the semantic pair.",
+                    start_reason="The selected opening carries the setup.",
+                    end_reason="The selected ending lands the payoff.",
+                    warnings=[],
+                )
+
+        with patch("apps.review_agent.service.GeminiBoundaryReviewer", PairChoosingGemini):
+            result = ReviewAgentService(project_root=self.root, mode="gemini").review_clip(
+                project_id=project_id,
+                clip_id="clip_001",
+            )
+
+        self.assertEqual(len(calls), 2)
+        self.assertIsNone(calls[0])
+        self.assertIn("duration exceeds 90 seconds", calls[1])
+        self.assertIn("allowed_boundary_pairs", calls[1])
+        self.assertNotIn("Candidate explanation", calls[1])
+        self.assertNotIn(str(self.root), calls[1])
+        self.assertNotIn("test-key", calls[1])
+        self.assertFalse(result["failed"])
+        self.assertTrue(result["retry_used"])
+        self.assertEqual(result["provider_attempt_count"], 2)
+        self.assertEqual(result["reviewed_start"], 100.0)
+        self.assertEqual(result["reviewed_end"], 180.0)
+        clip = clip_service.load_clips(project_id=project_id, project_root=self.root)[0]
+        self.assertEqual(clip["ai_start"], 100.0)
+        self.assertEqual(clip["ai_end"], 180.0)
+        self.assertEqual(clip["edited_start"], 100.0)
+        self.assertEqual(clip["edited_end"], 180.0)
+        self.assertEqual(clip["boundary_source"], "ai_review")
+
+    def test_out_of_range_end_triggers_corrective_retry(self):
+        self._write_transcript(
+            [
+                {"start": 95.0, "end": 100.0, "text": "Setup."},
+                {"start": 100.0, "end": 120.0, "text": "Opening."},
+                {"start": 120.0, "end": 140.0, "text": "Payoff."},
+                {"start": 140.0, "end": 170.0, "text": "Outside permitted end."},
+            ]
+        )
+        project_id = self._seed_project()
+        os.environ["CLIP_REVIEW_MODE"] = "gemini"
+        os.environ["GEMINI_API_KEY"] = "test-key"
+        calls = []
+
+        class OutOfRangeGemini:
+            provider = "gemini"
+
+            def __init__(self, *, api_key, model):
+                self.model = model
+
+            def review(self, context, corrective_message=None):
+                calls.append(corrective_message)
+                if len(calls) == 1:
+                    outside_segment = context["context_after"][0]
+                    context["end_boundary_options"].append(
+                        {
+                            "option_index": 99,
+                            "segment_id": outside_segment["segment_id"],
+                            "start": outside_segment["start"],
+                            "end": outside_segment["end"],
+                            "text": outside_segment["text"],
+                        }
+                    )
+                    end_index = 99
+                else:
+                    end_index = context["current_aligned_end_option_index"]
+                return GeminiBoundaryDecision(
+                    decision="adjust_boundaries",
+                    selected_start_option_index=context["current_aligned_start_option_index"],
+                    selected_end_option_index=end_index,
+                    reasoning_summary="Offline selection.",
+                    start_reason="Offline start.",
+                    end_reason="Offline end.",
+                    warnings=[],
+                )
+
+        with patch("apps.review_agent.service.GeminiBoundaryReviewer", OutOfRangeGemini):
+            result = ReviewAgentService(project_root=self.root, mode="gemini").review_clip(
+                project_id=project_id,
+                clip_id="clip_001",
+            )
+
+        self.assertEqual(len(calls), 2)
+        self.assertIn("selected end is outside the permitted clip range", calls[1])
+        self.assertFalse(result["failed"])
+        self.assertTrue(result["retry_used"])
+        self.assertEqual(result["reviewed_end"], 140.0)
+
+    def test_unlisted_pair_triggers_corrective_retry(self):
+        project_id = self._seed_project()
+        os.environ["CLIP_REVIEW_MODE"] = "gemini"
+        os.environ["GEMINI_API_KEY"] = "test-key"
+        calls = []
+
+        class UnlistedPairGemini:
+            provider = "gemini"
+
+            def __init__(self, *, api_key, model):
+                self.model = model
+
+            def review(self, context, corrective_message=None):
+                calls.append(corrective_message)
+                if len(calls) == 1:
+                    selected_pair = (
+                        context["current_aligned_start_option_index"],
+                        context["current_aligned_end_option_index"],
+                    )
+                    context["allowed_boundary_pairs"] = [
+                        pair
+                        for pair in context["allowed_boundary_pairs"]
+                        if (pair["start_option_index"], pair["end_option_index"]) != selected_pair
+                    ]
+                    start_index, end_index = selected_pair
+                else:
+                    pair = context["allowed_boundary_pairs"][0]
+                    start_index = pair["start_option_index"]
+                    end_index = pair["end_option_index"]
+                return GeminiBoundaryDecision(
+                    decision="adjust_boundaries",
+                    selected_start_option_index=start_index,
+                    selected_end_option_index=end_index,
+                    reasoning_summary="Offline selection.",
+                    start_reason="Offline start.",
+                    end_reason="Offline end.",
+                    warnings=[],
+                )
+
+        with patch("apps.review_agent.service.GeminiBoundaryReviewer", UnlistedPairGemini):
+            result = ReviewAgentService(project_root=self.root, mode="gemini").review_clip(
+                project_id=project_id,
+                clip_id="clip_001",
+            )
+
+        self.assertEqual(len(calls), 2)
+        self.assertIn("boundary pair is not allowed", calls[1])
+        self.assertFalse(result["failed"])
+        self.assertTrue(result["retry_used"])
+
+    def test_two_invalid_pairs_become_manual_review_and_preserve_existing_boundaries(self):
+        os.environ["CLIP_REVIEW_MODE"] = "gemini"
+        os.environ["GEMINI_API_KEY"] = "test-key"
+
+        for boundary_source, reviewed_start, reviewed_end, edited_start, edited_end in (
+            ("user", None, None, 105.0, 175.0),
+            ("ai_review", 100.0, 170.0, 100.0, 170.0),
+        ):
+            with self.subTest(boundary_source=boundary_source):
+                project_id = self._seed_long_boundary_project()
+                with session_scope() as session:
+                    clip = ClipRepository(session).get_by_external_id(project_id, "clip_001")
+                    clip.boundary_source = boundary_source
+                    clip.reviewed_start = reviewed_start
+                    clip.reviewed_end = reviewed_end
+                    clip.edited_start = edited_start
+                    clip.edited_end = edited_end
+                    ClipRepository(session).touch(clip)
+                calls = []
+
+                class AlwaysInvalidGemini:
+                    provider = "gemini"
+
+                    def __init__(self, *, api_key, model):
+                        self.model = model
+
+                    def review(self, context, corrective_message=None):
+                        calls.append(corrective_message)
+                        return GeminiBoundaryDecision(
+                            decision="adjust_boundaries",
+                            selected_start_option_index=_option_index_for_boundary(
+                                context, "start_boundary_options", "start", 80.0
+                            ),
+                            selected_end_option_index=_option_index_for_boundary(
+                                context, "end_boundary_options", "end", 180.0
+                            ),
+                            reasoning_summary="Offline invalid pair.",
+                            start_reason="Offline start.",
+                            end_reason="Offline end.",
+                            warnings=[],
+                        )
+
+                with patch("apps.review_agent.service.GeminiBoundaryReviewer", AlwaysInvalidGemini):
+                    result = ReviewAgentService(project_root=self.root, mode="gemini").review_clip(
+                        project_id=project_id,
+                        clip_id="clip_001",
+                    )
+
+                self.assertEqual(len(calls), 2)
+                self.assertTrue(result["failed"])
+                self.assertEqual(result["decision"], "manual_review")
+                self.assertEqual(result["provider"], "gemini")
+                self.assertNotEqual(result["model"], "local_stub")
+                self.assertEqual(result["failure_category"], "boundary_validation")
+                self.assertEqual(
+                    result["reasoning_summary"],
+                    "Gemini returned boundaries outside the permitted clip range. This clip requires manual review.",
+                )
+                clip = clip_service.load_clips(project_id=project_id, project_root=self.root)[0]
+                self.assertEqual(clip["ai_start"], 100.0)
+                self.assertEqual(clip["ai_end"], 180.0)
+                self.assertEqual(clip["boundary_source"], boundary_source)
+                self.assertEqual(clip["reviewed_start"], reviewed_start)
+                self.assertEqual(clip["reviewed_end"], reviewed_end)
+                self.assertEqual(clip["edited_start"], edited_start)
+                self.assertEqual(clip["edited_end"], edited_end)
+                self.assertEqual(clip["latest_review_failure_category"], "boundary_validation")
 
     def test_invalid_reversed_or_malformed_gemini_output_is_saved_without_applying(self):
         project_id = self._seed_project()
@@ -1019,7 +1348,7 @@ class ReviewAgentTests(unittest.TestCase):
             def review_project_clips(self, *, project_id, apply_safe_suggestions):
                 return {"project_id": project_id, "provider": "gemini", "clip_count": 1}
 
-        with patch.object(pipeline_tasks, "ReviewAgentService", FakeService):
+        with patch("apps.pipeline.stages.review_candidates.ReviewAgentService", FakeService):
             config = pipeline_tasks.review_candidates_with_gemini(
                 {"project_id": project_id, "clip_review_mode": "gemini"}
             )

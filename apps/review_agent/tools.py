@@ -202,6 +202,7 @@ def evaluation_to_dict(evaluation: ClipEvaluation) -> dict[str, Any]:
         "context_seconds": getattr(evaluation, "context_seconds", None) or raw_result.get("context_seconds"),
         "failed": bool(raw_result.get("failed")),
         "failure_reason": raw_result.get("failure_reason"),
+        "failure_category": raw_result.get("failure_category"),
         "retry_used": bool(raw_result.get("retry_used")),
         "provider_attempt_count": int(raw_result.get("provider_attempt_count") or 1),
         "first_attempt_validation_error": raw_result.get("first_attempt_validation_error"),

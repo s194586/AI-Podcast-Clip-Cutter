@@ -2,7 +2,7 @@
 
 AI Podcast Clip Cutter is a local-first podcast automation toolkit for turning long podcast, interview, and talking-head videos into vertical short clips.
 
-The core media processing workflow is deterministic and can be orchestrated with Airflow. A separate Clip Review Agent can send compact transcript context to Gemini for semantic temporal boundary review before a human renders final shorts.
+The core media processing workflow is deterministic and is assembled from reusable typed Python stages. A separate Clip Review Agent can send compact transcript context to Gemini for semantic temporal boundary review before a human renders final shorts.
 
 The system does not claim viral prediction or fully automate editorial judgment. It proposes draft clips, shows why they were selected, lets the user adjust start/end boundaries, and renders final MP4 files only after review.
 
@@ -42,7 +42,8 @@ flowchart LR
 ## Main Modules
 
 ```text
-manager.py              Local CLI orchestrator
+manager.py              Backwards-compatible thin CLI
+apps/pipeline           Typed contexts, events, runner, and reusable stages
 download_content.py     Downloads source media with yt-dlp
 transcribe.py           Creates final_transcript.json with Faster-Whisper
 content_classifier.py   Podcast-only compatibility profile writer
@@ -53,7 +54,7 @@ subtitler.py            Burns subtitles into rendered clips
 apps/api                FastAPI editor backend
 apps/api/static         Browser review UI
 apps/review_agent       Transcript boundary reviewer with Gemini and local_stub modes
-orchestration/airflow   Optional Airflow DAG for deterministic pipeline orchestration
+orchestration/airflow   Inactive future-integration placeholder and thin adapters
 ```
 
 `analyze_virals.py` still keeps its historical filename for compatibility, but the active product direction is podcast-only.
@@ -77,11 +78,17 @@ $env:CLIP_REVIEW_MODE = "local_stub"  # or "gemini"
 $env:GEMINI_API_KEY = "..."
 $env:GEMINI_MODEL = "gemini-3.5-flash"
 $env:CLIP_REVIEW_CONTEXT_SECONDS = "20.0"
+$env:GEMINI_REQUEST_TIMEOUT_SECONDS = "300"
+$env:GEMINI_BATCH_TIMEOUT_SECONDS = "1800"
 ```
 
 `TRANSCRIPTION_DEVICE=auto` prefers CUDA when CTranslate2 reports CUDA devices. If CUDA execution fails because runtime libraries such as cuBLAS, cuDNN, the CUDA runtime, or the CUDA driver cannot be loaded, transcription logs a concise warning and retries once on CPU with `compute_type=int8`. `TRANSCRIPTION_DEVICE=cuda` is explicit and fails with an actionable message instead of silently falling back.
 
 `GEMINI_API_KEY` is required only when `CLIP_REVIEW_MODE=gemini`. The app never logs or stores the key.
+
+Each Gemini boundary-review attempt is bounded by `GEMINI_REQUEST_TIMEOUT_SECONDS` using the official SDK HTTP timeout and a killable process deadline. `GEMINI_BATCH_TIMEOUT_SECONDS` bounds the full project review. A single provider timeout becomes a saved `manual_review` result and later clips continue; invalid configuration, an exhausted batch deadline, explicit cancellation, or technical failure of every clip ends the stage without leaving the project running.
+
+Gemini free-tier quota or rate limits may return HTTP 429. This is an external review-provider limitation, not a pipeline-correctness failure: the app records a technical `manual_review` result, does not claim Gemini success or silently use `local_stub`, and lets you retry review later.
 
 ## Run The Local Pipeline
 
@@ -169,16 +176,16 @@ The normal local workflow can now be driven from FastAPI:
 ```text
 POST /projects
 -> POST /projects/{project_id}/start
--> manager.py runs in data/projects/{project_id}/workspace/
--> candidates import into SQLite
--> optional Gemini batch boundary review
+-> LocalPipelineOrchestrator starts apps.pipeline.entrypoint
+-> PipelineRunner processes data/projects/{project_id}/workspace/
+-> reusable stages import candidates and optionally review boundaries
 -> project status becomes ready
 -> existing editor opens that project's clips
 ```
 
-`manager.py` remains available for debugging and backwards-compatible CLI use. The local orchestrator runs it with `--workspace-dir` and `--analysis-only`, so runtime files are isolated by project and initial candidate renders are skipped until the user renders final clips from the editor.
+`manager.py` remains available for backwards-compatible CLI use, including root-level defaults, `--workspace-dir`, skip flags, transcription options, and `--analysis-only`. The product worker no longer invokes it. Instead, the local orchestrator runs `python -m apps.pipeline.entrypoint`, which uses the same `PipelineRunner` and stage services in an isolated project workspace.
 
-See [docs/PROJECT_FLOW.md](docs/PROJECT_FLOW.md).
+See [docs/PROJECT_FLOW.md](docs/PROJECT_FLOW.md) and [docs/PIPELINE_SERVICES.md](docs/PIPELINE_SERVICES.md).
 
 ## Run Tests
 
@@ -269,39 +276,11 @@ See [docs/CLIP_REVIEW_AGENT.md](docs/CLIP_REVIEW_AGENT.md).
 
 For a codebase overview, see [docs/REPO_MAP.md](docs/REPO_MAP.md). The planned frontend migration is captured in [docs/FRONTEND_REDESIGN_PLAN.md](docs/FRONTEND_REDESIGN_PLAN.md).
 
-## Airflow Orchestration
+## Future Orchestration
 
-Airflow is optional and intentionally kept out of the main application requirements. Install it separately:
+Apache Airflow is not installed, enabled, or implemented as a product orchestrator in v0.6. The existing `orchestration/airflow` directory is an inactive prototype placeholder whose Python helpers now delegate to `apps.pipeline` rather than duplicating pipeline logic. A future DAG can import individual stage services or compose the same `PipelineRunner` without invoking `manager.py`.
 
-```powershell
-pip install -r requirements-airflow.txt
-```
-
-The DAG lives at:
-
-```text
-orchestration/airflow/dags/podcast_pipeline_dag.py
-```
-
-It prepares reviewed candidate clips from DAG config such as:
-
-```json
-{"project_id": 1, "source_url": "https://www.youtube.com/watch?v=..."}
-```
-
-The DAG does not render all clips automatically. It imports candidates into SQLite, calls the Python batch review service directly, then the human editor decides what to render.
-
-```mermaid
-flowchart LR
-  A[validate] --> B[download]
-  B --> C[transcribe]
-  C --> D[candidates]
-  D --> E[import SQLite]
-  E --> F[Gemini batch review]
-  F --> G[ready]
-```
-
-See [orchestration/airflow/README.md](orchestration/airflow/README.md).
+LangGraph is also not implemented in this release. Gemini review remains a direct call to the existing typed `ReviewAgentService`.
 
 ## Product Direction
 
@@ -320,4 +299,4 @@ This project demonstrates production-oriented AI engineering patterns:
 - testable FastAPI endpoints,
 - optional LLM evaluation with local fallback,
 - human-in-the-loop review,
-- Airflow DAG orchestration.
+- reusable pipeline stages suitable for future external orchestration.

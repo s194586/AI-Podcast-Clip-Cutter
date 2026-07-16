@@ -41,6 +41,11 @@ class BoundaryOption(BaseModel):
     text: str
 
 
+class BoundaryOptionPair(BaseModel):
+    start_option_index: int
+    end_option_index: int
+
+
 class ClipTranscriptContext(BaseModel):
     clip_id: str | None = None
     candidate_start: float
@@ -57,6 +62,7 @@ class ClipTranscriptContext(BaseModel):
     current_aligned_end_segment_id: str | None = None
     start_boundary_options: list[BoundaryOption] = Field(default_factory=list)
     end_boundary_options: list[BoundaryOption] = Field(default_factory=list)
+    allowed_boundary_pairs: list[BoundaryOptionPair] = Field(default_factory=list)
 
 
 class GeminiBoundaryDecision(BaseModel):
@@ -149,6 +155,7 @@ class ClipReviewEvaluation(BaseModel):
     context_seconds: float | None = None
     failed: bool = False
     failure_reason: str | None = None
+    failure_category: str | None = None
     retry_used: bool = False
     provider_attempt_count: int = 1
     first_attempt_validation_error: str | None = None

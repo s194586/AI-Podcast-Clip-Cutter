@@ -103,6 +103,8 @@ export interface Clip {
   latest_review_start_reason?: string
   latest_review_end_reason?: string
   latest_review_warnings?: string[]
+  latest_review_failed?: boolean
+  latest_review_failure_category?: string | null
   latest_review_changed_boundaries?: boolean
   created_at?: string | null
   updated_at?: string | null

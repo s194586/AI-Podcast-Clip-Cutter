@@ -5,6 +5,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
@@ -18,6 +19,14 @@ from apps.api.orchestration.local import LocalPipelineOrchestrator
 from apps.api.orchestration.service import recover_orphaned_jobs
 from apps.api.orchestration.stage_parser import parse_manager_stage, progress_for_stage
 from apps.api.services import project_service
+from apps.pipeline.config import PipelineConfig
+from apps.pipeline.context import PipelineContext
+from apps.pipeline.events import PipelineEvent
+from apps.pipeline.persistence import ProjectStateEventSink
+from apps.pipeline.profiles import project_pipeline_stages
+from apps.pipeline.runner import PipelineRunner
+from apps.pipeline.stages.ready import MarkProjectReadyStage
+from apps.pipeline.stages.review_candidates import ReviewCandidatesStage
 from apps.review_agent.schemas import GeminiBoundaryDecision
 
 
@@ -62,6 +71,7 @@ def _write_candidate_workspace(workspace: Path) -> None:
 
 class FakeSuccessfulPopen:
     calls = []
+    stdout_handles = []
 
     def __init__(self, command, **kwargs):
         self.command = command
@@ -70,20 +80,51 @@ class FakeSuccessfulPopen:
         self.returncode = 0
         FakeSuccessfulPopen.calls.append((command, kwargs))
         workspace = Path(command[command.index("--workspace-dir") + 1])
+        project_root = Path(command[command.index("--repository-root") + 1])
+        project_id = int(command[command.index("--project-id") + 1])
         _write_candidate_workspace(workspace)
+        from apps.api.services.legacy_import_service import import_candidate_file_into_project
+
+        with session_scope() as session:
+            import_candidate_file_into_project(
+                session,
+                project_id=project_id,
+                project_root=project_root,
+                workspace_root=workspace,
+            )
+        events = [
+            PipelineEvent(
+                event="stage_started",
+                stage=stage,
+                message=stage,
+            ).to_marker()
+            for stage in (
+                "downloading",
+                "transcribing",
+                "validating_transcript",
+                "generating_candidates",
+                "importing_candidates",
+            )
+        ]
+        events.append(
+            PipelineEvent(
+                event="pipeline_completed",
+                stage="ready",
+                message="Pipeline completed successfully.",
+                progress_percent=100.0,
+                success=True,
+            ).to_marker()
+        )
         self.stdout = io.StringIO(
             "\n".join(
                 [
-                    "download source",
-                    "Transkrypcja audio",
                     "CUDA transcription unavailable; falling back to CPU int8.",
-                    "AI Subtitler Checker",
-                    "Podcast profile",
-                    "Podcast clip analysis",
+                    *events,
                 ]
             )
             + "\n"
         )
+        FakeSuccessfulPopen.stdout_handles.append(self.stdout)
 
     def wait(self):
         return self.returncode
@@ -97,8 +138,111 @@ class FakeSuccessfulPopen:
 
 class FakeFailingPopen(FakeSuccessfulPopen):
     def __init__(self, command, **kwargs):
-        super().__init__(command, **kwargs)
+        self.command = command
+        self.kwargs = kwargs
+        self.pid = 4322
         self.returncode = 7
+        FakeSuccessfulPopen.calls.append((command, kwargs))
+        self.stdout = io.StringIO(
+            "\n".join(
+                [
+                    PipelineEvent(
+                        event="stage_started",
+                        stage="transcribing",
+                        message="Transcribing podcast",
+                    ).to_marker(),
+                    PipelineEvent(
+                        event="stage_failed",
+                        stage="transcribing",
+                        message="Offline transcription fixture failed.",
+                        success=False,
+                        error_category="TranscriptionStageError",
+                    ).to_marker(),
+                    PipelineEvent(
+                        event="pipeline_completed",
+                        stage="transcribing",
+                        message="Offline transcription fixture failed.",
+                        success=False,
+                        error_category="TranscriptionStageError",
+                    ).to_marker(),
+                ]
+            )
+            + "\n"
+        )
+
+
+class FakeReviewFailingPopen:
+    def __init__(self, command, **kwargs):
+        self.command = command
+        self.kwargs = kwargs
+        self.pid = 4323
+        self.returncode = 8
+        FakeSuccessfulPopen.calls.append((command, kwargs))
+        self.stdout = io.StringIO(
+            "\n".join(
+                [
+                    PipelineEvent(
+                        event="review_clip_completed",
+                        stage="reviewing_with_ai",
+                        message="Reviewed clip 1 of 5",
+                        progress_percent=87.0,
+                        metadata={"clip_id": "clip_001", "index": 1, "total": 5},
+                    ).to_marker(),
+                    PipelineEvent(
+                        event="stage_failed",
+                        stage="reviewing_with_ai",
+                        message="Automatic boundary review exceeded its configured batch timeout.",
+                        success=False,
+                        error_category="ReviewStageError",
+                    ).to_marker(),
+                    PipelineEvent(
+                        event="pipeline_completed",
+                        stage="reviewing_with_ai",
+                        message="Automatic boundary review exceeded its configured batch timeout.",
+                        success=False,
+                        error_category="ReviewStageError",
+                    ).to_marker(),
+                ]
+            )
+            + "\n"
+        )
+
+    def wait(self):
+        return self.returncode
+
+    def poll(self):
+        return self.returncode
+
+
+class FakeCancelledReviewPopen(FakeReviewFailingPopen):
+    def __init__(self, command, **kwargs):
+        self.command = command
+        self.kwargs = kwargs
+        self.pid = 4324
+        self.returncode = 130
+        FakeSuccessfulPopen.calls.append((command, kwargs))
+        self.stdout = io.StringIO(
+            "\n".join(
+                [
+                    PipelineEvent(
+                        event="review_clip_completed",
+                        stage="reviewing_with_ai",
+                        message="Reviewed clip 2 of 5",
+                        progress_percent=89.0,
+                        metadata={"clip_id": "clip_002", "index": 2, "total": 5},
+                    ).to_marker(),
+                    PipelineEvent(
+                        event="pipeline_cancelled",
+                        stage="reviewing_with_ai",
+                        message="Pipeline cancelled by user.",
+                        progress_percent=89.0,
+                        success=False,
+                        error_category="PipelineCancelled",
+                    ).to_marker(),
+                ]
+            )
+            + "\n"
+        )
 
 
 class ProjectFlowTests(unittest.TestCase):
@@ -114,6 +258,7 @@ class ProjectFlowTests(unittest.TestCase):
         init_database()
         LocalPipelineOrchestrator.reset_for_tests()
         FakeSuccessfulPopen.calls = []
+        FakeSuccessfulPopen.stdout_handles = []
 
     def tearDown(self):
         LocalPipelineOrchestrator.reset_for_tests()
@@ -137,6 +282,17 @@ class ProjectFlowTests(unittest.TestCase):
             project_root=self.root,
         )
         return int(project["id"])
+
+    def _pipeline_context(self, project_id: int, *, auto_review: bool) -> PipelineContext:
+        return PipelineContext(
+            project_id=project_id,
+            source_url="https://example.com/watch",
+            workspace_path=self.root / "data" / "projects" / str(project_id) / "workspace",
+            repository_root=self.root,
+            auto_review=auto_review,
+            analysis_only=True,
+            config=PipelineConfig(ai_mode="local_only", subtitle_checker_mode="local_only"),
+        )
 
     def test_project_creation_creates_isolated_workspace(self):
         project_id = self._create_project()
@@ -212,18 +368,23 @@ class ProjectFlowTests(unittest.TestCase):
         command, kwargs = FakeSuccessfulPopen.calls[0]
         workspace_arg = Path(command[command.index("--workspace-dir") + 1])
         self.assertEqual(command[0], sys.executable)
-        self.assertEqual(command[1], str(self.root / "manager.py"))
-        self.assertEqual(command[command.index("--url") + 1], url)
+        self.assertEqual(command[1:3], ["-m", "apps.pipeline.entrypoint"])
+        self.assertEqual(command[command.index("--source-url") + 1], url)
+        self.assertTrue(FakeSuccessfulPopen.stdout_handles[0].closed)
         self.assertEqual(command.count(url), 1)
         self.assertEqual(Path(kwargs["cwd"]), self.root)
         self.assertEqual(workspace_arg, self.root / "data" / "projects" / str(project_id) / "workspace")
         self.assertFalse(kwargs["shell"])
         self.assertIn("--workspace-dir", command)
-        self.assertIn("--analysis-only", command)
+        self.assertIn("--project-id", command)
+        self.assertIn("--no-auto-review", command)
         self.assertFalse((self.root / "input" / "source.mp4").exists())
         self.assertFalse((self.root / "top_windows.json").exists())
         self.assertTrue((workspace_arg / "input" / "source.mp4").exists())
         self.assertTrue((workspace_arg / "top_windows.json").exists())
+        log_text = "\n".join(orchestrator.read_project_log_tail(project_id, tail=50)["lines"])
+        self.assertNotIn(url, log_text)
+        self.assertIn("<source-url>", log_text)
 
     def test_stage_parser_maps_representative_manager_logs(self):
         samples = {
@@ -294,6 +455,17 @@ class ProjectFlowTests(unittest.TestCase):
 
     def test_auto_review_true_calls_batch_review_service_directly(self):
         project_id = self._create_project(auto_review=True)
+        workspace = project_service.ensure_project_workspace(project_id, project_root=self.root)
+        _write_candidate_workspace(workspace)
+        from apps.api.services.legacy_import_service import import_candidate_file_into_project
+
+        with session_scope() as session:
+            import_candidate_file_into_project(
+                session,
+                project_id=project_id,
+                project_root=self.root,
+                workspace_root=workspace,
+            )
         calls = []
 
         class FakeReviewService:
@@ -304,13 +476,10 @@ class ProjectFlowTests(unittest.TestCase):
                 calls.append({"project_id": project_id, "apply_safe_suggestions": apply_safe_suggestions})
                 return {"provider": "fake", "clip_count": 1}
 
-        with patch("apps.api.orchestration.local.ReviewAgentService", FakeReviewService):
-            LocalPipelineOrchestrator(
-                project_root=self.root,
-                popen_factory=FakeSuccessfulPopen,
-                run_inline=True,
-            ).start_project(project_id)
+        with patch("apps.pipeline.stages.review_candidates.ReviewAgentService", FakeReviewService):
+            result = ReviewCandidatesStage().run(self._pipeline_context(project_id, auto_review=True))
 
+        self.assertTrue(result.success)
         self.assertEqual(calls[-1], {"project_id": project_id, "apply_safe_suggestions": True})
 
     def test_auto_review_uses_dotenv_configured_gemini_provider(self):
@@ -339,15 +508,23 @@ class ProjectFlowTests(unittest.TestCase):
                     warnings=[],
                 )
 
-        with patch("apps.review_agent.service.GeminiBoundaryReviewer", DotenvGemini):
-            LocalPipelineOrchestrator(
-                project_root=self.root,
-                popen_factory=FakeSuccessfulPopen,
-                run_inline=True,
-            ).start_project(project_id)
+        workspace = project_service.ensure_project_workspace(project_id, project_root=self.root)
+        _write_candidate_workspace(workspace)
+        from apps.api.services.legacy_import_service import import_candidate_file_into_project
 
-        status = project_service.get_project_status(project_id)
-        self.assertEqual(status["status"], "ready")
+        with session_scope() as session:
+            import_candidate_file_into_project(
+                session,
+                project_id=project_id,
+                project_root=self.root,
+                workspace_root=workspace,
+            )
+        context = self._pipeline_context(project_id, auto_review=True)
+        with patch("apps.review_agent.service.GeminiBoundaryReviewer", DotenvGemini):
+            ReviewCandidatesStage().run(context)
+            MarkProjectReadyStage().run(context)
+
+        self.assertEqual(project_service.get_project_status(project_id)["status"], "ready")
         with session_scope() as session:
             evaluation = session.scalars(select(ClipEvaluation)).one()
         self.assertEqual(evaluation.provider, "gemini")
@@ -355,15 +532,9 @@ class ProjectFlowTests(unittest.TestCase):
 
     def test_auto_review_false_does_not_call_gemini(self):
         project_id = self._create_project(auto_review=False)
-
-        with patch("apps.api.orchestration.local.ReviewAgentService", side_effect=AssertionError("should not review")):
-            LocalPipelineOrchestrator(
-                project_root=self.root,
-                popen_factory=FakeSuccessfulPopen,
-                run_inline=True,
-            ).start_project(project_id)
-
-        self.assertEqual(project_service.get_project_status(project_id)["status"], "ready")
+        context = self._pipeline_context(project_id, auto_review=False)
+        stages = project_pipeline_stages(context)
+        self.assertFalse(any(isinstance(stage, ReviewCandidatesStage) for stage in stages))
 
     def test_gemini_configuration_failure_marks_project_failed(self):
         project_id = self._create_project(auto_review=True)
@@ -375,16 +546,16 @@ class ProjectFlowTests(unittest.TestCase):
             def review_project_clips(self, *, project_id, apply_safe_suggestions):
                 raise RuntimeError("CLIP_REVIEW_MODE=gemini requires GEMINI_API_KEY")
 
-        with patch("apps.api.orchestration.local.ReviewAgentService", FailingReviewService):
-            LocalPipelineOrchestrator(
-                project_root=self.root,
-                popen_factory=FakeSuccessfulPopen,
-                run_inline=True,
-            ).start_project(project_id)
+        context = self._pipeline_context(project_id, auto_review=True)
+        with patch("apps.pipeline.stages.review_candidates.ReviewAgentService", FailingReviewService):
+            PipelineRunner(
+                [ReviewCandidatesStage()],
+                event_sinks=(ProjectStateEventSink(context),),
+            ).run(context)
 
         status = project_service.get_project_status(project_id)
         self.assertEqual(status["status"], "failed")
-        self.assertIn("AI boundary review failed", status["error_message"])
+        self.assertIn("Automatic boundary review failed", status["error_message"])
         self.assertIn("GEMINI_API_KEY", status["error_message"])
 
     def test_nonzero_manager_exit_marks_job_and_project_failed(self):
@@ -398,7 +569,7 @@ class ProjectFlowTests(unittest.TestCase):
 
         status = project_service.get_project_status(project_id)
         self.assertEqual(status["status"], "failed")
-        self.assertIn("exited with code 7", status["error_message"])
+        self.assertIn("fixture failed", status["error_message"])
         with session_scope() as session:
             job = session.scalars(select(Job)).one()
             self.assertEqual(job.exit_code, 7)
@@ -435,14 +606,96 @@ class ProjectFlowTests(unittest.TestCase):
 
         with patch("apps.api.orchestration.local.threading.Thread.start", return_value=None):
             orchestrator.start_project(project_id)
-        status = orchestrator.cancel_project(project_id)
+        with session_scope() as session:
+            project = session.get(Project, project_id)
+            job = session.scalars(select(Job)).one()
+            ProjectRepository(session).update_flow_state(
+                project,
+                status="running",
+                current_stage="transcribing",
+                progress_percent=30.0,
+            )
+            JobRepository(session).update_state(
+                job,
+                status="running",
+                current_stage="transcribing",
+                progress=30.0,
+            )
+        fake_process = SimpleNamespace(poll=lambda: None, pid=9876)
+        LocalPipelineOrchestrator._workers[project_id].process = fake_process
+        with patch.object(orchestrator, "_terminate_process_tree") as terminate:
+            status = orchestrator.cancel_project(project_id)
 
+        terminate.assert_called_once_with(fake_process)
         self.assertEqual(status.status, "cancelled")
+        self.assertEqual(status.progress_percent, 30.0)
         with session_scope() as session:
             project = session.get(Project, project_id)
             job = session.scalars(select(Job)).one()
         self.assertEqual(project.status, "cancelled")
         self.assertEqual(job.status, "cancelled")
+
+    def test_subprocess_launch_failure_marks_job_and_project_failed(self):
+        project_id = self._create_project(auto_review=False)
+
+        def fail_to_start(*args, **kwargs):
+            raise OSError("offline launch failure")
+
+        LocalPipelineOrchestrator(
+            project_root=self.root,
+            popen_factory=fail_to_start,
+            run_inline=True,
+        ).start_project(project_id)
+
+        status = project_service.get_project_status(project_id)
+        self.assertEqual(status["status"], "failed")
+        self.assertIn("worker failed", status["error_message"])
+        with session_scope() as session:
+            job = session.scalars(select(Job)).one()
+        self.assertEqual(job.status, "failed")
+
+    def test_review_batch_failure_leaves_no_running_project_or_job(self):
+        project_id = self._create_project(auto_review=True)
+        LocalPipelineOrchestrator(
+            project_root=self.root,
+            popen_factory=FakeReviewFailingPopen,
+            run_inline=True,
+        ).start_project(project_id)
+
+        status = project_service.get_project_status(project_id)
+        self.assertEqual(status["status"], "failed")
+        self.assertEqual(status["progress_percent"], 87.0)
+        self.assertIn("batch timeout", status["error_message"])
+        with session_scope() as session:
+            job = session.scalars(select(Job)).one()
+        self.assertEqual(job.status, "failed")
+        self.assertEqual(job.progress, 87.0)
+
+    def test_restart_after_cancel_reuses_same_project_and_creates_new_job(self):
+        project_id = self._create_project(auto_review=False)
+        first_orchestrator = LocalPipelineOrchestrator(
+            project_root=self.root,
+            popen_factory=FakeCancelledReviewPopen,
+            run_inline=True,
+        )
+        first_orchestrator.start_project(project_id)
+        self.assertEqual(project_service.get_project_status(project_id)["status"], "cancelled")
+        self.assertNotIn(project_id, LocalPipelineOrchestrator._workers)
+
+        LocalPipelineOrchestrator(
+            project_root=self.root,
+            popen_factory=FakeSuccessfulPopen,
+            run_inline=True,
+        ).start_project(project_id)
+
+        with session_scope() as session:
+            projects = list(session.scalars(select(Project)).all())
+            jobs = list(session.scalars(select(Job).order_by(Job.id.asc())).all())
+            clips = list(session.scalars(select(Clip)).all())
+        self.assertEqual([project.id for project in projects], [project_id])
+        self.assertEqual([job.status for job in jobs], ["cancelled", "completed"])
+        self.assertEqual(len(clips), 1)
+        self.assertEqual(clips[0].project_id, project_id)
 
     def test_logs_endpoint_returns_requested_tail(self):
         project_id = self._create_project(auto_review=False)
