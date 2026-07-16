@@ -140,6 +140,12 @@ The editor can:
 .\.venv\Scripts\python.exe -m unittest discover -s tests
 ```
 
+Or run the local validation helper:
+
+```powershell
+.\scripts\run_tests.ps1
+```
+
 ## Persistence
 
 The default database URL is:
@@ -205,6 +211,8 @@ Gemini does not visually crop the video. Visual 9:16 rendering remains determini
 The browser editor has a project-level **Review all with AI** button that calls `POST /projects/{project_id}/review-clips`, reloads clips, and shows the AI-reviewed boundaries on the existing handles.
 
 See [docs/CLIP_REVIEW_AGENT.md](docs/CLIP_REVIEW_AGENT.md).
+
+For a codebase overview, see [docs/REPO_MAP.md](docs/REPO_MAP.md). The planned frontend migration is captured in [docs/FRONTEND_REDESIGN_PLAN.md](docs/FRONTEND_REDESIGN_PLAN.md).
 
 ## Airflow Orchestration
 

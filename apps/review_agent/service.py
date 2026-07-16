@@ -81,11 +81,9 @@ class ReviewAgentService:
         *,
         project_root: Path = PROJECT_ROOT,
         mode: str | None = None,
-        use_langgraph: bool = True,
     ) -> None:
         self.project_root = Path(project_root)
         self.mode = normalize_review_mode(mode)
-        self.use_langgraph = use_langgraph
 
     @property
     def provider_name(self) -> str:

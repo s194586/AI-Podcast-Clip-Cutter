@@ -11,7 +11,7 @@ Użycie:
 Workflow:
   1. Sprawdza i tworzy niezbędne foldery
   2. Pobiera wideo (download_content.py)
-  3. Transkrybuje audio (transcribe_podcast.py)
+  3. Transkrybuje audio (transcribe.py)
   4. Sprawdza transkrypcję i timing napisów (subtitler_checker.py)
   5. Scores podcast clip candidates (analyze_virals.py)
   6. Wycina segmenty (cutter.py)
@@ -562,7 +562,7 @@ class WorkflowManager:
         
         return self.run_command(cmd, "1️⃣  Pobieranie wideo z YouTube")
     
-    def transcribe_podcast(self) -> bool:
+    def transcribe_audio(self) -> bool:
         """Krok 2: Transkrybuj audio."""
         if self.transcript_file.exists():
             print(f"  Plik transkrypcji już istnieje: {self.transcript_file.name}. Pomijam transkrypcję.")
@@ -889,14 +889,14 @@ class WorkflowManager:
                         steps.append((self.download_content, "Pobieranie"))
 
                     if not has_transcript:
-                        steps.append((self.transcribe_podcast, "Transkrypcja"))
+                        steps.append((self.transcribe_audio, "Transkrypcja"))
                 else:
                     if not has_video:
                         if not self.url:
                             raise ManagerError("Brak pliku wideo w input/ i nie podano --url do pobrania.")
                         steps.append((self.download_content, "Pobieranie"))
                     if not has_transcript:
-                        steps.append((self.transcribe_podcast, "Transkrypcja"))
+                        steps.append((self.transcribe_audio, "Transkrypcja"))
 
             if self.skip_subtitle_checker:
                 print("  Pomijam AI Subtitler Checker (--skip-subtitle-checker).")

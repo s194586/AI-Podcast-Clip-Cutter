@@ -18,6 +18,4 @@ dependencies = [
     "uvicorn>=0.30.0",
     "yt-dlp>=2026.3.17",
     "sqlalchemy>=2.0",
-    "langgraph",
-    "langchain-core",
 ]

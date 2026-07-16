@@ -144,7 +144,7 @@ def review_candidates_with_gemini(config: dict[str, Any]) -> dict[str, Any]:
     project_id = int(config["project_id"])
     mark_project_status(project_id, "reviewing")
     mode = str(config.get("clip_review_mode") or os.environ.get("CLIP_REVIEW_MODE") or "gemini")
-    service = ReviewAgentService(project_root=PROJECT_ROOT, mode=mode, use_langgraph=False)
+    service = ReviewAgentService(project_root=PROJECT_ROOT, mode=mode)
     config["review_summary"] = service.review_project_clips(
         project_id=project_id,
         apply_safe_suggestions=bool(config.get("apply_safe_suggestions", True)),

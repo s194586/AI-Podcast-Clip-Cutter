@@ -58,7 +58,7 @@ flowchart LR
 
 Default mode is `local_stub`, which requires no API keys and is intended for offline development and tests. `CLIP_REVIEW_MODE=gemini` uses the official `google-genai` SDK. In Gemini mode, `GEMINI_API_KEY` is required and missing configuration fails clearly without falling back.
 
-Gemini receives only nearby transcript segments, candidate timestamps, and allowed transcript boundary option IDs. It does not receive local scores, heatmaps, filesystem paths, database objects, full transcripts, video frames, or API keys. It does not calculate quality/privacy scores and does not return crop advice.
+Gemini receives only nearby transcript segments, candidate timestamps, and numbered transcript boundary options. It does not receive local scores, heatmaps, filesystem paths, database objects, full transcripts, video frames, or API keys. It does not calculate quality/privacy scores and does not return crop advice.
 
 The Gemini structured decision is one of `render_ready`, `adjust_boundaries`, or `reject`. Safe decisions save `reviewed_start`/`reviewed_end`, copy them into `edited_start`/`edited_end`, and set `boundary_source="ai_review"`. Backend-created `manual_review` exists only for technical or validation failures.
 
@@ -153,6 +153,6 @@ The project demonstrates:
 
 It does not claim that the whole application is autonomous or multi-agent. The editor remains the final decision point before rendering.
 
-## Removed Multi-Content Routing
+## Podcast-Only Compatibility Routing
 
-The active product no longer supports separate gameplay, tutorial, commentary, or generic strategies. Those old strategy/layout files have been removed; the registry resolves to podcast behavior only.
+The active product no longer supports separate gameplay, tutorial, commentary, or generic strategies. The `strategies/`, `layout/`, and `content_classifier.py` compatibility layers still exist because the deterministic pipeline imports them, but their registries resolve to podcast behavior only.
