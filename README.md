@@ -118,17 +118,36 @@ This command only replaces SQLite project/clip/artifact/evaluation rows. It does
 
 ## Run The Editor
 
+### Legacy FastAPI Static UI
+
 ```powershell
-python -m uvicorn apps.api.main:app --reload --port 8000
+python -m uvicorn apps.api.main:app --reload --port 8010
 ```
 
 Open:
 
 ```text
-http://127.0.0.1:8000
+http://127.0.0.1:8010
 ```
 
-The editor can:
+The legacy editor in `apps/api/static` remains the FastAPI fallback UI.
+
+### React Product UI v0.5
+
+The new React frontend lives in `apps/web` and runs separately through Vite during validation:
+
+```powershell
+.\.venv\Scripts\python.exe -m uvicorn apps.api.main:app --reload --port 8010
+.\scripts\dev_web.ps1
+```
+
+Or:
+
+```powershell
+.\scripts\dev_full_stack.ps1
+```
+
+The React app provides:
 
 - load draft podcast candidates,
 - create a project from a YouTube URL,
@@ -140,6 +159,8 @@ The editor can:
 - review all clips with AI transcript-boundary review,
 - render final short clips,
 - persist review state in SQLite.
+
+See [docs/REACT_FRONTEND.md](docs/REACT_FRONTEND.md).
 
 ## Project Flow V1
 
@@ -215,6 +236,8 @@ GET /clips/{clip_id}/review
 POST /projects/{project_id}/clips/{clip_id}/review
 POST /projects/{project_id}/review-clips
 POST /projects/{project_id}/render
+GET /projects/{project_id}/exports
+GET /projects/{project_id}/exports/{artifact_id}/download
 ```
 
 Compatibility endpoints use the earliest SQLite project by database id as the default local project.

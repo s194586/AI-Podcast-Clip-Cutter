@@ -38,6 +38,7 @@ from .services.project_service import (
     initialize_application_state,
     list_projects,
 )
+from .services.export_service import ExportAccessError, ExportNotFoundError, get_project_export_file, list_project_exports
 from .services.project_state import PROJECT_ROOT
 from .services.render import RenderError, locate_input_video, render_adjusted_clip
 from apps.review_agent.config import ReviewConfigError, load_review_config, safe_review_config_summary
@@ -110,6 +111,42 @@ class ProjectReviewPayload(BaseModel):
     apply_safe_suggestions: bool = True
 
 
+PROJECT_PUBLIC_PATH_FIELDS = {
+    "workspace_path",
+    "source_video_path",
+    "transcript_path",
+    "candidate_source_path",
+}
+CLIP_PUBLIC_PATH_FIELDS = {
+    "raw_outputs",
+    "subtitled_outputs",
+    "last_render_output_dir",
+}
+RENDER_PUBLIC_PATH_FIELDS = {
+    "output_dir",
+    "raw_outputs",
+    "subtitled_outputs",
+    "windows_file",
+    "cutting_log",
+    "logs",
+}
+
+
+def _public_project(project: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in project.items() if key not in PROJECT_PUBLIC_PATH_FIELDS}
+
+
+def _public_clip(clip: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in clip.items() if key not in CLIP_PUBLIC_PATH_FIELDS}
+
+
+def _public_render_result(result: dict[str, Any]) -> dict[str, Any]:
+    payload = {key: value for key, value in result.items() if key not in RENDER_PUBLIC_PATH_FIELDS}
+    if isinstance(payload.get("clip"), dict):
+        payload["clip"] = _public_clip(payload["clip"])
+    return payload
+
+
 @app.get("/", include_in_schema=False)
 def index() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")
@@ -147,7 +184,7 @@ def create_project_endpoint(payload: ProjectCreatePayload) -> dict[str, Any]:
             auto_review=payload.auto_review,
             project_root=project_root,
         )
-        response: dict[str, Any] = {"project": project}
+        response: dict[str, Any] = {"project": _public_project(project)}
         if payload.auto_start:
             response["job"] = get_pipeline_orchestrator(project_root=project_root).start_project(project["id"]).to_dict()
             response["status"] = get_project_status(project["id"])
@@ -176,13 +213,13 @@ def start_project_endpoint(project_id: int) -> dict[str, Any]:
 
 @app.get("/projects")
 def list_projects_endpoint() -> dict[str, Any]:
-    return {"projects": list_projects()}
+    return {"projects": [_public_project(project) for project in list_projects()]}
 
 
 @app.get("/projects/{project_id}")
 def get_project_endpoint(project_id: int) -> dict[str, Any]:
     try:
-        return {"project": get_project(project_id)}
+        return {"project": _public_project(get_project(project_id))}
     except ProjectNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -190,7 +227,7 @@ def get_project_endpoint(project_id: int) -> dict[str, Any]:
 @app.get("/projects/{project_id}/clips")
 def get_project_clips_endpoint(project_id: int) -> dict[str, Any]:
     try:
-        return {"clips": get_project_clips(project_id)}
+        return {"clips": [_public_clip(clip) for clip in get_project_clips(project_id)]}
     except ProjectNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -223,12 +260,14 @@ def cancel_project_endpoint(project_id: int) -> dict[str, Any]:
 def update_project_clip(project_id: int, clip_id: str, payload: ClipBoundsPayload) -> dict:
     try:
         return {
-            "clip": update_clip_bounds(
-                clip_id,
-                payload.start,
-                payload.end,
-                project_id=project_id,
-                project_root=api_project_root(),
+            "clip": _public_clip(
+                update_clip_bounds(
+                    clip_id,
+                    payload.start,
+                    payload.end,
+                    project_id=project_id,
+                    project_root=api_project_root(),
+                )
             )
         }
     except ClipValidationError as exc:
@@ -238,7 +277,11 @@ def update_project_clip(project_id: int, clip_id: str, payload: ClipBoundsPayloa
 @app.post("/projects/{project_id}/clips/{clip_id}/accept")
 def accept_project_clip(project_id: int, clip_id: str) -> dict:
     try:
-        return {"clip": set_clip_status(clip_id, "accepted", project_id=project_id, project_root=api_project_root())}
+        return {
+            "clip": _public_clip(
+                set_clip_status(clip_id, "accepted", project_id=project_id, project_root=api_project_root())
+            )
+        }
     except ClipValidationError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -246,7 +289,11 @@ def accept_project_clip(project_id: int, clip_id: str) -> dict:
 @app.post("/projects/{project_id}/clips/{clip_id}/reject")
 def reject_project_clip(project_id: int, clip_id: str) -> dict:
     try:
-        return {"clip": set_clip_status(clip_id, "rejected", project_id=project_id, project_root=api_project_root())}
+        return {
+            "clip": _public_clip(
+                set_clip_status(clip_id, "rejected", project_id=project_id, project_root=api_project_root())
+            )
+        }
     except ClipValidationError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -397,14 +444,16 @@ def render_project_clip(project_id: int, payload: RenderPayload) -> dict:
         workspace_root = get_project_workspace_root(project_id, project_root=project_root)
         source_video_path = get_project_source_video_path(project_id, project_root=project_root)
         clip = find_clip(load_clips(project_id=project_id, project_root=project_root), payload.clip_id)
-        return render_adjusted_clip(
-            clip,
-            payload.start,
-            payload.end,
-            project_root=project_root,
-            runtime_root=workspace_root,
-            project_id=project_id,
-            source_video_path=source_video_path,
+        return _public_render_result(
+            render_adjusted_clip(
+                clip,
+                payload.start,
+                payload.end,
+                project_root=project_root,
+                runtime_root=workspace_root,
+                project_id=project_id,
+                source_video_path=source_video_path,
+            )
         )
     except ProjectNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -412,3 +461,30 @@ def render_project_clip(project_id: int, payload: RenderPayload) -> dict:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except RenderError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.to_detail()) from exc
+
+
+@app.get("/projects/{project_id}/exports")
+def get_project_exports_endpoint(project_id: int) -> dict[str, Any]:
+    try:
+        return {"exports": list_project_exports(project_id, project_root=api_project_root())}
+    except ProjectNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ExportAccessError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+@app.get("/projects/{project_id}/exports/{artifact_id}/download")
+def download_project_export_endpoint(project_id: int, artifact_id: int) -> FileResponse:
+    try:
+        file_path, filename, media_type = get_project_export_file(
+            project_id,
+            artifact_id,
+            project_root=api_project_root(),
+        )
+        return FileResponse(file_path, media_type=media_type, filename=filename)
+    except ProjectNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ExportNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ExportAccessError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc

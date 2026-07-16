@@ -1,0 +1,105 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --color-bg: 8 10 11;
+  --color-panel: 18 20 21;
+  --color-panel-alt: 25 27 29;
+  --color-border: 49 54 55;
+  --color-text: 234 238 235;
+  --color-muted: 156 165 160;
+  --color-faint: 95 103 99;
+  --color-accent: 44 199 121;
+  --color-accent-soft: 23 72 48;
+  --color-danger: 239 68 68;
+  --color-warning: 234 179 8;
+  color-scheme: dark;
+  font-family:
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  min-width: 320px;
+  min-height: 100vh;
+  margin: 0;
+  background:
+    linear-gradient(180deg, rgb(13 15 15 / 0.96), rgb(8 10 11) 34rem),
+    rgb(var(--color-bg));
+  color: rgb(var(--color-text));
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button,
+a,
+input,
+select,
+textarea,
+summary {
+  outline-color: rgb(var(--color-accent));
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+@layer components {
+  .app-panel {
+    @apply rounded-panel border border-app-border bg-app-panel shadow-panel;
+  }
+
+  .app-panel-muted {
+    @apply rounded-panel border border-app-border bg-app-panelAlt;
+  }
+
+  .app-button {
+    @apply inline-flex h-10 items-center justify-center gap-2 rounded-md border border-app-border bg-app-panelAlt px-3 text-sm font-medium text-app-text transition hover:border-app-muted hover:bg-app-border disabled:cursor-not-allowed disabled:opacity-50;
+  }
+
+  .app-button-primary {
+    @apply border-app-accent bg-app-accent px-4 text-sm font-semibold text-black hover:border-app-accent hover:bg-app-accent/85;
+  }
+
+  .app-button-danger {
+    @apply border-app-danger/60 bg-app-danger/15 text-red-100 hover:bg-app-danger/25;
+  }
+
+  .app-icon-button {
+    @apply inline-flex h-9 w-9 items-center justify-center rounded-md border border-app-border bg-app-panelAlt text-app-muted transition hover:border-app-muted hover:text-app-text disabled:cursor-not-allowed disabled:opacity-50;
+  }
+
+  .app-input {
+    @apply h-11 w-full rounded-md border border-app-border bg-black/20 px-3 text-sm text-app-text placeholder:text-app-faint transition focus:border-app-accent focus:ring-1 focus:ring-app-accent;
+  }
+
+  .app-label {
+    @apply text-xs font-semibold uppercase text-app-muted;
+  }
+
+  .app-section-title {
+    @apply text-lg font-semibold text-app-text;
+  }
+
+  .app-copy {
+    @apply text-sm leading-6 text-app-muted;
+  }
+
+  .app-table-header {
+    @apply text-left text-xs font-semibold uppercase text-app-faint;
+  }
+}

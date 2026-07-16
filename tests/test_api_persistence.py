@@ -9,7 +9,7 @@ from sqlalchemy import inspect, select
 
 from apps.api.db.database import configure_database, init_database, session_scope
 from apps.api.db.models import Artifact, Clip, Project
-from apps.api.db.repositories import ClipRepository, ProjectRepository
+from apps.api.db.repositories import ArtifactRepository, ClipRepository, ProjectRepository
 from apps.api.main import app
 from apps.api.services import clip_service, project_service
 from apps.api.services.legacy_import_service import bootstrap_legacy_state_if_needed
@@ -272,6 +272,68 @@ class ApiPersistenceTests(unittest.TestCase):
         self.assertEqual(create_response.json()["project"]["title"], "API project")
         self.assertEqual(list_response.status_code, 200)
         self.assertEqual(list_response.json()["projects"][0]["title"], "API project")
+
+    def test_project_api_does_not_expose_local_paths(self):
+        self._seed_clip()
+
+        with TestClient(app) as client:
+            create_response = client.post(
+                "/projects",
+                json={"source_url": "https://www.youtube.com/watch?v=api", "title": "API project"},
+            )
+            list_response = client.get("/projects")
+            detail_response = client.get(f"/projects/{create_response.json()['project']['id']}")
+
+        forbidden = {"workspace_path", "source_video_path", "transcript_path", "candidate_source_path"}
+        self.assertTrue(forbidden.isdisjoint(create_response.json()["project"]))
+        self.assertTrue(forbidden.isdisjoint(list_response.json()["projects"][0]))
+        self.assertTrue(forbidden.isdisjoint(detail_response.json()["project"]))
+
+    def test_project_clip_api_does_not_expose_render_paths(self):
+        project_id, _clip_id = self._seed_clip()
+        clip_service.record_render_result(
+            "clip_001",
+            {
+                "status": "completed",
+                "output_dir": "outputs/editor_renders/render1",
+                "raw_outputs": ["outputs/editor_renders/render1/raw/segment_001.mp4"],
+                "subtitled_outputs": ["outputs/editor_renders/render1/subtitles/segment_001.mp4"],
+                "warnings": [],
+            },
+            project_id=project_id,
+            project_root=self.root,
+        )
+
+        with TestClient(app) as client:
+            response = client.get(f"/projects/{project_id}/clips")
+
+        self.assertEqual(response.status_code, 200)
+        clip = response.json()["clips"][0]
+        self.assertNotIn("raw_outputs", clip)
+        self.assertNotIn("subtitled_outputs", clip)
+        self.assertNotIn("last_render_output_dir", clip)
+
+    def test_project_export_download_rejects_paths_outside_workspace(self):
+        project_id, _clip_id = self._seed_clip()
+        project_service.ensure_project_workspace(project_id, project_root=self.root)
+        outside_file = self.root / "outside.mp4"
+        outside_file.write_bytes(b"not a project export")
+        with session_scope() as session:
+            clip = session.scalars(select(Clip).where(Clip.project_id == project_id)).one()
+            artifact = ArtifactRepository(session).create(
+                project_id=project_id,
+                clip_id=clip.id,
+                artifact_type="raw_clip",
+                path=str(outside_file),
+                filename="outside.mp4",
+                media_type="video/mp4",
+            )
+            artifact_id = artifact.id
+
+        with TestClient(app) as client:
+            response = client.get(f"/projects/{project_id}/exports/{artifact_id}/download")
+
+        self.assertEqual(response.status_code, 403)
 
 
 if __name__ == "__main__":

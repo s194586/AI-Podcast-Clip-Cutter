@@ -2,6 +2,12 @@
 
 This is a plan only. The current static frontend in `apps/api/static` should remain working until the new app reaches feature parity.
 
+## Product UI v0.5 Status
+
+`apps/web` now contains the first React Product UI implementation. It covers the project dashboard, new project form, processing overview, clip editor, and exports page against project-scoped FastAPI endpoints. The legacy static frontend remains unchanged and is still the FastAPI fallback.
+
+Production integration is intentionally deferred until manual validation is complete. The React app runs through Vite and uses the development proxy documented in [REACT_FRONTEND.md](REACT_FRONTEND.md).
+
 ## Proposed Stack
 
 - `apps/web`
@@ -82,8 +88,8 @@ Mobile should remain usable for status checks and light review, but detailed tri
 5. Add manual boundary editing and render actions.
 6. Add Gemini single and batch review controls.
 7. Add exports/download page.
-8. Run both frontends during parity testing.
-9. Switch the default FastAPI mount only after the React app covers the current static editor workflows.
+8. Run both frontends during parity testing. Product UI v0.5 is ready for this step.
+9. Switch the default FastAPI mount only after the React app covers the current static editor workflows and has passed manual Project 3 validation.
 10. Remove the static frontend in a later cleanup after a tagged checkpoint.
 
 Do not change the backend boundary lifecycle to fit frontend state. The frontend should reflect the existing contract.
