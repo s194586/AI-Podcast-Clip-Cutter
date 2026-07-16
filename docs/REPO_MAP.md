@@ -88,6 +88,17 @@ Rendering uses `edited_start` and `edited_end`.
 
 The current editor lives in `apps/api/static`. It is intentionally not redesigned yet. It supports a minimal Project Flow panel plus loading clips, previewing source video, manual slider correction, accept/reject, single/batch AI review, and final render actions.
 
+## `apps/web`
+
+`apps/web` contains the React Product UI v0.5.
+
+- `src/api/`: typed FastAPI client split by health, projects, clips, review, render, and errors.
+- `src/components/`: app shell, status badges, progress display, and common state blocks.
+- `src/pages/`: dashboard, new project, processing overview, clip editor, and exports routes.
+- `src/test/`: Vitest setup and route-level test helpers.
+
+The app runs with Vite and proxies local backend calls to `http://127.0.0.1:8010`. It is not mounted by FastAPI yet; `apps/api/static` remains the fallback UI.
+
 ## `orchestration/airflow`
 
 Airflow is optional and isolated from the main requirements.

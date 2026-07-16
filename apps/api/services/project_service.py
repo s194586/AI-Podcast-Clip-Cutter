@@ -296,7 +296,6 @@ def _job_to_status_dict(job) -> dict[str, Any]:
         "stage": job.current_stage or job.stage,
         "progress_percent": float(job.progress or 0.0),
         "process_id": job.process_id,
-        "log_path": job.log_path,
         "started_at": _iso(job.started_at),
         "finished_at": _iso(job.finished_at),
         "exit_code": job.exit_code,

@@ -112,6 +112,8 @@ The Gemini structured decision is one of `render_ready`, `adjust_boundaries`, or
 - `POST /projects/{project_id}/clips/{clip_id}/review` evaluates a clip in a specific project.
 - `GET /projects/{project_id}/clips/{clip_id}/review` returns the latest saved project-specific evaluation.
 - `POST /projects/{project_id}/review-clips` reviews every clip in a project through the selected provider and returns compact summary counts.
+- `GET /projects/{project_id}/exports` returns safe project-scoped rendered artifact metadata.
+- `GET /projects/{project_id}/exports/{artifact_id}/download` streams one rendered artifact after verifying it is inside the project workspace.
 
 `apps/api/db` owns SQLAlchemy setup, models, and repository helpers.
 
@@ -122,6 +124,14 @@ The Gemini structured decision is one of `render_ready`, `adjust_boundaries`, or
 `apps/api/services/clips.py` still normalizes draft windows into editor-ready clip records and validates trim ranges. Its public load/update/status/render persistence functions now delegate to SQLite-backed services.
 
 `apps/api/services/render.py` locates local input media, prepares render folders, calls the existing render scripts, and returns output paths.
+
+## Frontends
+
+The legacy static editor remains in `apps/api/static` and is still served by FastAPI at `/`.
+
+The Product UI v0.5 React app lives in `apps/web` and runs separately through Vite during validation. It uses React, TypeScript, Tailwind CSS, React Router, lucide-react, Vitest, and React Testing Library. The Vite development proxy targets `http://127.0.0.1:8010`.
+
+The React app uses project-scoped endpoints for project, clip, review, render, source-video, log-tail, and export operations. It does not use global `GET /clips`, does not call Gemini directly from the browser, and does not display local filesystem or SQLite paths. See [REACT_FRONTEND.md](REACT_FRONTEND.md).
 
 ## Source Of Truth
 
