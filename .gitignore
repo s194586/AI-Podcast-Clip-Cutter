@@ -2,6 +2,7 @@
 .env
 .env.*
 !.env.example
+.envrc
 
 # Python
 __pycache__/
@@ -10,9 +11,17 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .coverage
+.coverage.*
 htmlcov/
+.tox/
+.nox/
+.hypothesis/
+.pyre/
 .venv/
 venv/
+build/
+dist/
+*.egg-info/
 backups/
 
 # OS / editor
@@ -20,6 +29,19 @@ backups/
 Thumbs.db
 .idea/
 .vscode/
+
+# Node / frontend
+node_modules/
+**/node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.next/
+.nuxt/
+coverage/
+apps/web/dist/
+apps/web/.vite/
 
 # Local pipeline artifacts
 input/
@@ -37,26 +59,42 @@ data/projects/
 data/*.db
 data/*.sqlite
 data/*.sqlite3
+*.db
+*.sqlite
+*.sqlite3
+*.sqlite-journal
+*.sqlite-shm
+*.sqlite-wal
 top_windows.json
 airflow.db
 airflow.cfg
 airflow-webserver.pid
+airflow-scheduler.pid
+standalone_admin_password.txt
 airflow_home/
 logs/
 orchestration/airflow/logs/
 orchestration/airflow/airflow.db
 orchestration/airflow/airflow.cfg
+orchestration/airflow/airflow-webserver.pid
+orchestration/airflow/airflow-scheduler.pid
+orchestration/airflow/standalone_admin_password.txt
 
 # Media outputs
 *.mp4
 *.mp3
 *.wav
 *.m4a
+*.aac
+*.flac
+*.ogg
 *.webm
 *.mov
 *.mkv
 *.avi
 *.ass
+*.srt
+*.vtt
 
 # Benchmark generated outputs
 benchmarks/

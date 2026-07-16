@@ -221,7 +221,7 @@ class ReviewAgentTests(unittest.TestCase):
     def test_local_stub_works_offline_and_records_provider_metadata(self):
         project_id = self._seed_project()
 
-        result = ReviewAgentService(project_root=self.root, use_langgraph=False).review_clip(
+        result = ReviewAgentService(project_root=self.root).review_clip(
             project_id=project_id,
             clip_id="clip_001",
         )
@@ -315,7 +315,7 @@ class ReviewAgentTests(unittest.TestCase):
                 raise ReviewProviderError("Gemini API error: quota exhausted")
 
         with patch("apps.review_agent.service.GeminiBoundaryReviewer", ErrorGemini):
-            result = ReviewAgentService(project_root=self.root, mode="gemini", use_langgraph=False).review_clip(
+            result = ReviewAgentService(project_root=self.root, mode="gemini").review_clip(
                 project_id=project_id,
                 clip_id="clip_001",
             )
@@ -357,7 +357,7 @@ class ReviewAgentTests(unittest.TestCase):
                 )
 
         with patch("apps.review_agent.service.GeminiBoundaryReviewer", RejectGemini):
-            result = ReviewAgentService(project_root=self.root, mode="gemini", use_langgraph=False).review_clip(
+            result = ReviewAgentService(project_root=self.root, mode="gemini").review_clip(
                 project_id=project_id,
                 clip_id="clip_001",
             )
@@ -395,7 +395,7 @@ class ReviewAgentTests(unittest.TestCase):
                 raise ReviewProviderOutputError("selected_start_option_index must be an integer")
 
         with patch("apps.review_agent.service.GeminiBoundaryReviewer", MissingIdsGemini):
-            result = ReviewAgentService(project_root=self.root, mode="gemini", use_langgraph=False).review_clip(
+            result = ReviewAgentService(project_root=self.root, mode="gemini").review_clip(
                 project_id=project_id,
                 clip_id="clip_001",
             )
@@ -429,7 +429,7 @@ class ReviewAgentTests(unittest.TestCase):
                 raise ReviewProviderOutputError("selected_end_option_index must be an integer")
 
         with patch("apps.review_agent.service.GeminiBoundaryReviewer", MissingIdsGemini):
-            result = ReviewAgentService(project_root=self.root, mode="gemini", use_langgraph=False).review_clip(
+            result = ReviewAgentService(project_root=self.root, mode="gemini").review_clip(
                 project_id=project_id,
                 clip_id="clip_001",
             )
@@ -470,7 +470,7 @@ class ReviewAgentTests(unittest.TestCase):
                 )
 
         with patch("apps.review_agent.service.GeminiBoundaryReviewer", RetryGemini):
-            result = ReviewAgentService(project_root=self.root, mode="gemini", use_langgraph=False).review_clip(
+            result = ReviewAgentService(project_root=self.root, mode="gemini").review_clip(
                 project_id=project_id,
                 clip_id="clip_001",
             )
@@ -517,7 +517,7 @@ class ReviewAgentTests(unittest.TestCase):
                 )
 
         with patch("apps.review_agent.service.GeminiBoundaryReviewer", FakeGemini):
-            result = ReviewAgentService(project_root=self.root, mode="gemini", use_langgraph=False).review_clip(
+            result = ReviewAgentService(project_root=self.root, mode="gemini").review_clip(
                 project_id=project_id,
                 clip_id="clip_001",
             )
@@ -571,7 +571,7 @@ class ReviewAgentTests(unittest.TestCase):
                 )
 
         with patch("apps.review_agent.service.GeminiBoundaryReviewer", ReversedGemini):
-            result = ReviewAgentService(project_root=self.root, mode="gemini", use_langgraph=False).review_clip(
+            result = ReviewAgentService(project_root=self.root, mode="gemini").review_clip(
                 project_id=project_id,
                 clip_id="clip_001",
             )
@@ -598,7 +598,7 @@ class ReviewAgentTests(unittest.TestCase):
                 raise ReviewProviderError("structured output was malformed")
 
         with patch("apps.review_agent.service.GeminiBoundaryReviewer", MalformedGemini):
-            malformed = ReviewAgentService(project_root=self.root, mode="gemini", use_langgraph=False).review_clip(
+            malformed = ReviewAgentService(project_root=self.root, mode="gemini").review_clip(
                 project_id=project_id,
                 clip_id="clip_001",
             )
@@ -631,7 +631,7 @@ class ReviewAgentTests(unittest.TestCase):
                 )
 
         with patch("apps.review_agent.service.GeminiBoundaryReviewer", UnknownIdGemini):
-            result = ReviewAgentService(project_root=self.root, mode="gemini", use_langgraph=False).review_clip(
+            result = ReviewAgentService(project_root=self.root, mode="gemini").review_clip(
                 project_id=project_id,
                 clip_id="clip_001",
             )
@@ -672,7 +672,7 @@ class ReviewAgentTests(unittest.TestCase):
                 )
 
         with patch("apps.review_agent.service.GeminiBoundaryReviewer", UnknownEndGemini):
-            result = ReviewAgentService(project_root=self.root, mode="gemini", use_langgraph=False).review_clip(
+            result = ReviewAgentService(project_root=self.root, mode="gemini").review_clip(
                 project_id=project_id,
                 clip_id="clip_001",
             )
@@ -684,7 +684,7 @@ class ReviewAgentTests(unittest.TestCase):
 
     def test_manual_patch_changes_only_edited_boundaries_after_review(self):
         project_id = self._seed_project()
-        ReviewAgentService(project_root=self.root, use_langgraph=False).review_clip(
+        ReviewAgentService(project_root=self.root).review_clip(
             project_id=project_id,
             clip_id="clip_001",
         )
@@ -913,7 +913,7 @@ class ReviewAgentTests(unittest.TestCase):
 
     def test_clip_response_exposes_frontend_review_contract(self):
         project_id = self._seed_project()
-        ReviewAgentService(project_root=self.root, use_langgraph=False).review_clip(
+        ReviewAgentService(project_root=self.root).review_clip(
             project_id=project_id,
             clip_id="clip_001",
         )
@@ -966,8 +966,8 @@ class ReviewAgentTests(unittest.TestCase):
         calls = []
 
         class FakeService:
-            def __init__(self, *, project_root, mode, use_langgraph):
-                calls.append({"project_root": project_root, "mode": mode, "use_langgraph": use_langgraph})
+            def __init__(self, *, project_root, mode):
+                calls.append({"project_root": project_root, "mode": mode})
 
             def review_project_clips(self, *, project_id, apply_safe_suggestions):
                 return {"project_id": project_id, "provider": "gemini", "clip_count": 1}

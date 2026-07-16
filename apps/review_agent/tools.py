@@ -16,58 +16,13 @@ except Exception:  # pragma: no cover - defensive fallback for isolated imports
     normalize_transcript_segments = None
 
 
-DEFAULT_CONTEXT_PADDING_SECONDS = 20.0
-CONTINUATION_START_WORDS = {
-    "and",
-    "but",
-    "so",
-    "because",
-    "a",
-    "ale",
-    "bo",
-    "czyli",
-    "wiec",
-    "więc",
-    "no",
-}
-FILLER_STARTS = (
-    "um ",
-    "uh ",
-    "you know ",
-    "i mean ",
-    "yyy ",
-    "eee ",
-    "no więc ",
-    "no wiec ",
-    "wiesz ",
-)
-UNFINISHED_END_WORDS = {
-    "and",
-    "but",
-    "because",
-    "so",
-    "or",
-    "i",
-    "to",
-    "that",
-    "który",
-    "ktory",
-    "ale",
-    "bo",
-    "więc",
-    "wiec",
-    "albo",
-    "że",
-    "ze",
-}
-
 EMAIL_RE = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE)
 PHONE_RE = re.compile(r"(?<!\d)(?:\+?\d[\d\s().-]{7,}\d)(?!\d)")
 PESEL_RE = re.compile(r"(?<!\d)\d{11}(?!\d)")
 CREDIT_CARD_RE = re.compile(r"(?<!\d)(?:\d[ -]*?){13,19}(?!\d)")
 ADDRESS_RE = re.compile(
-    r"\b(?:address|adres|street|st\.|ul\.|ulica|avenue|ave\.|road|rd\.|mieszka(?:m|sz)?\s+(?:przy|na)|lives?\s+at)\b"
-    r".{0,80}",
+    r"\b(?:address|adres|street|st\.|ul\.|ulica|avenue|ave\.|road|rd\.|"
+    r"mieszka(?:m|sz)?\s+(?:przy|na)|lives?\s+at)\b.{0,80}",
     re.IGNORECASE,
 )
 SENSITIVE_KEYWORDS = {
@@ -106,14 +61,6 @@ def _parse_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
-def _overlap_seconds(start: float, end: float, item_start: float, item_end: float) -> float:
-    return max(0.0, min(end, item_end) - max(start, item_start))
-
-
-def _join_segment_text(segments: list[dict[str, Any]]) -> str:
-    return " ".join(str(segment.get("text") or "").strip() for segment in segments).strip()
-
-
 def _normalize_segments(payload: Any) -> list[dict[str, Any]]:
     if normalize_transcript_segments is not None:
         return normalize_transcript_segments(payload)
@@ -147,53 +94,6 @@ def load_transcript_segments(transcript_path: Path | str | None) -> list[dict[st
     with open(path, "r", encoding="utf-8-sig") as file_handle:
         payload = json.load(file_handle)
     return _normalize_segments(payload)
-
-
-def get_transcript_context(
-    segments: list[dict[str, Any]],
-    start: float,
-    end: float,
-    padding_seconds: float = DEFAULT_CONTEXT_PADDING_SECONDS,
-) -> dict[str, Any]:
-    padding = max(0.0, float(padding_seconds))
-    context_start = max(0.0, float(start) - padding)
-    context_end = float(end) + padding
-
-    context_segments = [
-        segment
-        for segment in segments
-        if _overlap_seconds(context_start, context_end, float(segment["start"]), float(segment["end"])) > 0
-    ]
-    before_segments = [segment for segment in context_segments if float(segment["end"]) <= float(start)]
-    clip_segments = [
-        segment
-        for segment in context_segments
-        if _overlap_seconds(float(start), float(end), float(segment["start"]), float(segment["end"])) > 0
-    ]
-    after_segments = [segment for segment in context_segments if float(segment["start"]) >= float(end)]
-
-    return {
-        "context_start": round(context_start, 2),
-        "context_end": round(context_end, 2),
-        "before_text": _join_segment_text(before_segments),
-        "clip_text": _join_segment_text(clip_segments),
-        "after_text": _join_segment_text(after_segments),
-        "segments": context_segments,
-    }
-
-
-def get_candidate_features(clip: Any) -> dict[str, Any]:
-    getter = clip.get if isinstance(clip, dict) else lambda key, default=None: getattr(clip, key, default)
-    return {
-        "ai_start": _parse_float(getter("ai_start")),
-        "ai_end": _parse_float(getter("ai_end")),
-        "edited_start": _parse_float(getter("edited_start")),
-        "edited_end": _parse_float(getter("edited_end")),
-        "local_score": getter("local_score"),
-        "local_rank": getter("local_rank"),
-        "selection_reasons": list(getter("selection_reasons", []) or []),
-        "local_features": dict(getter("local_features", {}) or {}),
-    }
 
 
 def _mask_email(value: str) -> str:
@@ -258,199 +158,6 @@ def check_sensitive_patterns(text: str) -> dict[str, Any]:
         privacy_risk = "high"
 
     return {"privacy_risk": privacy_risk, "matches": matches}
-
-
-def _compact_text(value: str) -> str:
-    return " ".join(str(value or "").strip().split())
-
-
-def first_word(text: str) -> str:
-    compact = _compact_text(text).lower()
-    if not compact:
-        return ""
-    match = re.match(r"[\wąćęłńóśźżĄĆĘŁŃÓŚŹŻ]+", compact, re.UNICODE)
-    return match.group(0) if match else ""
-
-
-def starts_context_dependent(text: str) -> bool:
-    return first_word(text) in CONTINUATION_START_WORDS
-
-
-def ends_unfinished(text: str) -> bool:
-    compact = _compact_text(text)
-    if not compact:
-        return True
-    if compact[-1] in {",", ":", ";", "-"}:
-        return True
-    return first_word(compact.split()[-1]) in UNFINISHED_END_WORDS
-
-
-def suggest_boundaries(context: dict[str, Any], clip: dict[str, Any]) -> dict[str, Any]:
-    start = _parse_float(clip.get("edited_start", clip.get("ai_start")))
-    end = _parse_float(clip.get("edited_end", clip.get("ai_end")))
-    min_start = _parse_float(clip.get("min_start"), max(0.0, start - 20.0))
-    max_start = _parse_float(clip.get("max_start"), start + 20.0)
-    min_end = _parse_float(clip.get("min_end"), max(start + 1.0, end - 20.0))
-    max_end = _parse_float(clip.get("max_end"), end + 20.0)
-    clip_text = _compact_text(str(context.get("clip_text") or clip.get("text") or clip.get("summary") or ""))
-
-    suggested_start = start
-    suggested_end = end
-    confidence = 0.5
-    start_advice = "Keep the current start; it appears understandable."
-    end_advice = "Keep the current end; it appears reasonably complete."
-
-    lower_text = clip_text.lower()
-    if starts_context_dependent(clip_text):
-        suggested_start = max(min_start, start - 2.5)
-        start_advice = "Move start earlier because the current clip appears to begin mid-thought."
-        confidence += 0.15
-    elif lower_text.startswith(FILLER_STARTS):
-        suggested_start = min(max_start, start + 1.5)
-        start_advice = "Move start later to trim low-value filler before the useful moment."
-        confidence += 0.1
-
-    if ends_unfinished(clip_text):
-        suggested_end = min(max_end, end + 3.0)
-        end_advice = "Extend the end slightly because the current ending sounds unfinished."
-        confidence += 0.15
-
-    if suggested_end < min_end:
-        suggested_end = min_end
-    if suggested_start > max_start:
-        suggested_start = max_start
-    if suggested_end <= suggested_start:
-        suggested_start, suggested_end = start, end
-        confidence = min(confidence, 0.45)
-
-    return {
-        "suggested_start": round(suggested_start, 2),
-        "suggested_end": round(suggested_end, 2),
-        "start_advice": start_advice,
-        "end_advice": end_advice,
-        "confidence": round(min(confidence, 0.9), 2),
-    }
-
-
-def suggest_crop_advice(context: dict[str, Any], clip: dict[str, Any]) -> dict[str, str]:
-    text = _compact_text(
-        " ".join(
-            [
-                str(context.get("before_text") or ""),
-                str(context.get("clip_text") or clip.get("text") or ""),
-                str(context.get("after_text") or ""),
-            ]
-        )
-    ).lower()
-    if not text:
-        return {
-            "crop_advice": "manual_review",
-            "reason": "Transcript context is unavailable, so crop choice should be checked manually.",
-        }
-
-    visual_terms = ("screen", "chart", "slide", "table", "demo", "pokaz", "wykres", "slajd", "ekran")
-    if any(term in text for term in visual_terms):
-        return {
-            "crop_advice": "wider_context",
-            "reason": "The clip may reference visual material, so a wider crop is safer.",
-        }
-
-    speakers = {str(segment.get("speaker") or "") for segment in context.get("segments") or [] if segment.get("speaker")}
-    if len(speakers) > 2:
-        return {
-            "crop_advice": "manual_review",
-            "reason": "Several speakers appear in context, so crop framing should be checked manually.",
-        }
-
-    if "?" in text or len(speakers) >= 1:
-        return {
-            "crop_advice": "speaker_focus",
-            "reason": "The clip appears dialogue-heavy, so speaker-focus crop is likely appropriate.",
-        }
-
-    return {
-        "crop_advice": "keep_current",
-        "reason": "No strong crop change signal was found.",
-    }
-
-
-def evaluate_quality_local(state: dict[str, Any]) -> dict[str, Any]:
-    clip = state.get("clip") or {}
-    context = state.get("context") or {}
-    context_expansions = int(state.get("context_expansions") or 0)
-    max_context_expansions = int(state.get("max_context_expansions") or 1)
-    clip_text = _compact_text(str(context.get("clip_text") or clip.get("text") or clip.get("summary") or ""))
-    before_text = _compact_text(str(context.get("before_text") or ""))
-    after_text = _compact_text(str(context.get("after_text") or ""))
-    duration = max(0.0, _parse_float(clip.get("edited_end")) - _parse_float(clip.get("edited_start")))
-    word_count = len(clip_text.split())
-
-    local_score = clip.get("local_score")
-    try:
-        quality_score = float(local_score) if local_score is not None else 0.58
-    except (TypeError, ValueError):
-        quality_score = 0.58
-    quality_score = max(0.0, min(1.0, quality_score))
-
-    if 18 <= duration <= 75:
-        quality_score += 0.08
-    elif duration < 10 or duration > 95:
-        quality_score -= 0.16
-    if word_count < 12:
-        quality_score -= 0.15
-    elif word_count >= 35:
-        quality_score += 0.05
-
-    context_dependent = starts_context_dependent(clip_text)
-    unfinished = ends_unfinished(clip_text)
-    hook_score = 0.62
-    payoff_score = 0.62
-    context_score = 0.78
-    boundary_score = 0.78
-    reasons: list[str] = []
-
-    if "?" in clip_text[:180] or first_word(clip_text) in {"why", "how", "what", "czy", "jak", "dlaczego"}:
-        hook_score += 0.18
-        reasons.append("The clip has a clear hook or question near the start.")
-    if any(token in clip_text.lower() for token in ("because", "therefore", "so the point", "dlatego", "właśnie", "wlasnie")):
-        payoff_score += 0.12
-        reasons.append("The clip includes a likely explanation or payoff.")
-
-    if context_dependent:
-        context_score = 0.48 if context_expansions < max_context_expansions else 0.62
-        boundary_score -= 0.18
-        reasons.append("The current start appears context-dependent.")
-    elif before_text and len(before_text.split()) > 5:
-        context_score = 0.74
-
-    if unfinished:
-        payoff_score -= 0.18
-        boundary_score -= 0.16
-        reasons.append("The current ending may cut off an unfinished thought.")
-    elif after_text:
-        payoff_score += 0.04
-
-    if not clip_text:
-        quality_score = 0.25
-        context_score = 0.2
-        hook_score = 0.2
-        payoff_score = 0.2
-        boundary_score = 0.3
-        reasons.append("Transcript text is unavailable for this clip.")
-
-    needs_more_context = context_score < 0.55 and context_expansions < max_context_expansions
-    if needs_more_context:
-        reasons.append("More transcript context is needed before making a final recommendation.")
-
-    return {
-        "quality_score": round(max(0.0, min(1.0, quality_score)), 2),
-        "context_score": round(max(0.0, min(1.0, context_score)), 2),
-        "hook_score": round(max(0.0, min(1.0, hook_score)), 2),
-        "payoff_score": round(max(0.0, min(1.0, payoff_score)), 2),
-        "boundary_score": round(max(0.0, min(1.0, boundary_score)), 2),
-        "needs_more_context": bool(needs_more_context),
-        "reasons": reasons,
-    }
 
 
 def evaluation_to_dict(evaluation: ClipEvaluation) -> dict[str, Any]:
