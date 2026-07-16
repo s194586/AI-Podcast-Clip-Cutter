@@ -71,11 +71,15 @@ FFmpeg and FFprobe must be available in `PATH`.
 Copy `.env.example` when you want a local environment template. The boundary reviewer uses:
 
 ```powershell
+$env:TRANSCRIPTION_DEVICE = "auto"  # auto, cuda, or cpu
+$env:TRANSCRIPTION_COMPUTE_TYPE = "auto"  # CUDA default float16, CPU default int8
 $env:CLIP_REVIEW_MODE = "local_stub"  # or "gemini"
 $env:GEMINI_API_KEY = "..."
 $env:GEMINI_MODEL = "gemini-3.5-flash"
 $env:CLIP_REVIEW_CONTEXT_SECONDS = "20.0"
 ```
+
+`TRANSCRIPTION_DEVICE=auto` prefers CUDA when CTranslate2 reports CUDA devices. If CUDA execution fails because runtime libraries such as cuBLAS, cuDNN, the CUDA runtime, or the CUDA driver cannot be loaded, transcription logs a concise warning and retries once on CPU with `compute_type=int8`. `TRANSCRIPTION_DEVICE=cuda` is explicit and fails with an actionable message instead of silently falling back.
 
 `GEMINI_API_KEY` is required only when `CLIP_REVIEW_MODE=gemini`. The app never logs or stores the key.
 
@@ -127,12 +131,33 @@ http://127.0.0.1:8000
 The editor can:
 
 - load draft podcast candidates,
+- create a project from a YouTube URL,
+- start the local project pipeline,
+- show coarse stage/progress and a safe technical log tail,
 - preview the source video,
 - adjust start and end,
 - accept or reject clips,
 - review all clips with AI transcript-boundary review,
 - render final short clips,
 - persist review state in SQLite.
+
+## Project Flow V1
+
+The normal local workflow can now be driven from FastAPI:
+
+```text
+POST /projects
+-> POST /projects/{project_id}/start
+-> manager.py runs in data/projects/{project_id}/workspace/
+-> candidates import into SQLite
+-> optional Gemini batch boundary review
+-> project status becomes ready
+-> existing editor opens that project's clips
+```
+
+`manager.py` remains available for debugging and backwards-compatible CLI use. The local orchestrator runs it with `--workspace-dir` and `--analysis-only`, so runtime files are isolated by project and initial candidate renders are skipped until the user renders final clips from the editor.
+
+See [docs/PROJECT_FLOW.md](docs/PROJECT_FLOW.md).
 
 ## Run Tests
 
@@ -175,14 +200,21 @@ The first project-oriented API is also available:
 
 ```text
 POST /projects
+POST /projects/{project_id}/start
 GET /projects
 GET /projects/{project_id}
 GET /projects/{project_id}/clips
 GET /projects/{project_id}/status
+GET /projects/{project_id}/logs
+POST /projects/{project_id}/cancel
+PATCH /projects/{project_id}/clips/{clip_id}
+POST /projects/{project_id}/clips/{clip_id}/accept
+POST /projects/{project_id}/clips/{clip_id}/reject
 POST /clips/{clip_id}/review
 GET /clips/{clip_id}/review
 POST /projects/{project_id}/clips/{clip_id}/review
 POST /projects/{project_id}/review-clips
+POST /projects/{project_id}/render
 ```
 
 Compatibility endpoints use the earliest SQLite project by database id as the default local project.

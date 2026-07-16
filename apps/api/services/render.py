@@ -14,6 +14,7 @@ from .clips import PROJECT_ROOT, record_render_result, validate_adjusted_bounds
 
 VIDEO_EXTENSIONS = (".mp4", ".mkv", ".mov", ".webm")
 SOURCE_VIDEO_FILENAMES = ("source.mp4", "source.mov", "source.mkv", "source.webm")
+FORMAT_VARIANT_RE = re.compile(r"\.f\d+$", re.IGNORECASE)
 
 
 class RenderError(RuntimeError):
@@ -48,6 +49,24 @@ def locate_source_video(project_root: Path = PROJECT_ROOT) -> Path | None:
     return None
 
 
+def _is_format_variant(path: Path) -> bool:
+    return bool(FORMAT_VARIANT_RE.search(path.stem))
+
+
+def _preferred_video_candidate(candidates: list[Path]) -> Path | None:
+    if not candidates:
+        return None
+    return max(
+        candidates,
+        key=lambda path: (
+            not _is_format_variant(path),
+            path.suffix.lower() == ".mp4",
+            path.stat().st_size,
+            path.stat().st_mtime,
+        ),
+    )
+
+
 def locate_input_video(project_root: Path = PROJECT_ROOT) -> Path | None:
     source_video = locate_source_video(project_root)
     if source_video is not None:
@@ -60,9 +79,7 @@ def locate_input_video(project_root: Path = PROJECT_ROOT) -> Path | None:
     for extension in VIDEO_EXTENSIONS:
         candidates.extend(input_dir.glob(f"*{extension}"))
     candidates = [path for path in candidates if path.is_file()]
-    if not candidates:
-        return None
-    return max(candidates, key=lambda path: path.stat().st_mtime)
+    return _preferred_video_candidate(candidates)
 
 
 def locate_transcript(project_root: Path = PROJECT_ROOT) -> Path | None:
@@ -125,29 +142,34 @@ def render_adjusted_clip(
     end: Any,
     *,
     project_root: Path = PROJECT_ROOT,
+    runtime_root: Path | None = None,
+    project_id: int | str | None = None,
+    source_video_path: Path | None = None,
 ) -> dict[str, Any]:
+    script_root = Path(project_root)
+    runtime_root = Path(runtime_root) if runtime_root is not None else script_root
     edited_start, edited_end, duration = validate_adjusted_bounds(clip, start, end)
-    video_path = locate_input_video(project_root)
+    video_path = source_video_path if source_video_path is not None and source_video_path.is_file() else locate_input_video(runtime_root)
     if video_path is None:
         raise RenderError(
             "Missing source video. Put source.mp4, source.mov, source.mkv, or source.webm in input/ before rendering.",
             status_code=400,
         )
 
-    transcript_path = locate_transcript(project_root)
+    transcript_path = locate_transcript(runtime_root)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    render_dir = project_root / "outputs" / "editor_renders" / f"{timestamp}_{_safe_name(clip['id'])}"
+    render_dir = runtime_root / "outputs" / "editor_renders" / f"{timestamp}_{_safe_name(clip['id'])}"
     raw_dir = render_dir / "raw"
     subtitles_dir = render_dir / "subtitles"
     render_dir.mkdir(parents=True, exist_ok=False)
 
     windows_path = _write_adjusted_window(render_dir, clip, edited_start, edited_end, duration)
-    cutting_log_path = _prepare_cutting_log(render_dir, project_root)
-    transcript_arg = transcript_path if transcript_path is not None else project_root / "transcripts" / "final_transcript.json"
+    cutting_log_path = _prepare_cutting_log(render_dir, runtime_root)
+    transcript_arg = transcript_path if transcript_path is not None else runtime_root / "transcripts" / "final_transcript.json"
 
     cutter_command = [
         sys.executable,
-        str(project_root / "cutter.py"),
+        str(script_root / "cutter.py"),
         "--video",
         str(video_path),
         "--windows",
@@ -159,7 +181,7 @@ def render_adjusted_clip(
         "--cutting-log",
         str(cutting_log_path),
     ]
-    cutter_result = _run_command(cutter_command, project_root)
+    cutter_result = _run_command(cutter_command, script_root)
     raw_outputs = sorted(raw_dir.glob("segment_*.mp4"))
     if not raw_outputs:
         raise RenderError(
@@ -177,7 +199,7 @@ def render_adjusted_clip(
     else:
         subtitler_command = [
             sys.executable,
-            str(project_root / "subtitler.py"),
+            str(script_root / "subtitler.py"),
             "--transcript",
             str(transcript_path),
             "--input-dir",
@@ -188,7 +210,7 @@ def render_adjusted_clip(
             str(subtitles_dir),
         ]
         try:
-            subtitler_result = _run_command(subtitler_command, project_root)
+            subtitler_result = _run_command(subtitler_command, script_root)
             subtitler_stdout = subtitler_result.stdout
             subtitler_stderr = subtitler_result.stderr
             subtitled_outputs = sorted(subtitles_dir.glob("segment_*.mp4"))
@@ -206,11 +228,11 @@ def render_adjusted_clip(
         "start": edited_start,
         "end": edited_end,
         "duration": duration,
-        "output_dir": _relative(render_dir, project_root),
-        "raw_outputs": [_relative(path, project_root) for path in raw_outputs],
-        "subtitled_outputs": [_relative(path, project_root) for path in subtitled_outputs],
-        "windows_file": _relative(windows_path, project_root),
-        "cutting_log": _relative(cutting_log_path, project_root),
+        "output_dir": _relative(render_dir, script_root),
+        "raw_outputs": [_relative(path, script_root) for path in raw_outputs],
+        "subtitled_outputs": [_relative(path, script_root) for path in subtitled_outputs],
+        "windows_file": _relative(windows_path, script_root),
+        "cutting_log": _relative(cutting_log_path, script_root),
         "warnings": warnings,
         "logs": {
             "cutter_stdout": cutter_result.stdout[-4000:],
@@ -219,5 +241,5 @@ def render_adjusted_clip(
             "subtitler_stderr": subtitler_stderr[-4000:],
         },
     }
-    result["clip"] = record_render_result(clip["id"], result, project_root=project_root)
+    result["clip"] = record_render_result(clip["id"], result, project_root=script_root, project_id=project_id)
     return result

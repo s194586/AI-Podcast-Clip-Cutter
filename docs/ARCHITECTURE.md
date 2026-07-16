@@ -12,6 +12,8 @@ The main media pipeline is deterministic. It is not an agent. The agentic compon
 
 `transcribe.py` creates transcript JSON from source audio using Faster-Whisper. The transcript is the main input for candidate scoring, boundary checks, and subtitles.
 
+Transcription device selection is controlled by `TRANSCRIPTION_DEVICE=auto|cuda|cpu` and optional `TRANSCRIPTION_COMPUTE_TYPE`. Auto mode prefers CUDA when CTranslate2 reports it, but retries once on CPU int8 when CUDA runtime libraries such as cuBLAS/cuDNN cannot be loaded. Explicit `cuda` mode fails clearly and does not fall back.
+
 `content_classifier.py` is now a podcast-only compatibility module. It writes `metadata/content_profile.json` so older pipeline calls still work, but it no longer routes to gameplay, tutorial, commentary, or generic strategies.
 
 `analyze_virals.py` keeps its historical filename for compatibility. In the current product it generates and scores podcast candidate windows. The boundary reviewer runs later and does not rank candidates.
@@ -21,6 +23,19 @@ The main media pipeline is deterministic. It is not an agent. The agentic compon
 `subtitler.py` burns subtitles into rendered clips.
 
 ## Pipeline Orchestration
+
+FastAPI now exposes a local Project Flow through `apps/api/orchestration`.
+
+```text
+create project
+-> start LocalPipelineOrchestrator
+-> run manager.py in a project workspace
+-> import candidates into SQLite
+-> optional Gemini batch review
+-> ready for editor review/render
+```
+
+`LocalPipelineOrchestrator` uses `sys.executable`, `subprocess.Popen(..., shell=False)`, persisted SQLite jobs, and per-project logs. It is the normal app-driven path for local users.
 
 The deterministic workflow can be orchestrated by Apache Airflow through `orchestration/airflow/dags/podcast_pipeline_dag.py`.
 
@@ -39,6 +54,15 @@ validate config
 Rendering remains human-triggered in the editor. The Airflow DAG does not render every candidate automatically.
 
 Airflow is optional. It is installed from `requirements-airflow.txt` and is not required for the FastAPI app or unit tests.
+
+The shared abstraction is:
+
+```mermaid
+flowchart TB
+  A[FastAPI] --> B[PipelineOrchestrator]
+  B --> C[LocalPipelineOrchestrator]
+  B -. future .-> D[AirflowPipelineOrchestrator]
+```
 
 ## Clip Review Agent
 
@@ -74,10 +98,15 @@ The Gemini structured decision is one of `render_ready`, `adjust_boundaries`, or
 - `POST /clips/{clip_id}/reject` marks a clip as rejected.
 - `POST /render` validates adjusted bounds, calls `cutter.py`, runs `subtitler.py` when a transcript is available, updates the clip render status, and records output files as artifacts.
 - `POST /projects` creates a project record without starting the pipeline.
+- `POST /projects/{project_id}/start` starts the local pipeline and returns immediately.
 - `GET /projects` lists projects newest first with clip counts.
 - `GET /projects/{project_id}` returns project metadata.
 - `GET /projects/{project_id}/clips` returns clips for one project.
 - `GET /projects/{project_id}/status` returns project processing status, clip count, and latest failed job error.
+- `GET /projects/{project_id}/logs` returns a safe tail of the project pipeline log.
+- `POST /projects/{project_id}/cancel` cancels a local run where practical.
+- `PATCH /projects/{project_id}/clips/{clip_id}` updates project-specific edited boundaries.
+- `POST /projects/{project_id}/render` renders from the project workspace while scripts still resolve from the repo root.
 - `POST /clips/{clip_id}/review` evaluates a clip in the default project.
 - `GET /clips/{clip_id}/review` returns the latest saved evaluation for a clip.
 - `POST /projects/{project_id}/clips/{clip_id}/review` evaluates a clip in a specific project.
@@ -111,7 +140,7 @@ The database stores:
 - `projects`: source URL, title, status, and source/transcript/candidate paths.
 - `clips`: stable editor IDs such as `clip_001`, AI boundaries, edited boundaries, validation bounds, accept/reject status, render status, scores, reasons, features, and latest render outputs.
 - `clip_evaluations`: review provider/model metadata, semantic decision, selected option indexes, backend-derived segment IDs, reviewed boundaries, deltas from original AI boundaries, concise reasoning, warnings, context seconds, retry metadata, and legacy score/crop columns kept for compatibility.
-- `jobs`: Stage 2 preparation only. The schema exists, but there is no worker, queue, polling flow, or background job system.
+- `jobs`: persisted local pipeline and optional orchestration job state, including status, stage, progress, process id, log path, errors, and exit code.
 - `artifacts`: metadata for generated local files such as source video, transcript, candidate windows, raw clips, and subtitled clips. Video bytes are not stored in SQLite.
 
 `project_state.json` is a legacy compatibility import format. On startup the API creates tables and runs a safe bootstrap:

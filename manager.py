@@ -145,6 +145,8 @@ class WorkflowManager:
         diarization_max_speakers: int = 4,
         content_type: str = 'auto',
         layout_mode: str = 'auto',
+        workspace_dir: Optional[str] = None,
+        analysis_only: bool = False,
     ):
         self.url = url
         self.cleanup = cleanup
@@ -169,14 +171,17 @@ class WorkflowManager:
         self.content_type = normalize_content_type_mode(content_type)
         self.layout_mode = normalize_layout_mode(layout_mode)
         self.script_dir = Path(__file__).parent
+        self.runtime_dir = Path(workspace_dir).resolve() if workspace_dir else self.script_dir
+        self.analysis_only = bool(analysis_only)
         
         # Foldery
-        self.input_dir = self.script_dir / 'input'
-        self.metadata_dir = self.script_dir / 'metadata'
-        self.transcripts_dir = self.script_dir / 'transcripts'
-        self.cuts_dir = self.script_dir / 'cuts'
+        self.input_dir = self.runtime_dir / 'input'
+        self.metadata_dir = self.runtime_dir / 'metadata'
+        self.transcripts_dir = self.runtime_dir / 'transcripts'
+        self.cuts_dir = self.runtime_dir / 'cuts'
         self.cuts_raw_dir = self.cuts_dir / 'raw'
         self.cuts_subs_dir = self.cuts_dir / 'subtitles'
+        self.outputs_dir = self.runtime_dir / 'outputs'
         
         # Pliki
         self.transcript_file = self.transcripts_dir / 'final_transcript.json'
@@ -184,9 +189,17 @@ class WorkflowManager:
         self.cutting_logic_file = self.metadata_dir / 'cutting_logic.json'
         self.content_profile_file = self.metadata_dir / 'content_profile.json'
         self.heatmap_file = self.metadata_dir / 'heatmap.json'
-        self.windows_file = self.script_dir / 'top_windows.json'
+        self.windows_file = self.runtime_dir / 'top_windows.json'
         self.gemini_transport = os.environ.get('GEMINI_TRANSPORT', '').strip().lower()
         self.gemini_available = False
+
+    def display_path(self, path: Path) -> str:
+        for root in (self.runtime_dir, self.script_dir):
+            try:
+                return str(path.relative_to(root))
+            except ValueError:
+                continue
+        return str(path)
 
     def build_subprocess_env(self):
         env = os.environ.copy()
@@ -208,7 +221,7 @@ class WorkflowManager:
                     continue
                 try:
                     file_path.unlink()
-                    print(f"  ✓ Usunięto: {file_path.relative_to(self.script_dir)}")
+                    print(f"  ✓ Usunięto: {self.display_path(file_path)}")
                     deleted_count += 1
                 except Exception as exc:
                     print(f"  ✗ Nie udało się usunąć {file_path.name}: {exc}")
@@ -222,7 +235,7 @@ class WorkflowManager:
                 continue
             try:
                 file_path.unlink()
-                print(f"  ✓ Usunięto: {file_path.relative_to(self.script_dir)}")
+                print(f"  ✓ Usunięto: {self.display_path(file_path)}")
                 deleted_count += 1
             except Exception as exc:
                 print(f"  ✗ Nie udało się usunąć {file_path.name}: {exc}")
@@ -230,7 +243,7 @@ class WorkflowManager:
         if self.windows_file.exists():
             try:
                 self.windows_file.unlink()
-                print(f"  ✓ Usunięto: {self.windows_file.relative_to(self.script_dir)}")
+                print(f"  ✓ Usunięto: {self.display_path(self.windows_file)}")
                 deleted_count += 1
             except Exception as exc:
                 print(f"  ✗ Nie udało się usunąć {self.windows_file.name}: {exc}")
@@ -408,11 +421,12 @@ class WorkflowManager:
             self.cuts_dir,
             self.cuts_raw_dir,
             self.cuts_subs_dir,
+            self.outputs_dir,
         ]
         
         for directory in dirs:
             directory.mkdir(parents=True, exist_ok=True)
-            print(f"  ✓ {directory.relative_to(self.script_dir)}")
+            print(f"  ✓ {self.display_path(directory)}")
     
     def probe_streams(self, path: Path, stream_type: Optional[str] = None) -> int:
         """Sprawdza liczbę strumieni audio/video w pliku za pomocą ffprobe."""
@@ -846,12 +860,15 @@ class WorkflowManager:
         print(f"Subtitle Checker Mode: {self.subtitle_checker_mode}")
         print(f"Skip Smart Context: {'Tak' if self.skip_smart_context else 'Nie'}")
         print(f"Transcription Backend: {self.transcription_backend} ({self.whisper_model})")
+        print(f"Transcription Device: {self.transcription_device} | Compute: {self.transcription_compute_type}")
         print(
             f"Diarization: {'Tak' if self.enable_diarization else 'Nie'}"
             f" [{self.diarization_backend}, max speakers: {self.diarization_max_speakers}]"
         )
         print(f"Content Type: {self.content_type}")
         print(f"Layout Mode: {self.layout_mode}")
+        print(f"Workspace: {self.display_path(self.runtime_dir)}")
+        print(f"Analysis Only: {'Tak' if self.analysis_only else 'Nie'}")
         print(f"Auto Fix Subtitles: {'Tak' if self.auto_fix_subtitles else 'Nie'}")
         print(f"Cleanup: {'Tak' if self.cleanup else 'Nie'}")
         print()
@@ -906,9 +923,15 @@ class WorkflowManager:
             steps.extend([
                 (self.classify_content, "Klasyfikacja typu materiału"),
                 (self.analyze_virals, "Analiza podcastowych klipow"),
-                (self.cut_segments, "Wycinanie"),
-                (self.add_subtitles, "Napisy"),
             ])
+
+            if self.analysis_only:
+                print("  Analysis-only mode: skipping initial render and subtitle burn.")
+            else:
+                steps.extend([
+                    (self.cut_segments, "Wycinanie"),
+                    (self.add_subtitles, "Napisy"),
+                ])
             
             for step_func, step_name in steps:
                 success = step_func()
@@ -984,6 +1007,18 @@ Przykłady:
     )
 
     parser.add_argument(
+        '--workspace-dir',
+        default=None,
+        help='Opcjonalny katalog runtime. Domyślnie używa katalogów w repozytorium jak dotąd.',
+    )
+
+    parser.add_argument(
+        '--analysis-only',
+        action='store_true',
+        help='Zatrzymaj workflow po wygenerowaniu kandydatów; nie renderuj początkowych klipów.',
+    )
+
+    parser.add_argument(
         '--ai-mode',
         choices=VALID_AI_MODES,
         default='gemini_optional',
@@ -1018,14 +1053,15 @@ Przykłady:
 
     parser.add_argument(
         '--transcription-device',
-        default='auto',
-        help='Device dla transkrypcji: auto, cpu albo cuda',
+        default=os.environ.get('TRANSCRIPTION_DEVICE', 'auto'),
+        choices=('auto', 'cuda', 'cpu'),
+        help='Device dla transkrypcji: auto, cpu albo cuda (domyslnie TRANSCRIPTION_DEVICE albo auto)',
     )
 
     parser.add_argument(
         '--transcription-compute-type',
-        default='auto',
-        help='Compute type dla faster-whisper: auto, int8, float16 itd.',
+        default=os.environ.get('TRANSCRIPTION_COMPUTE_TYPE', 'auto'),
+        help='Compute type dla faster-whisper: auto, int8, float16 itd. (domyslnie TRANSCRIPTION_COMPUTE_TYPE albo auto)',
     )
 
     parser.set_defaults(enable_diarization=True)
@@ -1116,6 +1152,8 @@ def main():
         diarization_max_speakers=args.diarization_max_speakers,
         content_type=args.content_type,
         layout_mode=args.layout_mode,
+        workspace_dir=args.workspace_dir,
+        analysis_only=args.analysis_only,
     )
     
     manager.run()

@@ -82,6 +82,93 @@ h1 {
   padding: 12px 14px;
 }
 
+.project-flow {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  padding: 14px;
+}
+
+.project-flow-grid {
+  display: grid;
+  grid-template-columns: minmax(240px, 320px) minmax(260px, 1fr) minmax(160px, 240px) auto auto;
+  gap: 12px;
+  align-items: end;
+}
+
+.project-flow label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 0.84rem;
+  font-weight: 800;
+}
+
+.project-flow input[type="url"],
+.project-flow input[type="text"],
+.project-flow select {
+  width: 100%;
+  min-height: 42px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #0f1519;
+  color: var(--ink);
+  padding: 8px 10px;
+}
+
+.project-flow select {
+  min-width: 240px;
+}
+
+.checkbox-row {
+  grid-template-columns: auto auto;
+  gap: 8px;
+  align-items: center;
+  min-height: 42px;
+}
+
+.project-buttons {
+  display: flex;
+  gap: 8px;
+}
+
+.project-status-row {
+  display: grid;
+  grid-template-columns: minmax(160px, 240px) minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+}
+
+.project-status-row progress {
+  width: 100%;
+  height: 12px;
+  accent-color: var(--accent);
+}
+
+#projectFlowStatus {
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1.4;
+}
+
+.project-log-details {
+  margin-top: 0;
+}
+
+#projectLogTail {
+  max-height: 220px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #050708;
+  color: #d7fce7;
+  padding: 12px;
+  white-space: pre-wrap;
+}
+
 .workspace {
   display: grid;
   grid-template-columns: 320px minmax(0, 1fr);
@@ -136,6 +223,12 @@ h1 {
   min-height: 1.3em;
   color: var(--muted);
   font-size: 0.84rem;
+  line-height: 1.35;
+}
+
+.provider-status {
+  color: var(--muted);
+  font-size: 0.8rem;
   line-height: 1.35;
 }
 
@@ -467,6 +560,8 @@ ul {
 
 @media (max-width: 900px) {
   .topbar,
+  .project-flow-grid,
+  .project-status-row,
   .workspace {
     display: grid;
     grid-template-columns: 1fr;
