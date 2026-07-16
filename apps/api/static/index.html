@@ -24,6 +24,10 @@
             <h2>Draft clips</h2>
             <span id="clipCount">0</span>
           </div>
+          <div class="review-actions">
+            <button id="reviewAllButton" type="button">Review all with AI</button>
+            <p id="aiReviewStatus" class="ai-review-status" role="status"></p>
+          </div>
           <div id="clipList" class="clip-list" aria-label="AI draft clips"></div>
         </aside>
 
@@ -107,6 +111,10 @@
               <summary>Transcript excerpt</summary>
               <p id="selectedTranscript"></p>
             </details>
+            <section id="aiReviewPanel" class="ai-review-panel" hidden>
+              <h3>AI review</h3>
+              <dl id="aiReviewDetails"></dl>
+            </section>
           </section>
 
           <pre id="renderResult" class="render-result" hidden></pre>

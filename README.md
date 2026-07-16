@@ -2,7 +2,7 @@
 
 AI Podcast Clip Cutter is a local-first podcast automation toolkit for turning long podcast, interview, and talking-head videos into vertical short clips.
 
-The core media processing workflow is deterministic and can be orchestrated with Airflow. A separate Clip Review Agent evaluates candidate clips using transcript context, privacy checks, boundary analysis, and crop advice before a human renders final shorts.
+The core media processing workflow is deterministic and can be orchestrated with Airflow. A separate Clip Review Agent can send compact transcript context to Gemini for semantic temporal boundary review before a human renders final shorts.
 
 The system does not claim viral prediction or fully automate editorial judgment. It proposes draft clips, shows why they were selected, lets the user adjust start/end boundaries, and renders final MP4 files only after review.
 
@@ -16,7 +16,7 @@ URL or local video
   -> podcast candidate scoring
   -> optional Gemini rerank/correction
   -> draft candidates
-  -> optional Clip Review Agent evaluation
+  -> optional Gemini transcript boundary review
   -> human review in web editor
   -> 9:16 render + burned subtitles
 ```
@@ -27,7 +27,17 @@ The media pipeline is not an agent. The fixed processing sequence remains determ
 download media -> transcribe -> generate candidates -> score candidates -> prepare editor project -> render
 ```
 
-The review agent is separate. It reviews one stored clip candidate at a time and recommends whether to keep, reject, adjust boundaries, request manual review, or render after human approval.
+The review agent is separate. Candidate generation finds and ranks possible clips. Gemini does not rank clips or inspect video frames; it only decides whether transcript-aligned start/end boundaries make the candidate coherent as a standalone short.
+
+```mermaid
+flowchart LR
+  A[candidate generation] --> B[transcript context extraction]
+  B --> C[Gemini semantic boundary review]
+  C --> D[reviewed boundaries]
+  D --> E[editor sliders]
+  E --> F[optional user adjustment]
+  F --> G[final render]
+```
 
 ## Main Modules
 
@@ -42,7 +52,7 @@ cutter.py               Renders 9:16 raw clips
 subtitler.py            Burns subtitles into rendered clips
 apps/api                FastAPI editor backend
 apps/api/static         Browser review UI
-apps/review_agent       Clip Review Agent PoC with deterministic local tools
+apps/review_agent       Transcript boundary reviewer with Gemini and local_stub modes
 orchestration/airflow   Optional Airflow DAG for deterministic pipeline orchestration
 ```
 
@@ -57,6 +67,17 @@ pip install -r requirements.txt
 ```
 
 FFmpeg and FFprobe must be available in `PATH`.
+
+Copy `.env.example` when you want a local environment template. The boundary reviewer uses:
+
+```powershell
+$env:CLIP_REVIEW_MODE = "local_stub"  # or "gemini"
+$env:GEMINI_API_KEY = "..."
+$env:GEMINI_MODEL = "gemini-3.5-flash"
+$env:CLIP_REVIEW_CONTEXT_SECONDS = "20.0"
+```
+
+`GEMINI_API_KEY` is required only when `CLIP_REVIEW_MODE=gemini`. The app never logs or stores the key.
 
 ## Run The Local Pipeline
 
@@ -109,7 +130,7 @@ The editor can:
 - preview the source video,
 - adjust start and end,
 - accept or reject clips,
-- request local clip review advice,
+- review all clips with AI transcript-boundary review,
 - render final short clips,
 - persist review state in SQLite.
 
@@ -155,19 +176,33 @@ GET /projects/{project_id}/status
 POST /clips/{clip_id}/review
 GET /clips/{clip_id}/review
 POST /projects/{project_id}/clips/{clip_id}/review
+POST /projects/{project_id}/review-clips
 ```
 
 Compatibility endpoints use the earliest SQLite project by database id as the default local project.
 
 ## Clip Review Agent
 
-Default mode is local-only and does not require API keys:
+Default mode is an explicit offline stub and does not require API keys:
 
 ```powershell
-$env:CLIP_REVIEW_MODE = "local_only"
+$env:CLIP_REVIEW_MODE = "local_stub"
 ```
 
-The agent uses deterministic tools to retrieve transcript context, inspect stored candidate features, check obvious sensitive patterns, suggest boundaries, suggest crop framing metadata, and save a structured `ClipEvaluation` row. `CLIP_REVIEW_MODE=llm_optional` can be used as an optional provider-backed path; if an LLM client or key is unavailable, the local heuristic evaluator is used.
+Real review mode uses the official Google Gen AI SDK:
+
+```powershell
+$env:CLIP_REVIEW_MODE = "gemini"
+$env:GEMINI_API_KEY = "..."
+```
+
+Gemini receives only approximately `CLIP_REVIEW_CONTEXT_SECONDS` before the candidate, transcript segments overlapping the candidate, approximately the same amount after it, and numbered start/end boundary options. It returns one of three editorial decisions: `render_ready`, `adjust_boundaries`, or `reject`, plus required non-null integer option indexes. The backend maps those indexes to segment IDs and timestamps. Backend-created `manual_review` is reserved for technical or validation failure.
+
+Safe `render_ready` and `adjust_boundaries` decisions store `reviewed_start`/`reviewed_end`, copy those values into `edited_start`/`edited_end`, and set `boundary_source="ai_review"`. Manual slider edits later change only `edited_start`/`edited_end` and set `boundary_source="user"`. Rendering always uses edited boundaries.
+
+Gemini does not visually crop the video. Visual 9:16 rendering remains deterministic and uses `edited_start`/`edited_end` afterward.
+
+The browser editor has a project-level **Review all with AI** button that calls `POST /projects/{project_id}/review-clips`, reloads clips, and shows the AI-reviewed boundaries on the existing handles.
 
 See [docs/CLIP_REVIEW_AGENT.md](docs/CLIP_REVIEW_AGENT.md).
 
@@ -191,7 +226,17 @@ It prepares reviewed candidate clips from DAG config such as:
 {"project_id": 1, "source_url": "https://www.youtube.com/watch?v=..."}
 ```
 
-The DAG does not render all clips automatically. It prepares reviewed candidates, then the human editor decides what to render.
+The DAG does not render all clips automatically. It imports candidates into SQLite, calls the Python batch review service directly, then the human editor decides what to render.
+
+```mermaid
+flowchart LR
+  A[validate] --> B[download]
+  B --> C[transcribe]
+  C --> D[candidates]
+  D --> E[import SQLite]
+  E --> F[Gemini batch review]
+  F --> G[ready]
+```
 
 See [orchestration/airflow/README.md](orchestration/airflow/README.md).
 
@@ -206,7 +251,7 @@ This is now a podcast shorts cutter, not a general gameplay/tutorial/commentary 
 This project demonstrates production-oriented AI engineering patterns:
 
 - deterministic pipeline orchestration,
-- tool-based clip evaluation,
+- Gemini transcript boundary review,
 - typed review state,
 - SQLite persistence,
 - testable FastAPI endpoints,

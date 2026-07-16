@@ -14,6 +14,7 @@ class ReviewAgentState(TypedDict, total=False):
     context_padding_seconds: float
     context_expansions: int
     max_context_expansions: int
+    apply_safe_suggestions: bool
     quality_score: float
     context_score: float
     hook_score: float

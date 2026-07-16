@@ -3,6 +3,7 @@ python-dotenv
 fastapi
 uvicorn
 google-generativeai
+google-genai
 tqdm
 mediapipe
 opencv-python-headless

@@ -66,6 +66,12 @@ def _round_seconds(value: float) -> float:
     return round(float(value), 2)
 
 
+def _optional_seconds(value: Any, field_name: str) -> float | None:
+    if value in (None, ""):
+        return None
+    return _round_seconds(_parse_seconds(value, field_name))
+
+
 def _relative_source(path: Path, project_root: Path) -> str:
     try:
         return str(path.resolve().relative_to(project_root.resolve())).replace("\\", "/")
@@ -145,8 +151,11 @@ def _normalize_window(window: dict[str, Any], index: int, source: str) -> dict[s
         "index": index,
         "ai_start": _round_seconds(ai_start),
         "ai_end": _round_seconds(ai_end),
+        "reviewed_start": _optional_seconds(window.get("reviewed_start"), "reviewed_start"),
+        "reviewed_end": _optional_seconds(window.get("reviewed_end"), "reviewed_end"),
         "edited_start": _round_seconds(ai_start),
         "edited_end": _round_seconds(ai_end),
+        "boundary_source": str(window.get("boundary_source") or "heuristic"),
         "min_start": _round_seconds(max(0.0, ai_start - WINDOW_MARGIN_SECONDS)),
         "max_start": _round_seconds(ai_start + WINDOW_MARGIN_SECONDS),
         "min_end": _round_seconds(max(0.0, ai_end - WINDOW_MARGIN_SECONDS)),
@@ -192,8 +201,11 @@ def _normalize_project_clip(clip: dict[str, Any], index: int) -> dict[str, Any]:
             "index": int(normalized.get("index") or index),
             "ai_start": _round_seconds(ai_start),
             "ai_end": _round_seconds(ai_end),
+            "reviewed_start": _optional_seconds(normalized.get("reviewed_start"), "reviewed_start"),
+            "reviewed_end": _optional_seconds(normalized.get("reviewed_end"), "reviewed_end"),
             "edited_start": _round_seconds(edited_start),
             "edited_end": _round_seconds(edited_end),
+            "boundary_source": str(normalized.get("boundary_source") or "heuristic"),
             "min_start": _round_seconds(float(normalized.get("min_start", max(0.0, ai_start - WINDOW_MARGIN_SECONDS)))),
             "max_start": _round_seconds(float(normalized.get("max_start", ai_start + WINDOW_MARGIN_SECONDS))),
             "min_end": _round_seconds(float(normalized.get("min_end", max(0.0, ai_end - WINDOW_MARGIN_SECONDS)))),

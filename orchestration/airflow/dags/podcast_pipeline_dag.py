@@ -64,8 +64,8 @@ else:  # pragma: no cover - requires Airflow installation
             return _execute_step(pipeline_tasks.import_candidates_to_sqlite, config)
 
         @task
-        def review_top_candidates_task(config: dict[str, Any]) -> dict[str, Any]:
-            return _execute_step(pipeline_tasks.review_top_candidates, config)
+        def review_candidates_with_gemini_task(config: dict[str, Any]) -> dict[str, Any]:
+            return _execute_step(pipeline_tasks.review_candidates_with_gemini, config)
 
         @task
         def mark_project_ready_task(config: dict[str, Any]) -> dict[str, Any]:
@@ -76,7 +76,7 @@ else:  # pragma: no cover - requires Airflow installation
         transcript = transcribe_audio_task(media)
         candidates = generate_candidates_task(transcript)
         imported = import_candidates_to_sqlite_task(candidates)
-        reviewed = review_top_candidates_task(imported)
+        reviewed = review_candidates_with_gemini_task(imported)
         mark_project_ready_task(reviewed)
 
     podcast_pipeline = podcast_pipeline_dag()

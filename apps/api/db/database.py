@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -59,7 +59,59 @@ def get_engine() -> Engine:
 def init_database() -> None:
     from .models import Base
 
-    Base.metadata.create_all(get_engine())
+    engine = get_engine()
+    Base.metadata.create_all(engine)
+    _ensure_sqlite_clip_boundary_columns(engine)
+    _ensure_sqlite_clip_evaluation_columns(engine)
+
+
+def _ensure_sqlite_clip_boundary_columns(engine: Engine) -> None:
+    if not engine.dialect.name.startswith("sqlite"):
+        return
+    inspector = inspect(engine)
+    if "clips" not in inspector.get_table_names():
+        return
+    existing_columns = {column["name"] for column in inspector.get_columns("clips")}
+    column_sql = {
+        "reviewed_start": "ALTER TABLE clips ADD COLUMN reviewed_start FLOAT",
+        "reviewed_end": "ALTER TABLE clips ADD COLUMN reviewed_end FLOAT",
+        "boundary_source": "ALTER TABLE clips ADD COLUMN boundary_source VARCHAR(64) DEFAULT 'heuristic'",
+    }
+    missing = [name for name in column_sql if name not in existing_columns]
+    if not missing:
+        return
+    with engine.begin() as connection:
+        for column_name in missing:
+            connection.execute(text(column_sql[column_name]))
+
+
+def _ensure_sqlite_clip_evaluation_columns(engine: Engine) -> None:
+    if not engine.dialect.name.startswith("sqlite"):
+        return
+    inspector = inspect(engine)
+    if "clip_evaluations" not in inspector.get_table_names():
+        return
+    existing_columns = {column["name"] for column in inspector.get_columns("clip_evaluations")}
+    column_sql = {
+        "provider": "ALTER TABLE clip_evaluations ADD COLUMN provider VARCHAR(64) DEFAULT 'local_stub'",
+        "model": "ALTER TABLE clip_evaluations ADD COLUMN model VARCHAR(256)",
+        "selected_start_segment_id": "ALTER TABLE clip_evaluations ADD COLUMN selected_start_segment_id VARCHAR(256)",
+        "selected_end_segment_id": "ALTER TABLE clip_evaluations ADD COLUMN selected_end_segment_id VARCHAR(256)",
+        "reviewed_start": "ALTER TABLE clip_evaluations ADD COLUMN reviewed_start FLOAT",
+        "reviewed_end": "ALTER TABLE clip_evaluations ADD COLUMN reviewed_end FLOAT",
+        "start_delta_seconds": "ALTER TABLE clip_evaluations ADD COLUMN start_delta_seconds FLOAT",
+        "end_delta_seconds": "ALTER TABLE clip_evaluations ADD COLUMN end_delta_seconds FLOAT",
+        "reasoning_summary": "ALTER TABLE clip_evaluations ADD COLUMN reasoning_summary TEXT DEFAULT ''",
+        "start_reason": "ALTER TABLE clip_evaluations ADD COLUMN start_reason TEXT DEFAULT ''",
+        "end_reason": "ALTER TABLE clip_evaluations ADD COLUMN end_reason TEXT DEFAULT ''",
+        "context_seconds": "ALTER TABLE clip_evaluations ADD COLUMN context_seconds FLOAT",
+    }
+    missing = [name for name in column_sql if name not in existing_columns]
+    if not missing:
+        return
+    with engine.begin() as connection:
+        for column_name in missing:
+            connection.execute(text(column_sql[column_name]))
 
 
 def get_session() -> Session:

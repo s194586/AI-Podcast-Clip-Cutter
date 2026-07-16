@@ -3,6 +3,8 @@ const els = {
   clipCount: document.querySelector("#clipCount"),
   sourceStatus: document.querySelector("#sourceStatus"),
   sourceWarning: document.querySelector("#sourceWarning"),
+  reviewAllButton: document.querySelector("#reviewAllButton"),
+  aiReviewStatus: document.querySelector("#aiReviewStatus"),
   previewVideo: document.querySelector("#previewVideo"),
   emptyPreview: document.querySelector("#emptyPreview"),
   currentTime: document.querySelector("#currentTime"),
@@ -31,6 +33,8 @@ const els = {
   selectedReasons: document.querySelector("#selectedReasons"),
   transcriptDetails: document.querySelector("#transcriptDetails"),
   selectedTranscript: document.querySelector("#selectedTranscript"),
+  aiReviewPanel: document.querySelector("#aiReviewPanel"),
+  aiReviewDetails: document.querySelector("#aiReviewDetails"),
   renderResult: document.querySelector("#renderResult"),
 };
 
@@ -46,6 +50,7 @@ const state = {
 const seconds = (value) => `${Number(value || 0).toFixed(2)}s`;
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 const duration = () => state.editedEnd - state.editedStart;
+const hasValue = (value) => value !== null && value !== undefined && value !== "";
 
 function shortText(clip) {
   const text = clip.summary || clip.text || "No summary available.";
@@ -152,6 +157,7 @@ function configureEditorBounds(clip) {
 function renderClipList() {
   els.clipList.textContent = "";
   els.clipCount.textContent = String(state.clips.length);
+  els.reviewAllButton.disabled = state.clips.length === 0;
 
   state.clips.forEach((clip) => {
     const button = document.createElement("button");
@@ -162,8 +168,20 @@ function renderClipList() {
       <span class="clip-title">Clip ${clip.index}</span>
       <span class="clip-duration">${seconds(clip.duration)}</span>
       <span class="clip-status">${clip.status || "draft"}</span>
+      <span class="clip-review-meta"></span>
       <span class="clip-copy"></span>
     `;
+    const meta = button.querySelector(".clip-review-meta");
+    [
+      clip.latest_review_decision ? `Review: ${clip.latest_review_decision}` : "Review: pending",
+      `Source: ${clip.boundary_source || "heuristic"}`,
+      clip.latest_review_changed_boundaries ? "AI changed bounds" : "Bounds unchanged",
+    ].forEach((label, index) => {
+      const item = document.createElement("span");
+      item.textContent = label;
+      if (index === 2 && clip.latest_review_changed_boundaries) item.classList.add("changed");
+      meta.appendChild(item);
+    });
     button.querySelector(".clip-copy").textContent = shortText(clip);
     button.addEventListener("click", () => selectClip(clip.id));
     els.clipList.appendChild(button);
@@ -191,6 +209,7 @@ function selectClip(clipId) {
   });
   els.scoreDetails.open = false;
   els.transcriptDetails.open = false;
+  renderAiReviewPanel(clip);
   els.emptyPreview.hidden = true;
   els.renderResult.hidden = true;
   els.renderResult.textContent = "";
@@ -212,7 +231,43 @@ function mergeClip(updatedClip) {
   renderClipList();
   if (state.selectedClip) {
     els.selectedStatus.textContent = `Status: ${state.selectedClip.status || "draft"} | Render: ${state.selectedClip.render_status || "not_rendered"}`;
+    renderAiReviewPanel(state.selectedClip);
   }
+}
+
+function renderAiReviewPanel(clip) {
+  els.aiReviewDetails.textContent = "";
+  const hasReview = Boolean(clip.latest_review_decision || clip.reviewed_start || clip.latest_review_reasoning_summary);
+  els.aiReviewPanel.hidden = !hasReview;
+  if (!hasReview) return;
+
+  const rows = [
+    ["Decision", clip.latest_review_decision || "pending"],
+    ["Boundary source", clip.boundary_source || "heuristic"],
+    ["Original AI", `${seconds(clip.ai_start)} to ${seconds(clip.ai_end)}`],
+    ["Gemini reviewed", formatRange(clip.reviewed_start, clip.reviewed_end)],
+    ["Current edited", `${seconds(clip.edited_start)} to ${seconds(clip.edited_end)}`],
+    ["Changed", clip.latest_review_changed_boundaries ? "Yes" : "No"],
+    ["Reasoning", clip.latest_review_reasoning_summary || ""],
+    ["Start reason", clip.latest_review_start_reason || ""],
+    ["End reason", clip.latest_review_end_reason || ""],
+    ["Warnings", (clip.latest_review_warnings || []).join(" ")],
+  ];
+  rows.forEach(([label, value]) => appendReviewRow(label, value));
+}
+
+function formatRange(start, end) {
+  if (!hasValue(start) || !hasValue(end)) return "Not set";
+  return `${seconds(start)} to ${seconds(end)}`;
+}
+
+function appendReviewRow(label, value) {
+  const dt = document.createElement("dt");
+  dt.textContent = label;
+  const dd = document.createElement("dd");
+  dd.textContent = value || "None";
+  els.aiReviewDetails.appendChild(dt);
+  els.aiReviewDetails.appendChild(dd);
 }
 
 async function saveBounds() {
@@ -329,6 +384,38 @@ async function renderShort() {
   }
 }
 
+async function reviewAllWithAi() {
+  const projectId = state.selectedClip?.project_id || state.clips[0]?.project_id;
+  if (!projectId) return;
+  const previousClipId = state.selectedClip?.id;
+  els.reviewAllButton.disabled = true;
+  els.aiReviewStatus.textContent = `Reviewing ${state.clips.length} clips with AI...`;
+  els.validationMessage.hidden = true;
+  els.validationMessage.textContent = "";
+
+  try {
+    const response = await fetch(`/projects/${encodeURIComponent(projectId)}/review-clips`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ apply_safe_suggestions: true }),
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      const detail = payload.detail || "AI review failed.";
+      throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+    }
+    els.aiReviewStatus.textContent =
+      `${payload.provider || "AI"} reviewed ${payload.clip_count} clips: ` +
+      `${payload.render_ready_count} ready, ${payload.adjust_boundaries_count} adjusted, ` +
+      `${payload.reject_count} rejected, ${payload.manual_review_count} manual, ${payload.failed_count} failed.`;
+    await loadClips({ selectClipId: previousClipId });
+  } catch (error) {
+    els.aiReviewStatus.textContent = error.message;
+  } finally {
+    els.reviewAllButton.disabled = state.clips.length === 0;
+  }
+}
+
 function wireEvents() {
   els.previewVideo.addEventListener("timeupdate", () => {
     if (state.selectedClip && els.previewVideo.currentTime >= state.editedEnd) {
@@ -370,10 +457,12 @@ function wireEvents() {
   els.acceptButton.addEventListener("click", () => setSelectedStatus("accept"));
   els.rejectButton.addEventListener("click", () => setSelectedStatus("reject"));
   els.renderButton.addEventListener("click", renderShort);
+  els.reviewAllButton.addEventListener("click", reviewAllWithAi);
 }
 
-async function loadClips() {
+async function loadClips({ selectClipId = null } = {}) {
   try {
+    const previousClipId = selectClipId || state.selectedClip?.id;
     const response = await fetch("/clips");
     if (!response.ok) throw new Error(await response.text());
     const payload = await response.json();
@@ -393,7 +482,8 @@ async function loadClips() {
 
     renderClipList();
     if (state.clips.length) {
-      selectClip(state.clips[0].id);
+      const selected = state.clips.find((clip) => clip.id === previousClipId) || state.clips[0];
+      selectClip(selected.id);
     } else {
       els.emptyPreview.textContent = "No draft clips found";
     }

@@ -244,10 +244,13 @@ class ReviewAgentRuntime:
             "needs_more_context": bool(state.get("needs_more_context")),
             "suggested_start": float(boundary["suggested_start"]),
             "suggested_end": float(boundary["suggested_end"]),
+            "reviewed_start": float(boundary["suggested_start"]),
+            "reviewed_end": float(boundary["suggested_end"]),
             "crop_advice": str(crop.get("crop_advice") or "keep_current"),
             "reasons": reasons,
             "warnings": warnings,
             "context_expansions": int(state.get("context_expansions") or 0),
+            "apply_safe_suggestions": bool(state.get("apply_safe_suggestions", True)),
             "raw_result": {
                 "candidate_features": get_candidate_features(clip),
                 "context_padding_seconds": float(state.get("context_padding_seconds") or 20.0),

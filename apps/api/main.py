@@ -29,7 +29,7 @@ from .services.project_service import (
 )
 from .services.project_state import PROJECT_ROOT
 from .services.render import RenderError, locate_input_video, render_adjusted_clip
-from apps.review_agent.service import ClipReviewError, ClipReviewNotFoundError, ReviewAgentService
+from apps.review_agent.service import ClipReviewConfigurationError, ClipReviewError, ClipReviewNotFoundError, ReviewAgentService
 
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -67,6 +67,11 @@ class ProjectCreatePayload(BaseModel):
 
 class ClipReviewPayload(BaseModel):
     project_id: int | None = None
+    apply_safe_suggestions: bool = True
+
+
+class ProjectReviewPayload(BaseModel):
+    apply_safe_suggestions: bool = True
 
 
 @app.get("/", include_in_schema=False)
@@ -128,6 +133,8 @@ def review_project_clip(project_id: int, clip_id: str) -> dict[str, Any]:
         return ReviewAgentService(project_root=api_project_root()).review_clip(clip_id=clip_id, project_id=project_id)
     except ClipReviewNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ClipReviewConfigurationError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     except ClipReviewError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -138,6 +145,22 @@ def get_project_clip_review(project_id: int, clip_id: str) -> dict[str, Any]:
         return ReviewAgentService(project_root=api_project_root()).get_latest_review(clip_id=clip_id, project_id=project_id)
     except ClipReviewNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/projects/{project_id}/review-clips")
+def review_project_clips(project_id: int, payload: ProjectReviewPayload | None = None) -> dict[str, Any]:
+    try:
+        apply_safe_suggestions = True if payload is None else payload.apply_safe_suggestions
+        return ReviewAgentService(project_root=api_project_root()).review_project_clips(
+            project_id=project_id,
+            apply_safe_suggestions=apply_safe_suggestions,
+        )
+    except ClipReviewNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ClipReviewConfigurationError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    except ClipReviewError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @app.get("/clips")
@@ -182,9 +205,16 @@ def reject_clip(clip_id: str) -> dict:
 def review_clip(clip_id: str, payload: ClipReviewPayload | None = None) -> dict[str, Any]:
     try:
         project_id = payload.project_id if payload is not None else None
-        return ReviewAgentService(project_root=api_project_root()).review_clip(clip_id=clip_id, project_id=project_id)
+        apply_safe_suggestions = True if payload is None else payload.apply_safe_suggestions
+        return ReviewAgentService(project_root=api_project_root()).review_clip(
+            clip_id=clip_id,
+            project_id=project_id,
+            apply_safe_suggestions=apply_safe_suggestions,
+        )
     except ClipReviewNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ClipReviewConfigurationError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     except ClipReviewError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 

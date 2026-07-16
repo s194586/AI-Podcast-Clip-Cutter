@@ -4,7 +4,7 @@ Podcast Shorts Cutter is a local-first, human-in-the-loop editor for podcast and
 
 The pipeline proposes draft clips from a long source video. The browser editor lets a user review candidates, adjust start/end times, accept or reject clips, and render final short-form MP4 files.
 
-The main media pipeline is deterministic. It is not an agent. The agentic component is a separate Clip Review Agent that evaluates already-generated clip candidates and gives advisory recommendations to a human editor.
+The main media pipeline is deterministic. It is not an agent. The agentic component is a separate Clip Review Agent that sends compact transcript context to Gemini for semantic temporal boundary review of already-generated clip candidates.
 
 ## Pipeline Modules
 
@@ -14,7 +14,7 @@ The main media pipeline is deterministic. It is not an agent. The agentic compon
 
 `content_classifier.py` is now a podcast-only compatibility module. It writes `metadata/content_profile.json` so older pipeline calls still work, but it no longer routes to gameplay, tutorial, commentary, or generic strategies.
 
-`analyze_virals.py` keeps its historical filename for compatibility. In the current product it generates and scores podcast candidate windows with local scoring and optional Gemini reranking.
+`analyze_virals.py` keeps its historical filename for compatibility. In the current product it generates and scores podcast candidate windows. The boundary reviewer runs later and does not rank candidates.
 
 `cutter.py` renders vertical 9:16 clips from the original input video.
 
@@ -27,12 +27,12 @@ The deterministic workflow can be orchestrated by Apache Airflow through `orches
 The DAG prepares reviewed candidate clips:
 
 ```text
-validate project config
+validate config
 -> download media
 -> transcribe audio
 -> generate candidates
 -> import candidates to SQLite
--> review top candidates
+-> review candidates with Gemini
 -> mark project ready
 ```
 
@@ -42,34 +42,25 @@ Airflow is optional. It is installed from `requirements-airflow.txt` and is not 
 
 ## Clip Review Agent
 
-`apps/review_agent` contains the Clip Review Agent PoC.
+`apps/review_agent` contains the transcript boundary reviewer.
 
-The agent reviews one stored clip candidate at a time. It uses typed state and deterministic tools for:
+The active workflow is:
 
-- transcript context retrieval,
-- candidate feature inspection,
-- sensitive-pattern checks,
-- boundary advice,
-- crop advice metadata,
-- final recommendation generation,
-- saving `ClipEvaluation` rows in SQLite.
-
-The review workflow is bounded:
-
-```text
-load_candidate
--> retrieve_context
--> evaluate_quality
--> route_context_decision
--> retrieve_more_context at most once
--> check_privacy
--> suggest_boundaries
--> suggest_crop
--> final_recommendation
--> save_evaluation
+```mermaid
+flowchart LR
+  A[candidate generation] --> B[transcript context extraction]
+  B --> C[Gemini semantic boundary review]
+  C --> D[reviewed boundaries]
+  D --> E[editor sliders]
+  E --> F[optional user adjustment]
+  F --> G[final render]
 ```
 
-Default mode is `local_only`, which requires no API keys. `llm_optional` is available behind a service interface and falls back to deterministic evaluation if no provider client or key is available.
+Default mode is `local_stub`, which requires no API keys and is intended for offline development and tests. `CLIP_REVIEW_MODE=gemini` uses the official `google-genai` SDK. In Gemini mode, `GEMINI_API_KEY` is required and missing configuration fails clearly without falling back.
+
+Gemini receives only nearby transcript segments, candidate timestamps, and allowed transcript boundary option IDs. It does not receive local scores, heatmaps, filesystem paths, database objects, full transcripts, video frames, or API keys. It does not calculate quality/privacy scores and does not return crop advice.
+
+The Gemini structured decision is one of `render_ready`, `adjust_boundaries`, or `reject`. Safe decisions save `reviewed_start`/`reviewed_end`, copy them into `edited_start`/`edited_end`, and set `boundary_source="ai_review"`. Backend-created `manual_review` exists only for technical or validation failures.
 
 ## Editor Backend
 
@@ -91,6 +82,7 @@ Default mode is `local_only`, which requires no API keys. `llm_optional` is avai
 - `GET /clips/{clip_id}/review` returns the latest saved evaluation for a clip.
 - `POST /projects/{project_id}/clips/{clip_id}/review` evaluates a clip in a specific project.
 - `GET /projects/{project_id}/clips/{clip_id}/review` returns the latest saved project-specific evaluation.
+- `POST /projects/{project_id}/review-clips` reviews every clip in a project through the selected provider and returns compact summary counts.
 
 `apps/api/db` owns SQLAlchemy setup, models, and repository helpers.
 
@@ -118,7 +110,7 @@ The database stores:
 
 - `projects`: source URL, title, status, and source/transcript/candidate paths.
 - `clips`: stable editor IDs such as `clip_001`, AI boundaries, edited boundaries, validation bounds, accept/reject status, render status, scores, reasons, features, and latest render outputs.
-- `clip_evaluations`: review agent decisions, quality/context/hook/payoff/boundary scores, privacy risk, recommended action, suggested boundaries, crop advice, reasons, warnings, and raw structured result metadata.
+- `clip_evaluations`: review provider/model metadata, semantic decision, selected option indexes, backend-derived segment IDs, reviewed boundaries, deltas from original AI boundaries, concise reasoning, warnings, context seconds, retry metadata, and legacy score/crop columns kept for compatibility.
 - `jobs`: Stage 2 preparation only. The schema exists, but there is no worker, queue, polling flow, or background job system.
 - `artifacts`: metadata for generated local files such as source video, transcript, candidate windows, raw clips, and subtitled clips. Video bytes are not stored in SQLite.
 
@@ -140,7 +132,7 @@ Compatibility endpoints resolve the default local project as the earliest SQLite
 ```text
 Podcast pipeline
   -> SQLite project state
-  -> Clip Review Agent evaluation metadata
+  -> Gemini semantic boundary review
   -> FastAPI
   -> current browser editor
   -> rendered artifacts
@@ -151,11 +143,11 @@ Podcast pipeline
 The project demonstrates:
 
 - deterministic pipeline orchestration,
-- tool-based clip evaluation,
+- transcript-only Gemini boundary review,
 - typed review state,
 - SQLite persistence,
 - testable FastAPI endpoints,
-- optional LLM evaluation,
+- explicit local_stub and Gemini modes,
 - human-in-the-loop review,
 - Airflow DAG orchestration.
 

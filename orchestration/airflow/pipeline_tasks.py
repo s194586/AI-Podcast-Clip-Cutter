@@ -44,7 +44,7 @@ def validate_project_config(dag_conf: dict[str, Any] | None = None) -> dict[str,
             "project_id": project.id,
             "source_url": project.source_url,
             "project_root": str(PROJECT_ROOT),
-            "top_n_review": int(config.get("top_n_review") or 5),
+            "clip_review_mode": str(config.get("clip_review_mode") or os.environ.get("CLIP_REVIEW_MODE") or "gemini"),
         }
 
 
@@ -140,29 +140,20 @@ def import_candidates_to_sqlite(config: dict[str, Any]) -> dict[str, Any]:
     return config
 
 
-def review_top_candidates(config: dict[str, Any]) -> dict[str, Any]:
+def review_candidates_with_gemini(config: dict[str, Any]) -> dict[str, Any]:
     project_id = int(config["project_id"])
-    top_n = max(1, int(config.get("top_n_review") or 5))
     mark_project_status(project_id, "reviewing")
-    init_database()
-    with session_scope() as session:
-        clips = ClipRepository(session).list_for_project(project_id)
-        external_ids = [
-            clip.external_id
-            for clip in sorted(
-                clips,
-                key=lambda clip: (
-                    clip.local_rank is None,
-                    clip.local_rank if clip.local_rank is not None else clip.clip_index,
-                    clip.clip_index,
-                ),
-            )[:top_n]
-        ]
-
-    service = ReviewAgentService(project_root=PROJECT_ROOT, mode="local_only", use_langgraph=False)
-    for external_id in external_ids:
-        service.review_clip(project_id=project_id, clip_id=external_id)
+    mode = str(config.get("clip_review_mode") or os.environ.get("CLIP_REVIEW_MODE") or "gemini")
+    service = ReviewAgentService(project_root=PROJECT_ROOT, mode=mode, use_langgraph=False)
+    config["review_summary"] = service.review_project_clips(
+        project_id=project_id,
+        apply_safe_suggestions=bool(config.get("apply_safe_suggestions", True)),
+    )
     return config
+
+
+def review_top_candidates(config: dict[str, Any]) -> dict[str, Any]:
+    return review_candidates_with_gemini(config)
 
 
 def mark_project_ready(config: dict[str, Any]) -> dict[str, Any]:

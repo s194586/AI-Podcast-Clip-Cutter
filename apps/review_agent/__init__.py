@@ -1,5 +1,5 @@
 """Clip Review Agent package."""
 
-from .service import ClipReviewError, ClipReviewNotFoundError, ReviewAgentService
+from .service import ClipReviewConfigurationError, ClipReviewError, ClipReviewNotFoundError, ReviewAgentService
 
-__all__ = ["ClipReviewError", "ClipReviewNotFoundError", "ReviewAgentService"]
+__all__ = ["ClipReviewConfigurationError", "ClipReviewError", "ClipReviewNotFoundError", "ReviewAgentService"]
