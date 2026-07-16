@@ -18,6 +18,42 @@
 
       <p id="sourceWarning" class="source-warning" hidden></p>
 
+      <section class="project-flow" aria-label="Project processing">
+        <div class="project-flow-grid">
+          <label>
+            <span>Project</span>
+            <select id="projectSelector"></select>
+          </label>
+          <label>
+            <span>YouTube URL</span>
+            <input id="projectUrlInput" type="url" placeholder="https://www.youtube.com/watch?v=...">
+          </label>
+          <label>
+            <span>Title</span>
+            <input id="projectTitleInput" type="text" placeholder="Optional">
+          </label>
+          <label class="checkbox-row">
+            <input id="projectAutoReview" type="checkbox" checked>
+            <span>AI review</span>
+          </label>
+          <div class="project-buttons">
+            <button id="refreshProjectsButton" type="button">Refresh</button>
+            <button id="createProjectButton" type="button">Create Project</button>
+            <button id="startProjectButton" type="button" disabled>Start Processing</button>
+            <button id="cancelProjectButton" type="button" disabled>Cancel</button>
+          </div>
+        </div>
+        <div class="project-status-row">
+          <progress id="projectProgress" max="100" value="0"></progress>
+          <p id="projectFlowStatus" role="status">No project selected.</p>
+          <button id="openProjectClipsButton" type="button" disabled>Open Clips</button>
+        </div>
+        <details class="project-log-details">
+          <summary>Technical details</summary>
+          <pre id="projectLogTail"></pre>
+        </details>
+      </section>
+
       <section class="workspace">
         <aside class="clip-sidebar">
           <div class="sidebar-heading">
@@ -26,6 +62,8 @@
           </div>
           <div class="review-actions">
             <button id="reviewAllButton" type="button">Review all with AI</button>
+            <p id="configuredReviewProvider" class="provider-status">Configured reviewer: Loading</p>
+            <p id="lastReviewProvider" class="provider-status">Last saved review: None</p>
             <p id="aiReviewStatus" class="ai-review-status" role="status"></p>
           </div>
           <div id="clipList" class="clip-list" aria-label="AI draft clips"></div>

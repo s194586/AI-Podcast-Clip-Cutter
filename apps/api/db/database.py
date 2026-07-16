@@ -61,8 +61,34 @@ def init_database() -> None:
 
     engine = get_engine()
     Base.metadata.create_all(engine)
+    _ensure_sqlite_project_flow_columns(engine)
     _ensure_sqlite_clip_boundary_columns(engine)
     _ensure_sqlite_clip_evaluation_columns(engine)
+    _ensure_sqlite_job_flow_columns(engine)
+
+
+def _ensure_sqlite_project_flow_columns(engine: Engine) -> None:
+    if not engine.dialect.name.startswith("sqlite"):
+        return
+    inspector = inspect(engine)
+    if "projects" not in inspector.get_table_names():
+        return
+    existing_columns = {column["name"] for column in inspector.get_columns("projects")}
+    column_sql = {
+        "current_stage": "ALTER TABLE projects ADD COLUMN current_stage VARCHAR(128) DEFAULT 'waiting'",
+        "progress_percent": "ALTER TABLE projects ADD COLUMN progress_percent FLOAT DEFAULT 0.0",
+        "workspace_path": "ALTER TABLE projects ADD COLUMN workspace_path VARCHAR(2048)",
+        "error_message": "ALTER TABLE projects ADD COLUMN error_message TEXT",
+        "auto_review": "ALTER TABLE projects ADD COLUMN auto_review BOOLEAN DEFAULT 1",
+        "started_at": "ALTER TABLE projects ADD COLUMN started_at DATETIME",
+        "completed_at": "ALTER TABLE projects ADD COLUMN completed_at DATETIME",
+    }
+    missing = [name for name in column_sql if name not in existing_columns]
+    if not missing:
+        return
+    with engine.begin() as connection:
+        for column_name in missing:
+            connection.execute(text(column_sql[column_name]))
 
 
 def _ensure_sqlite_clip_boundary_columns(engine: Engine) -> None:
@@ -105,6 +131,29 @@ def _ensure_sqlite_clip_evaluation_columns(engine: Engine) -> None:
         "start_reason": "ALTER TABLE clip_evaluations ADD COLUMN start_reason TEXT DEFAULT ''",
         "end_reason": "ALTER TABLE clip_evaluations ADD COLUMN end_reason TEXT DEFAULT ''",
         "context_seconds": "ALTER TABLE clip_evaluations ADD COLUMN context_seconds FLOAT",
+    }
+    missing = [name for name in column_sql if name not in existing_columns]
+    if not missing:
+        return
+    with engine.begin() as connection:
+        for column_name in missing:
+            connection.execute(text(column_sql[column_name]))
+
+
+def _ensure_sqlite_job_flow_columns(engine: Engine) -> None:
+    if not engine.dialect.name.startswith("sqlite"):
+        return
+    inspector = inspect(engine)
+    if "jobs" not in inspector.get_table_names():
+        return
+    existing_columns = {column["name"] for column in inspector.get_columns("jobs")}
+    column_sql = {
+        "current_stage": "ALTER TABLE jobs ADD COLUMN current_stage VARCHAR(128)",
+        "process_id": "ALTER TABLE jobs ADD COLUMN process_id INTEGER",
+        "log_path": "ALTER TABLE jobs ADD COLUMN log_path VARCHAR(2048)",
+        "started_at": "ALTER TABLE jobs ADD COLUMN started_at DATETIME",
+        "finished_at": "ALTER TABLE jobs ADD COLUMN finished_at DATETIME",
+        "exit_code": "ALTER TABLE jobs ADD COLUMN exit_code INTEGER",
     }
     missing = [name for name in column_sql if name not in existing_columns]
     if not missing:

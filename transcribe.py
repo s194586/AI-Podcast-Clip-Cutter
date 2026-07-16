@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 import sys
 import time
@@ -16,6 +17,7 @@ from transcription import FasterWhisperBackend, TranscriptionConfig
 
 SUPPORTED_TRANSCRIPTION_BACKENDS = ("faster_whisper",)
 SUPPORTED_DIARIZATION_BACKENDS = ("heuristic_cluster",)
+SUPPORTED_TRANSCRIPTION_DEVICES = ("auto", "cuda", "cpu")
 
 
 def get_duration(path: Path) -> float:
@@ -47,8 +49,17 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--whisper-model", default="small", help="faster-whisper model name")
     parser.add_argument("--language", default=None, help="Language hint, e.g. pl or en")
-    parser.add_argument("--device", default="auto", help="cpu, cuda or auto")
-    parser.add_argument("--compute-type", default="auto", help="float16, int8 or auto")
+    parser.add_argument(
+        "--device",
+        default=os.environ.get("TRANSCRIPTION_DEVICE", "auto"),
+        choices=SUPPORTED_TRANSCRIPTION_DEVICES,
+        help="Transcription device: auto, cuda or cpu. Defaults to TRANSCRIPTION_DEVICE or auto.",
+    )
+    parser.add_argument(
+        "--compute-type",
+        default=os.environ.get("TRANSCRIPTION_COMPUTE_TYPE", "auto"),
+        help="faster-whisper compute type. Defaults to TRANSCRIPTION_COMPUTE_TYPE or auto.",
+    )
     parser.add_argument("--beam-size", type=int, default=5, help="Beam size for faster-whisper decoding")
     parser.add_argument("--disable-vad", action="store_true", help="Disable faster-whisper VAD filtering")
     parser.add_argument("--disable-word-timestamps", action="store_true", help="Disable word timestamps")
@@ -140,6 +151,10 @@ def main() -> None:
         f"  Transcription finished in {transcription_result.transcription_seconds:.1f}s "
         f"with {len(transcription_result.segments)} segments"
     )
+    print(
+        f"  Effective transcription device: {transcription_result.device} "
+        f"({transcription_result.compute_type})"
+    )
 
     diarization_result = diarization_backend.assign_speakers(audio_path, transcription_result.segments)
     print(
@@ -153,6 +168,8 @@ def main() -> None:
     payload["metadata"].update(
         {
             "transcription_backend": transcription_config.backend,
+            "transcription_requested_device": transcription_config.device,
+            "transcription_requested_compute_type": transcription_config.compute_type,
             "diarization_enabled": diarization_config.enabled,
             "diarization_backend": diarization_result.backend,
             "diarization_status": diarization_result.status,

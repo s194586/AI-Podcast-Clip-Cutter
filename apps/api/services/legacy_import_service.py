@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+import re
 from typing import Any
 
 from sqlalchemy import delete
@@ -29,6 +30,7 @@ REAL_CANDIDATE_PATHS = (
 )
 DEMO_CANDIDATE_PATH = Path("examples") / "top_windows.example.json"
 IMPORT_RESET_COMMAND = "python -m apps.api.tools.import_local_project --reset"
+MEDIA_FORMAT_VARIANT_RE = re.compile(r"\.f\d+$", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -255,6 +257,74 @@ def import_candidate_file(session: Session, *, project_root: Path, source_path: 
     return project
 
 
+def import_candidate_file_into_project(
+    session: Session,
+    *,
+    project_id: int,
+    project_root: Path,
+    workspace_root: Path,
+    source_path: str = "top_windows.json",
+) -> Project | None:
+    workspace_root = Path(workspace_root)
+    source_file = workspace_root / source_path
+    try:
+        clips, clip_source = _load_clips_from_candidate_path(workspace_root, source_file)
+    except ClipValidationError:
+        return None
+
+    project_repo = ProjectRepository(session)
+    project = project_repo.get(int(project_id))
+    if project is None:
+        return None
+
+    candidate_path = _safe_relative_to_root(source_file, project_root)
+    transcript_path = workspace_root / "transcripts" / "final_transcript.json"
+    source_video = _find_first_media(workspace_root / "input")
+    project.candidate_source_path = candidate_path
+    project.transcript_path = _safe_relative_to_root(transcript_path, project_root) if transcript_path.exists() else None
+    project.source_video_path = _safe_relative_to_root(source_video, project_root) if source_video is not None else None
+    project_repo.touch(project)
+
+    _replace_artifacts_for_type(session, project_id=project.id, artifact_type="candidate_windows")
+    _create_artifact_if_present(
+        ArtifactRepository(session),
+        project_id=project.id,
+        artifact_type="candidate_windows",
+        path=candidate_path,
+        media_type="application/json",
+    )
+    if project.transcript_path:
+        _replace_artifacts_for_type(session, project_id=project.id, artifact_type="transcript")
+        _create_artifact_if_present(
+            ArtifactRepository(session),
+            project_id=project.id,
+            artifact_type="transcript",
+            path=project.transcript_path,
+            media_type="application/json",
+        )
+    if project.source_video_path:
+        _replace_artifacts_for_type(session, project_id=project.id, artifact_type="source_video")
+        _create_artifact_if_present(
+            ArtifactRepository(session),
+            project_id=project.id,
+            artifact_type="source_video",
+            path=project.source_video_path,
+            media_type="video/mp4",
+        )
+
+    clip_repo = ClipRepository(session)
+    for clip_payload in clips:
+        payload = dict(clip_payload)
+        payload["source"] = clip_source
+        existing = clip_repo.get_by_external_id(project.id, str(payload["id"]))
+        if existing is None:
+            clip_repo.create_from_dict(project.id, payload)
+        else:
+            _update_clip_from_payload(existing, payload)
+            clip_repo.touch(existing)
+    return project
+
+
 def import_candidate_windows(session: Session, *, project_root: Path = PROJECT_ROOT) -> Project | None:
     try:
         clips, source = _load_clips_from_candidate_files(project_root)
@@ -280,6 +350,72 @@ def import_candidate_windows(session: Session, *, project_root: Path = PROJECT_R
     for clip_payload in clips:
         clip_repo.create_from_dict(project.id, clip_payload)
     return project
+
+
+def _safe_relative_to_root(path: Path | None, project_root: Path) -> str | None:
+    if path is None:
+        return None
+    try:
+        return str(Path(path).resolve().relative_to(Path(project_root).resolve())).replace("\\", "/")
+    except ValueError:
+        return str(path)
+
+
+def _find_first_media(input_dir: Path) -> Path | None:
+    if not input_dir.exists():
+        return None
+    video_matches: list[Path] = []
+    for extension in (".mp4", ".mov", ".mkv", ".webm"):
+        video_matches.extend(path for path in input_dir.glob(f"*{extension}") if path.is_file())
+    if video_matches:
+        return max(
+            video_matches,
+            key=lambda path: (
+                not bool(MEDIA_FORMAT_VARIANT_RE.search(path.stem)),
+                path.suffix.lower() == ".mp4",
+                path.stat().st_size,
+                path.stat().st_mtime,
+            ),
+        )
+    for extension in (".m4a", ".mp3", ".wav"):
+        matches = sorted(path for path in input_dir.glob(f"*{extension}") if path.is_file())
+        if matches:
+            return matches[0]
+    return None
+
+
+def _replace_artifacts_for_type(session: Session, *, project_id: int, artifact_type: str) -> None:
+    session.execute(
+        delete(Artifact).where(
+            Artifact.project_id == int(project_id),
+            Artifact.artifact_type == artifact_type,
+        )
+    )
+
+
+def _update_clip_from_payload(clip: Clip, payload: dict[str, Any]) -> None:
+    clip.clip_index = int(payload["index"])
+    clip.ai_start = float(payload["ai_start"])
+    clip.ai_end = float(payload["ai_end"])
+    clip.reviewed_start = float(payload["reviewed_start"]) if payload.get("reviewed_start") is not None else None
+    clip.reviewed_end = float(payload["reviewed_end"]) if payload.get("reviewed_end") is not None else None
+    if str(clip.boundary_source or "heuristic") == "heuristic":
+        clip.edited_start = float(payload["edited_start"])
+        clip.edited_end = float(payload["edited_end"])
+        clip.boundary_source = str(payload.get("boundary_source") or "heuristic")
+    clip.min_start = float(payload["min_start"])
+    clip.max_start = float(payload["max_start"])
+    clip.min_end = float(payload["min_end"])
+    clip.max_end = float(payload["max_end"])
+    clip.summary = str(payload.get("summary") or "")
+    clip.text = str(payload.get("text") or "")
+    clip.source = payload.get("source")
+    clip.candidate_id = str(payload["candidate_id"]) if payload.get("candidate_id") is not None else None
+    clip.selection_source = payload.get("selection_source")
+    clip.local_score = float(payload["local_score"]) if payload.get("local_score") is not None else None
+    clip.local_rank = int(payload["local_rank"]) if payload.get("local_rank") is not None else None
+    clip.selection_reasons = list(payload.get("selection_reasons") or [])
+    clip.local_features = dict(payload.get("local_features") or {})
 
 
 def clear_sqlite_project_rows(session: Session) -> None:

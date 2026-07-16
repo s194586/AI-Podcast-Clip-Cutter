@@ -859,6 +859,47 @@ class ReviewAgentTests(unittest.TestCase):
         self.assertEqual(len(evaluations), 3)
         self.assertEqual({evaluation.provider for evaluation in evaluations}, {"gemini"})
 
+    def test_batch_endpoint_uses_dotenv_gemini_config_when_process_env_missing(self):
+        project_id = self._seed_project()
+        for key in ("CLIP_REVIEW_MODE", "GEMINI_API_KEY", "GEMINI_MODEL"):
+            os.environ.pop(key, None)
+        (self.root / ".env").write_text(
+            "CLIP_REVIEW_MODE=gemini\nGEMINI_API_KEY=test-key\nGEMINI_MODEL=gemini-dotenv-batch\n",
+            encoding="utf-8",
+        )
+
+        class DotenvGemini:
+            provider = "gemini"
+
+            def __init__(self, *, api_key, model):
+                self.model = model
+
+            def review(self, context, corrective_message=None):
+                return GeminiBoundaryDecision(
+                    decision="render_ready",
+                    selected_start_option_index=context["current_aligned_start_option_index"],
+                    selected_end_option_index=context["current_aligned_end_option_index"],
+                    reasoning_summary="Ready from dotenv Gemini config.",
+                    start_reason="Aligned start.",
+                    end_reason="Aligned end.",
+                    warnings=[],
+                )
+
+        with patch("apps.review_agent.service.GeminiBoundaryReviewer", DotenvGemini):
+            with TestClient(app) as client:
+                response = client.post(f"/projects/{project_id}/review-clips")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["provider"], "gemini")
+        self.assertEqual(payload["model"], "gemini-dotenv-batch")
+        self.assertEqual(payload["clip_count"], 1)
+        self.assertEqual(payload["failed_count"], 0)
+        with session_scope() as session:
+            evaluation = session.scalars(select(ClipEvaluation)).one()
+        self.assertEqual(evaluation.provider, "gemini")
+        self.assertEqual(evaluation.model, "gemini-dotenv-batch")
+
     def test_batch_endpoint_counts_backend_manual_review_failures_separately(self):
         self._write_transcript(
             [
@@ -931,6 +972,8 @@ class ReviewAgentTests(unittest.TestCase):
             "edited_start",
             "edited_end",
             "boundary_source",
+            "latest_review_provider",
+            "latest_review_model",
             "latest_review_decision",
             "latest_review_reasoning_summary",
             "latest_review_start_reason",
@@ -947,6 +990,10 @@ class ReviewAgentTests(unittest.TestCase):
         )
         self.assertIn("Review all with AI", index_html)
         self.assertIn("/review-clips", app_js)
+        self.assertIn("configuredReviewProvider", index_html + app_js)
+        self.assertIn("lastReviewProvider", index_html + app_js)
+        self.assertIn('fetch("/health")', app_js)
+        self.assertIn("updateHistoricalReviewProvider(payload.provider || state.configuredReviewProvider)", app_js)
         self.assertNotIn("Apply suggestion", index_html + app_js)
 
     def test_airflow_helper_imports_without_airflow_and_calls_batch_service(self):

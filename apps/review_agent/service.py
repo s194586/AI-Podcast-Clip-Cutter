@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Any
 
@@ -17,9 +16,9 @@ from apps.api.services.clips import (
 from apps.api.services.project_service import project_to_dict
 from apps.api.services.project_state import PROJECT_ROOT
 
-from .context import DEFAULT_REVIEW_CONTEXT_SECONDS, build_clip_transcript_context
+from .config import ReviewConfig, ReviewConfigError, load_review_config, normalize_review_mode_value
+from .context import build_clip_transcript_context
 from .providers import (
-    DEFAULT_GEMINI_MODEL,
     GeminiBoundaryReviewer,
     LocalStubBoundaryReviewer,
     ReviewProviderError,
@@ -46,33 +45,26 @@ class BoundaryOptionSelectionError(ReviewProviderError):
 
 
 def normalize_review_mode(value: str | None = None) -> ReviewMode:
-    raw_value = str(value or os.environ.get("CLIP_REVIEW_MODE") or "local_stub").strip().lower()
-    aliases = {
-        "local_only": "local_stub",
-        "stub": "local_stub",
-    }
-    normalized = aliases.get(raw_value, raw_value)
-    if normalized not in {"local_stub", "gemini"}:
-        raise ClipReviewConfigurationError(
-            f"Unsupported CLIP_REVIEW_MODE={raw_value!r}. Use 'local_stub' or 'gemini'."
-        )
-    return normalized  # type: ignore[return-value]
+    try:
+        if value is not None:
+            return normalize_review_mode_value(value)
+        return load_review_config(project_root=PROJECT_ROOT, require_api_key=False).mode
+    except ReviewConfigError as exc:
+        raise ClipReviewConfigurationError(str(exc)) from exc
 
 
 def configured_gemini_model() -> str:
-    return str(os.environ.get("GEMINI_MODEL") or DEFAULT_GEMINI_MODEL).strip() or DEFAULT_GEMINI_MODEL
+    try:
+        return load_review_config(project_root=PROJECT_ROOT, require_api_key=False).gemini_model
+    except ReviewConfigError as exc:
+        raise ClipReviewConfigurationError(str(exc)) from exc
 
 
 def configured_context_seconds() -> float:
-    raw_value = os.environ.get("CLIP_REVIEW_CONTEXT_SECONDS")
-    if raw_value in (None, ""):
-        return DEFAULT_REVIEW_CONTEXT_SECONDS
     try:
-        return max(0.0, float(raw_value))
-    except ValueError as exc:
-        raise ClipReviewConfigurationError(
-            f"CLIP_REVIEW_CONTEXT_SECONDS must be a number, got {raw_value!r}."
-        ) from exc
+        return load_review_config(project_root=PROJECT_ROOT, require_api_key=False).context_seconds
+    except ReviewConfigError as exc:
+        raise ClipReviewConfigurationError(str(exc)) from exc
 
 
 class ReviewAgentService:
@@ -83,15 +75,23 @@ class ReviewAgentService:
         mode: str | None = None,
     ) -> None:
         self.project_root = Path(project_root)
-        self.mode = normalize_review_mode(mode)
+        try:
+            self.config: ReviewConfig = load_review_config(
+                project_root=self.project_root,
+                mode=mode,
+                require_api_key=False,
+            )
+        except ReviewConfigError as exc:
+            raise ClipReviewConfigurationError(str(exc)) from exc
+        self.mode = self.config.mode
 
     @property
     def provider_name(self) -> str:
-        return "gemini" if self.mode == "gemini" else "local_stub"
+        return self.config.provider
 
     @property
     def model_name(self) -> str:
-        return configured_gemini_model() if self.mode == "gemini" else "local_stub"
+        return self.config.model
 
     def review_clip(
         self,
@@ -105,7 +105,7 @@ class ReviewAgentService:
         except LookupError as exc:
             raise ClipReviewNotFoundError(str(exc)) from exc
 
-        context_seconds = configured_context_seconds()
+        context_seconds = self.config.context_seconds
         transcript_path = self._resolve_transcript_path(project.get("transcript_path"))
         context = build_clip_transcript_context(
             transcript_path,
@@ -290,14 +290,14 @@ class ReviewAgentService:
     def _create_provider(self) -> Any:
         self._ensure_provider_configuration()
         if self.mode == "gemini":
-            return GeminiBoundaryReviewer(api_key=str(os.environ.get("GEMINI_API_KEY") or ""), model=self.model_name)
+            return GeminiBoundaryReviewer(api_key=str(self.config.api_key or ""), model=self.model_name)
         return LocalStubBoundaryReviewer()
 
     def _ensure_provider_configuration(self) -> None:
-        if self.mode == "gemini" and not str(os.environ.get("GEMINI_API_KEY") or "").strip():
-            raise ClipReviewConfigurationError(
-                "CLIP_REVIEW_MODE=gemini requires GEMINI_API_KEY. Set GEMINI_API_KEY to enable real Gemini review."
-            )
+        try:
+            self.config.require_ready()
+        except ReviewConfigError as exc:
+            raise ClipReviewConfigurationError(str(exc)) from exc
 
     def _load_project_and_clip(self, *, project_id: int | None, clip_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
         try:

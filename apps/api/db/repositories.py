@@ -8,6 +8,8 @@ from sqlalchemy.orm import Session
 
 from .models import Artifact, Clip, ClipEvaluation, Job, Project, utc_now
 
+_UNSET = object()
+
 
 class ProjectRepository:
     def __init__(self, session: Session) -> None:
@@ -22,6 +24,11 @@ class ProjectRepository:
         source_url: str = "",
         title: str | None = None,
         status: str = "draft",
+        current_stage: str = "waiting",
+        progress_percent: float = 0.0,
+        workspace_path: str | None = None,
+        error_message: str | None = None,
+        auto_review: bool = True,
         source_video_path: str | None = None,
         transcript_path: str | None = None,
         candidate_source_path: str | None = None,
@@ -30,6 +37,11 @@ class ProjectRepository:
             source_url=source_url,
             title=title,
             status=status,
+            current_stage=current_stage,
+            progress_percent=float(progress_percent),
+            workspace_path=workspace_path,
+            error_message=error_message,
+            auto_review=bool(auto_review),
             source_video_path=source_video_path,
             transcript_path=transcript_path,
             candidate_source_path=candidate_source_path,
@@ -45,7 +57,7 @@ class ProjectRepository:
         return self.session.scalars(select(Project).order_by(Project.id.asc()).limit(1)).first()
 
     def list_newest(self) -> list[Project]:
-        return list(self.session.scalars(select(Project).order_by(Project.created_at.desc(), Project.id.desc())).all())
+        return list(self.session.scalars(select(Project).order_by(Project.updated_at.desc(), Project.id.desc())).all())
 
     def clip_count(self, project_id: int) -> int:
         return int(self.session.scalar(select(func.count(Clip.id)).where(Clip.project_id == project_id)) or 0)
@@ -60,6 +72,31 @@ class ProjectRepository:
 
     def touch(self, project: Project) -> None:
         project.updated_at = utc_now()
+
+    def update_flow_state(
+        self,
+        project: Project,
+        *,
+        status: str | None = None,
+        current_stage: str | None = None,
+        progress_percent: float | None = None,
+        error_message: Any = _UNSET,
+        started_at: Any = _UNSET,
+        completed_at: Any = _UNSET,
+    ) -> None:
+        if status is not None:
+            project.status = status
+        if current_stage is not None:
+            project.current_stage = current_stage
+        if progress_percent is not None:
+            project.progress_percent = float(progress_percent)
+        if error_message is not _UNSET:
+            project.error_message = error_message
+        if started_at is not _UNSET:
+            project.started_at = started_at
+        if completed_at is not _UNSET:
+            project.completed_at = completed_at
+        self.touch(project)
 
 
 class ClipRepository:
@@ -130,6 +167,12 @@ class JobRepository:
         status: str = "draft",
         stage: str | None = None,
         progress: float = 0.0,
+        current_stage: str | None = None,
+        process_id: int | None = None,
+        log_path: str | None = None,
+        started_at: Any = None,
+        finished_at: Any = None,
+        exit_code: int | None = None,
         error_message: str | None = None,
     ) -> Job:
         job = Job(
@@ -137,12 +180,74 @@ class JobRepository:
             job_type=job_type,
             status=status,
             stage=stage,
+            current_stage=current_stage or stage,
             progress=progress,
+            process_id=process_id,
+            log_path=log_path,
+            started_at=started_at,
+            finished_at=finished_at,
+            exit_code=exit_code,
             error_message=error_message,
         )
         self.session.add(job)
         self.session.flush()
         return job
+
+    def get(self, job_id: int) -> Job | None:
+        return self.session.get(Job, job_id)
+
+    def latest_for_project(self, project_id: int, job_type: str | None = None) -> Job | None:
+        statement = select(Job).where(Job.project_id == project_id)
+        if job_type is not None:
+            statement = statement.where(Job.job_type == job_type)
+        return self.session.scalars(statement.order_by(Job.created_at.desc(), Job.id.desc()).limit(1)).first()
+
+    def active_for_project(self, project_id: int, job_type: str | None = None) -> Job | None:
+        statement = select(Job).where(Job.project_id == project_id, Job.status.in_(("queued", "running")))
+        if job_type is not None:
+            statement = statement.where(Job.job_type == job_type)
+        return self.session.scalars(statement.order_by(Job.created_at.desc(), Job.id.desc()).limit(1)).first()
+
+    def list_active(self, job_type: str | None = None) -> list[Job]:
+        statement = select(Job).where(Job.status.in_(("queued", "running")))
+        if job_type is not None:
+            statement = statement.where(Job.job_type == job_type)
+        return list(self.session.scalars(statement.order_by(Job.created_at.asc(), Job.id.asc())).all())
+
+    def update_state(
+        self,
+        job: Job,
+        *,
+        status: str | None = None,
+        current_stage: str | None = None,
+        progress: float | None = None,
+        process_id: Any = _UNSET,
+        log_path: Any = _UNSET,
+        started_at: Any = _UNSET,
+        finished_at: Any = _UNSET,
+        exit_code: Any = _UNSET,
+        error_message: Any = _UNSET,
+    ) -> None:
+        if status is not None:
+            job.status = status
+        if current_stage is not None:
+            job.current_stage = current_stage
+            job.stage = current_stage
+        if progress is not None:
+            job.progress = float(progress)
+        if process_id is not _UNSET:
+            job.process_id = process_id
+        if log_path is not _UNSET:
+            job.log_path = log_path
+        if started_at is not _UNSET:
+            job.started_at = started_at
+        if finished_at is not _UNSET:
+            job.finished_at = finished_at
+        if exit_code is not _UNSET:
+            job.exit_code = exit_code
+        if error_message is not _UNSET:
+            job.error_message = error_message
+        job.updated_at = utc_now()
 
     def latest_failed_error(self, project_id: int) -> str | None:
         job = self.session.scalars(

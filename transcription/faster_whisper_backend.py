@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 from dataclasses import dataclass
 import json
 from pathlib import Path
@@ -30,6 +31,16 @@ TERMINAL_PUNCTUATION = (".", "!", "?", "…")
 MIN_SEGMENT_DURATION = 0.08
 SHORT_SEGMENT_MERGE_GAP = 0.25
 REQUIRED_MODEL_FILES = ("config.json", "model.bin", "tokenizer.json", "vocabulary.txt")
+VALID_TRANSCRIPTION_DEVICES = {"auto", "cuda", "cpu"}
+CUDA_RUNTIME_ERROR_MARKERS = (
+    "cublas64_12.dll",
+    "cublas",
+    "cudnn",
+    "cuda runtime",
+    "cuda driver",
+    "could not load library",
+    "cannot be loaded",
+)
 
 
 @dataclass
@@ -44,18 +55,29 @@ class FasterWhisperBackend:
 
     def __init__(self, config: TranscriptionConfig):
         self.config = config
-        self.resolved_device = self._resolve_device(config.device)
-        self.resolved_compute_type = self._resolve_compute_type(self.resolved_device, config.compute_type)
+        self.requested_device = self._normalize_requested_device(config.device)
+        self.requested_compute_type = str(config.compute_type or "auto").strip().lower() or "auto"
+        self.resolved_device = self._resolve_device(self.requested_device)
+        self.resolved_compute_type = self._resolve_compute_type(self.resolved_device, self.requested_compute_type)
         self.model_reference = self._resolve_model_reference(config.model)
-        self.model = WhisperModel(
+        self.model = None
+
+    def _normalize_requested_device(self, requested: str) -> str:
+        value = str(requested or "auto").strip().lower() or "auto"
+        if value not in VALID_TRANSCRIPTION_DEVICES:
+            raise ValueError("TRANSCRIPTION_DEVICE must be one of: auto, cuda, cpu.")
+        return value
+
+    def _initialize_model(self, *, device: str, compute_type: str):
+        return WhisperModel(
             self.model_reference,
-            device=self.resolved_device,
-            compute_type=self.resolved_compute_type,
-            download_root=str(config.cache_dir),
+            device=device,
+            compute_type=compute_type,
+            download_root=str(self.config.cache_dir),
         )
 
     def _resolve_device(self, requested: str) -> str:
-        if requested and requested != "auto":
+        if requested != "auto":
             return requested
         try:
             import ctranslate2
@@ -68,6 +90,14 @@ class FasterWhisperBackend:
         if compute_type and compute_type != "auto":
             return compute_type
         return "float16" if device == "cuda" else "int8"
+
+    def _is_cuda_runtime_error(self, exc: BaseException) -> bool:
+        text = f"{exc!r} {exc}".casefold()
+        return any(marker in text for marker in CUDA_RUNTIME_ERROR_MARKERS)
+
+    def _release_model(self) -> None:
+        self.model = None
+        gc.collect()
 
     def _resolve_model_reference(self, requested_model: str) -> str:
         model_text = str(requested_model or "").strip() or self.config.model
@@ -150,7 +180,53 @@ class FasterWhisperBackend:
             raise RuntimeError((result.stderr or result.stdout or "").strip() or f"curl download failed for {url}")
 
     def transcribe(self, audio_path: Path) -> TranscriptionResult:
+        try:
+            return self._transcribe_once(
+                audio_path,
+                device=self.resolved_device,
+                compute_type=self.resolved_compute_type,
+                result_device=self.resolved_device,
+                fallback_reason=None,
+            )
+        except Exception as exc:
+            can_fallback = (
+                self.requested_device == "auto"
+                and self.resolved_device == "cuda"
+                and self._is_cuda_runtime_error(exc)
+            )
+            if can_fallback:
+                print("CUDA transcription unavailable; falling back to CPU int8.")
+                self._release_model()
+                self.resolved_device = "cpu"
+                self.resolved_compute_type = "int8"
+                return self._transcribe_once(
+                    audio_path,
+                    device="cpu",
+                    compute_type="int8",
+                    result_device="cpu_fallback",
+                    fallback_reason=str(exc),
+                )
+
+            if self.requested_device == "cuda" and self._is_cuda_runtime_error(exc):
+                self._release_model()
+                raise RuntimeError(
+                    "CUDA transcription requested but required CUDA runtime libraries could not be loaded. "
+                    "Install the CUDA/cuBLAS/cuDNN runtime supported by CTranslate2, or set "
+                    "TRANSCRIPTION_DEVICE=auto or TRANSCRIPTION_DEVICE=cpu."
+                ) from exc
+            raise
+
+    def _transcribe_once(
+        self,
+        audio_path: Path,
+        *,
+        device: str,
+        compute_type: str,
+        result_device: str,
+        fallback_reason: str | None,
+    ) -> TranscriptionResult:
         started_at = time.perf_counter()
+        self.model = self._initialize_model(device=device, compute_type=compute_type)
         segments_iter, info = self.model.transcribe(
             str(audio_path),
             language=self.config.language,
@@ -175,13 +251,16 @@ class FasterWhisperBackend:
             duration_seconds=duration_seconds,
             transcription_seconds=elapsed,
             segments=normalized_segments,
-            device=self.resolved_device,
-            compute_type=self.resolved_compute_type,
+            device=result_device,
+            compute_type=compute_type,
             extra_metadata={
                 "vad_filter": bool(self.config.vad_filter),
                 "word_timestamps": bool(self.config.word_timestamps),
                 "beam_size": int(self.config.beam_size),
                 "model_source": self.model_reference,
+                "requested_device": self.requested_device,
+                "runtime_device": device,
+                "fallback_reason": fallback_reason or "",
             },
         )
 

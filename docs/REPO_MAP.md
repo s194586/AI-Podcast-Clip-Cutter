@@ -6,6 +6,8 @@ This project is a local-first podcast clip cutter. The media pipeline proposes c
 
 `manager.py` is the local CLI orchestrator for the deterministic preparation pipeline. It creates runtime folders, downloads or reuses source media, runs local transcription, writes a podcast content profile, generates candidate windows, cuts raw vertical clips, and burns subtitles.
 
+It also supports `--workspace-dir` for isolated runtime output and `--analysis-only` for stopping after candidate generation. Without those flags, the original root-level local workflow remains unchanged.
+
 Common local run:
 
 ```powershell
@@ -37,6 +39,8 @@ Important root modules:
 - `subtitler.py`: burns subtitles into clips.
 - `subtitler_checker.py` and `semantic_clip_director.py`: optional Gemini-assisted subtitle/context checks used by the legacy pipeline modes.
 
+Transcription device selection is controlled by `TRANSCRIPTION_DEVICE`. The default `auto` mode prefers CUDA, then falls back once to CPU int8 for missing CUDA runtime libraries. Explicit `cpu` never initializes CUDA; explicit `cuda` does not fall back.
+
 ## `apps/api`
 
 `apps/api` is the FastAPI editor backend.
@@ -44,10 +48,11 @@ Important root modules:
 - `main.py`: route definitions and static frontend mounting.
 - `db/`: SQLAlchemy database setup, models, and repositories.
 - `services/`: project, clip, artifact, render, legacy import, and compatibility service layers.
+- `orchestration/`: local project pipeline abstraction, stage parser, job recovery, and subprocess-backed `LocalPipelineOrchestrator`.
 - `tools/import_local_project.py`: CLI import helper for refreshing SQLite from local pipeline outputs.
 - `static/`: current browser editor implemented with static HTML/CSS/JavaScript.
 
-The compatibility endpoints still power the static editor, while project-specific endpoints support single-clip and batch Gemini review.
+The compatibility endpoints still power the static editor. Project-specific endpoints now support create/start/status/logs/cancel, project clip editing, single/batch Gemini review, and project-specific render.
 
 ## `apps/review_agent`
 
@@ -69,7 +74,9 @@ SQLite is the application source of truth after import. The default database is:
 data/podcast_cutter.db
 ```
 
-It stores projects, clips, jobs, artifacts, and clip evaluations. Clip rows preserve the boundary lifecycle:
+It stores projects, clips, jobs, artifacts, and clip evaluations. Project rows include local flow status, stage, progress, workspace path, auto-review setting, error, start, and completion timestamps. Job rows include process id, log path, stage, exit code, and errors.
+
+Clip rows preserve the boundary lifecycle:
 
 ```text
 ai_start/ai_end -> reviewed_start/reviewed_end -> edited_start/edited_end
@@ -79,7 +86,7 @@ Rendering uses `edited_start` and `edited_end`.
 
 ## Current Static Frontend
 
-The current editor lives in `apps/api/static`. It is intentionally not redesigned yet. It supports loading clips, previewing source video, manual slider correction, accept/reject, single/batch AI review, and final render actions.
+The current editor lives in `apps/api/static`. It is intentionally not redesigned yet. It supports a minimal Project Flow panel plus loading clips, previewing source video, manual slider correction, accept/reject, single/batch AI review, and final render actions.
 
 ## `orchestration/airflow`
 
@@ -104,6 +111,7 @@ These directories are local runtime state and should not be committed:
 - `models/`
 - `outputs/`
 - `data/projects/`
+- `data/projects/{project_id}/workspace/`
 - Airflow logs/config/database files
 
 SQLite files under `data/` are runtime state unless a test explicitly creates a temporary database outside the repo.
