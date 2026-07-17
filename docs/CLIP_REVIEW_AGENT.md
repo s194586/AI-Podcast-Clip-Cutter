@@ -155,16 +155,23 @@ There is no standard **Apply suggestion** button. Safe Gemini decisions are alre
 
 ## Airflow
 
-Airflow is not installed, enabled, or implemented as a product orchestrator in v0.6. The inactive DAG prototype illustrates the future stage order and delegates through thin adapters over `apps.pipeline` when imported in an Airflow environment:
+Airflow is an optional Dockerized product orchestrator. Its real DAG delegates
+each task to the shared stage registry/executor and forces explicit Gemini mode
+for automatic review; there is no provider fallback:
 
 ```mermaid
 flowchart LR
-  A[validate] --> B[download]
+  A[prepare] --> B[download]
   B --> C[transcribe]
-  C --> D[candidates]
-  D --> E[import SQLite]
-  E --> F[Gemini batch review]
-  F --> G[ready]
+  C --> D[validate]
+  D --> E[candidates]
+  E --> F[import SQLite]
+  F --> G[optional Gemini review]
+  G --> H[ready]
 ```
 
-The active product path uses `LocalPipelineOrchestrator`, not this prototype. Review does not render videos; rendering remains deterministic and happens later from `edited_start`/`edited_end`.
+The review task has zero Airflow retries, preventing provider 429 responses from
+creating a scheduler retry storm. An explicit project retry creates a new DAG
+run and the review service skips safe completed/user-decided boundaries. Review
+does not render videos; rendering remains deterministic and happens later from
+`edited_start`/`edited_end`.

@@ -1,8 +1,4 @@
-"""Optional Airflow adapters over the reusable pipeline services.
-
-This module intentionally imports without Apache Airflow installed. The release does
-not add or enable Airflow; the existing DAG placeholder can call these thin helpers.
-"""
+"""Airflow task adapters over the reusable one-stage pipeline executor."""
 
 from __future__ import annotations
 
@@ -13,205 +9,301 @@ from typing import Any
 from apps.api.db.database import init_database, session_scope
 from apps.api.db.models import utc_now
 from apps.api.db.repositories import JobRepository, ProjectRepository
-from apps.api.services.project_service import ensure_project_workspace, safe_relative_path
-from apps.pipeline.config import PipelineConfig
+from apps.pipeline.airflow_config import AirflowRunConfig
+from apps.pipeline.cancellation import CancellationToken
 from apps.pipeline.context import PipelineContext
-from apps.pipeline.events import progress_for_stage
-from apps.pipeline.stages import (
-    DownloadMediaStage,
-    GenerateCandidatesStage,
-    ImportCandidatesStage,
-    MarkProjectReadyStage,
-    ReviewCandidatesStage,
-    TranscribeAudioStage,
-    ValidateTranscriptStage,
-)
+from apps.pipeline.events import PipelineEvent, progress_for_stage, redact_text
+from apps.pipeline.exceptions import PipelineCancelled
+from apps.pipeline.executor import PipelineStageExecutor
+from apps.pipeline.registry import DEFAULT_STAGE_REGISTRY
+from apps.pipeline.stages import ReviewCandidatesStage
 
 
-PROJECT_ROOT = Path(
-    os.environ.get("PODCAST_CUTTER_PROJECT_ROOT", Path(__file__).resolve().parents[2])
-).resolve()
+DEFAULT_CONTAINER_PROJECT_ROOT = Path("/opt/ai-cutter")
 
 
-def validate_project_config(dag_conf: dict[str, Any] | None = None) -> dict[str, Any]:
-    config = dict(dag_conf or {})
-    source_url = str(config.get("source_url") or "").strip()
-    project_id = config.get("project_id")
+class AirflowStageStateSink:
+    def __init__(self, *, project_id: int, job_id: int, task_id: str) -> None:
+        self.project_id = int(project_id)
+        self.job_id = int(job_id)
+        self.task_id = str(task_id)
+
+    def __call__(self, event: PipelineEvent) -> None:
+        init_database()
+        with session_scope() as session:
+            projects = ProjectRepository(session)
+            jobs = JobRepository(session)
+            project = projects.get(self.project_id)
+            job = jobs.get(self.job_id)
+            if project is None or job is None:
+                return
+            if project.status == "cancelled" or job.status == "cancelled" or job.cancel_requested:
+                return
+
+            stage = event.stage or project.current_stage or "waiting"
+            progress = event.progress_percent
+            if progress is None:
+                progress = progress_for_stage(stage)
+            if event.event in {
+                "stage_started",
+                "stage_progress",
+                "stage_completed",
+                "review_clip_started",
+                "review_clip_completed",
+                "review_clip_manual",
+                "review_clip_failed",
+            }:
+                jobs.update_state(
+                    job,
+                    status="completed" if stage == "ready" and event.event == "stage_completed" else "running",
+                    current_stage=stage,
+                    progress=progress,
+                    started_at=job.started_at or utc_now(),
+                    finished_at=(utc_now() if stage == "ready" and event.event == "stage_completed" else None),
+                    error_message=None,
+                    airflow_state=("success" if stage == "ready" and event.event == "stage_completed" else "running"),
+                    airflow_task_id=self.task_id,
+                )
+                if stage != "ready":
+                    projects.update_flow_state(
+                        project,
+                        status="running",
+                        current_stage=stage,
+                        progress_percent=progress,
+                        error_message=None,
+                        started_at=project.started_at or utc_now(),
+                        completed_at=None,
+                    )
+
+
+def execute_airflow_stage(
+    run_config: dict[str, Any],
+    stage_name: str,
+    *,
+    try_number: int = 1,
+    max_attempts: int = 1,
+    container_project_root: str | Path | None = None,
+) -> dict[str, Any]:
+    config = AirflowRunConfig.from_dict(run_config)
+    task_id = str(stage_name)
+    attempt = max(1, int(try_number))
+    attempts = max(attempt, int(max_attempts))
+    root = Path(
+        container_project_root
+        or os.environ.get("AIRFLOW_CONTAINER_ROOT")
+        or DEFAULT_CONTAINER_PROJECT_ROOT
+    ).resolve()
+    cancellation = CancellationToken(
+        external_check=lambda: _job_or_project_cancelled(config.project_id, config.job_id)
+    )
+    context = config.build_context(
+        container_project_root=root,
+        cancellation=cancellation,
+    )
+    stage_options = {"review_mode": "gemini"} if stage_name == "review_boundaries" else {}
+    stage = DEFAULT_STAGE_REGISTRY.create(stage_name, **stage_options)
+    sink = AirflowStageStateSink(
+        project_id=config.project_id,
+        job_id=config.job_id,
+        task_id=task_id,
+    )
+    _mark_attempt(config.job_id, task_id, attempt, attempts)
+    try:
+        result = PipelineStageExecutor(event_sinks=(sink,)).execute(context, stage)
+    except PipelineCancelled:
+        _mark_cancelled(config.project_id, config.job_id)
+        raise
+    except Exception as exc:
+        message = redact_text(str(exc).strip() or exc.__class__.__name__)
+        if attempt < attempts:
+            _mark_retrying(config.project_id, config.job_id, task_id, attempt, attempts, message)
+        else:
+            _mark_failed(config.project_id, config.job_id, task_id, attempt, attempts, message)
+        raise
+
+    return {
+        "schema_version": 1,
+        "project_id": config.project_id,
+        "job_id": config.job_id,
+        "stage": result.stage,
+        "success": True,
+        "skipped": bool(result.metadata.get("skipped")),
+    }
+
+
+def _mark_attempt(job_id: int, task_id: str, attempt: int, max_attempts: int) -> None:
     init_database()
     with session_scope() as session:
-        repository = ProjectRepository(session)
-        if project_id is None:
-            if not source_url:
-                raise ValueError("DAG config must include project_id or source_url.")
-            project = repository.create(
-                source_url=source_url,
-                title=config.get("title"),
-                status="queued",
-                current_stage="waiting",
-            )
-        else:
-            project = repository.get(int(project_id))
-            if project is None:
-                raise ValueError(f"Unknown project_id: {project_id}")
-            if source_url:
-                project.source_url = source_url
-            repository.update_flow_state(
-                project,
-                status="queued",
-                current_stage="waiting",
-                progress_percent=0.0,
-                error_message=None,
-                completed_at=None,
-            )
-        workspace = ensure_project_workspace(project.id, project_root=PROJECT_ROOT)
-        project.workspace_path = safe_relative_path(workspace, project_root=PROJECT_ROOT)
-        repository.touch(project)
-        config.update(
-            {
-                "project_id": project.id,
-                "source_url": project.source_url,
-                "workspace_dir": str(workspace),
-                "project_root": str(PROJECT_ROOT),
-                "clip_review_mode": str(
-                    config.get("clip_review_mode")
-                    or os.environ.get("CLIP_REVIEW_MODE")
-                    or "gemini"
-                ),
-            }
+        job = JobRepository(session).get(job_id)
+        if job is None or job.status == "cancelled" or job.cancel_requested:
+            return
+        JobRepository(session).update_state(
+            job,
+            status="running",
+            airflow_state="running",
+            airflow_task_id=task_id,
+            airflow_try_number=attempt,
+            airflow_max_tries=max_attempts - 1,
+            started_at=job.started_at or utc_now(),
+            error_message=None,
         )
-    return config
 
 
-def download_media(config: dict[str, Any]) -> dict[str, Any]:
-    return _run_stage(config, DownloadMediaStage())
+def _mark_retrying(
+    project_id: int,
+    job_id: int,
+    task_id: str,
+    attempt: int,
+    max_attempts: int,
+    message: str,
+) -> None:
+    init_database()
+    retry_message = (
+        f"{task_id.replace('_', ' ').title()} will retry after attempt "
+        f"{attempt} of {max_attempts}: {message}"
+    )
+    with session_scope() as session:
+        projects = ProjectRepository(session)
+        jobs = JobRepository(session)
+        project = projects.get(project_id)
+        job = jobs.get(job_id)
+        if project is None or job is None or project.status == "cancelled" or job.cancel_requested:
+            return
+        jobs.update_state(
+            job,
+            status="running",
+            current_stage=_runtime_stage(task_id),
+            airflow_state="up_for_retry",
+            airflow_task_id=task_id,
+            airflow_try_number=attempt,
+            airflow_max_tries=max_attempts - 1,
+            error_message=retry_message,
+        )
+        projects.update_flow_state(
+            project,
+            status="running",
+            current_stage=_runtime_stage(task_id),
+            progress_percent=progress_for_stage(_runtime_stage(task_id)),
+            error_message=retry_message,
+            completed_at=None,
+        )
 
 
-def transcribe_audio(config: dict[str, Any]) -> dict[str, Any]:
-    return _run_stage(config, TranscribeAudioStage())
+def _mark_failed(
+    project_id: int,
+    job_id: int,
+    task_id: str,
+    attempt: int,
+    max_attempts: int,
+    message: str,
+) -> None:
+    init_database()
+    now = utc_now()
+    with session_scope() as session:
+        projects = ProjectRepository(session)
+        jobs = JobRepository(session)
+        project = projects.get(project_id)
+        job = jobs.get(job_id)
+        if job is not None and (job.status == "cancelled" or job.cancel_requested):
+            return
+        if project is not None and project.status == "cancelled":
+            return
+        if job is not None:
+            jobs.update_state(
+                job,
+                status="failed",
+                current_stage=_runtime_stage(task_id),
+                finished_at=now,
+                error_message=message,
+                airflow_state="failed",
+                airflow_task_id=task_id,
+                airflow_try_number=attempt,
+                airflow_max_tries=max_attempts - 1,
+            )
+        if project is not None:
+            projects.update_flow_state(
+                project,
+                status="failed",
+                current_stage="failed",
+                progress_percent=float(project.progress_percent or 0.0),
+                error_message=message,
+                completed_at=now,
+            )
 
 
-def generate_candidates(config: dict[str, Any]) -> dict[str, Any]:
-    context = _context(config)
-    if not context.config.skip_subtitle_checker:
-        _mark_running(context.project_id, "validating_transcript")
-        ValidateTranscriptStage().run(context)
-    _mark_running(context.project_id, "generating_candidates")
-    result = GenerateCandidatesStage().run(context)
-    config["candidate_result"] = _result_dict(result)
-    return config
+def _mark_cancelled(project_id: int, job_id: int) -> None:
+    init_database()
+    now = utc_now()
+    with session_scope() as session:
+        projects = ProjectRepository(session)
+        jobs = JobRepository(session)
+        project = projects.get(project_id)
+        job = jobs.get(job_id)
+        if job is not None:
+            jobs.update_state(
+                job,
+                status="cancelled",
+                current_stage="cancelled",
+                finished_at=now,
+                airflow_state="failed",
+                cancel_requested=True,
+                error_message="Cancelled by user.",
+            )
+        if project is not None:
+            projects.update_flow_state(
+                project,
+                status="cancelled",
+                current_stage="cancelled",
+                progress_percent=float(project.progress_percent or 0.0),
+                error_message="Cancelled by user.",
+                completed_at=now,
+            )
 
 
-def import_candidates_to_sqlite(config: dict[str, Any]) -> dict[str, Any]:
-    return _run_stage(config, ImportCandidatesStage())
+def _job_or_project_cancelled(project_id: int, job_id: int) -> bool:
+    init_database()
+    with session_scope() as session:
+        project = ProjectRepository(session).get(project_id)
+        job = JobRepository(session).get(job_id)
+        return bool(
+            project is None
+            or job is None
+            or project.status == "cancelled"
+            or job.status == "cancelled"
+            or job.cancel_requested
+        )
+
+
+def _runtime_stage(task_id: str) -> str:
+    return {
+        "prepare_workspace": "waiting",
+        "download_source": "downloading",
+        "transcribe": "transcribing",
+        "validate_transcript": "validating_transcript",
+        "generate_candidates": "generating_candidates",
+        "import_candidates": "importing_candidates",
+        "review_boundaries": "reviewing_with_ai",
+        "mark_ready": "ready",
+    }.get(task_id, task_id)
 
 
 def review_candidates_with_gemini(config: dict[str, Any]) -> dict[str, Any]:
-    context = _context(config, auto_review=True)
-    _mark_running(context.project_id, "reviewing_with_ai")
-    stage = ReviewCandidatesStage(review_mode=str(config.get("clip_review_mode") or "gemini"))
-    result = stage.run(context)
-    config["review_summary"] = dict(result.metadata)
-    return config
+    """Compatibility helper retained for direct offline review tests."""
 
-
-def review_top_candidates(config: dict[str, Any]) -> dict[str, Any]:
-    return review_candidates_with_gemini(config)
-
-
-def mark_project_ready(config: dict[str, Any]) -> dict[str, Any]:
-    MarkProjectReadyStage().run(_context(config))
-    return config
-
-
-def mark_project_status(project_id: int, status: str, error_message: str | None = None) -> None:
-    normalized = str(status or "waiting")
-    stage_aliases = {
-        "processing": "downloading",
-        "analyzing": "generating_candidates",
-        "reviewing": "importing_candidates",
-    }
-    stage = stage_aliases.get(normalized, normalized)
-    init_database()
-    with session_scope() as session:
-        repository = ProjectRepository(session)
-        project = repository.get(int(project_id))
-        if project is None:
-            raise ValueError(f"Unknown project_id: {project_id}")
-        failed = stage == "failed"
-        repository.update_flow_state(
-            project,
-            status="failed" if failed else ("ready" if stage == "ready" else "running"),
-            current_stage=stage,
-            progress_percent=(
-                float(project.progress_percent or 0.0)
-                if failed
-                else float(progress_for_stage(stage) or 0.0)
-            ),
-            error_message=error_message,
-            completed_at=utc_now() if stage in {"ready", "failed"} else None,
-        )
-        if failed and error_message:
-            JobRepository(session).create(
-                project_id=project.id,
-                job_type="airflow_pipeline",
-                status="failed",
-                stage=stage,
-                current_stage=stage,
-                progress=float(project.progress_percent or 0.0),
-                error_message=error_message,
-            )
-
-
-def mark_project_failed(project_id: int, error_message: str) -> None:
-    mark_project_status(project_id, "failed", error_message=error_message)
-
-
-def _context(config: dict[str, Any], *, auto_review: bool | None = None) -> PipelineContext:
     project_id = int(config["project_id"])
-    root = Path(config.get("project_root") or PROJECT_ROOT).resolve()
-    workspace = Path(
-        config.get("workspace_dir")
-        or ensure_project_workspace(project_id, project_root=root)
-    ).resolve()
-    options = PipelineConfig(
-        ai_mode="local_only",
-        subtitle_checker_mode=str(config.get("subtitle_checker_mode") or "local_only"),
-        skip_subtitle_checker=bool(config.get("skip_subtitle_checker", False)),
-        transcription_backend=str(config.get("transcription_backend") or "faster_whisper"),
-        whisper_model=str(config.get("whisper_model") or "small"),
-        transcription_device=str(config.get("transcription_device") or "auto"),
-        transcription_compute_type=str(config.get("transcription_compute_type") or "auto"),
-    )
-    return PipelineContext(
+    root = Path(os.environ.get("PODCAST_CUTTER_PROJECT_ROOT", Path(__file__).resolve().parents[2])).resolve()
+    context = PipelineContext(
         project_id=project_id,
-        source_url=str(config.get("source_url") or "") or None,
-        workspace_path=workspace,
+        source_url=None,
+        workspace_path=root / "data" / "projects" / str(project_id) / "workspace",
         repository_root=root,
-        auto_review=bool(True if auto_review is None else auto_review),
+        auto_review=True,
         analysis_only=True,
-        config=options,
     )
-
-
-def _run_stage(config: dict[str, Any], stage) -> dict[str, Any]:
-    context = _context(config)
-    _mark_running(context.project_id, stage.stage)
-    result = stage.run(context)
-    config[f"{stage.stage}_result"] = _result_dict(result)
-    return config
-
-
-def _mark_running(project_id: int | None, stage: str) -> None:
-    if project_id is None:
-        raise ValueError("Pipeline stage requires project_id.")
-    mark_project_status(project_id, stage)
-
-
-def _result_dict(result) -> dict[str, Any]:
-    return {
-        "stage": result.stage,
-        "success": result.success,
-        "message": result.message,
-        "produced_artifacts": list(result.produced_artifacts),
-        **dict(result.metadata),
-    }
+    result = PipelineStageExecutor().execute(
+        context,
+        ReviewCandidatesStage(review_mode=str(config.get("clip_review_mode") or "gemini")),
+    )
+    output = dict(config)
+    output["review_summary"] = dict(result.metadata)
+    return output

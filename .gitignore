@@ -65,6 +65,8 @@ data/*.db
 data/*.sqlite
 data/*.sqlite3
 *.db
+*.db-shm
+*.db-wal
 *.sqlite
 *.sqlite3
 *.sqlite-journal
@@ -84,6 +86,9 @@ orchestration/airflow/airflow.cfg
 orchestration/airflow/airflow-webserver.pid
 orchestration/airflow/airflow-scheduler.pid
 orchestration/airflow/standalone_admin_password.txt
+orchestration/airflow/.env.airflow
+orchestration/airflow/secrets/
+.airflow-validation-data/
 
 # Media outputs
 *.mp4

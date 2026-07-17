@@ -238,6 +238,38 @@ describe('Product UI v0.5', () => {
     expect(screen.getByText('Generating candidates')).toBeInTheDocument()
   })
 
+  it('shows only safe Airflow run metadata and links to the Airflow UI', async () => {
+    mockApi([
+      { path: '/health', json: healthGemini },
+      { path: '/projects/3', json: { project: project({ status: 'running', current_stage: 'transcribing', progress_percent: 35 }) } },
+      { path: '/projects/3/status', json: projectStatus({
+        status: 'running',
+        current_stage: 'transcribing',
+        stage: 'transcribing',
+        progress_percent: 35,
+        message: 'Transcribing podcast',
+        orchestrator_type: 'airflow',
+        airflow_dag_run_id: 'project-3-job-12-20260717T120000Z',
+        airflow_state: 'running',
+        airflow_task_id: 'transcribe',
+        airflow_ui_url: 'http://localhost:8080/dags/podcast_clip_pipeline/runs/project-3-job-12-20260717T120000Z',
+        retry_attempt: 1,
+        retry_max_attempts: 2,
+      }) },
+    ])
+
+    renderApp('/projects/3')
+
+    const details = (await screen.findByText('Technical details')).closest('details')
+    expect(details).not.toHaveAttribute('open')
+    fireEvent.click(screen.getByText('Technical details'))
+    expect(screen.getByText('Airflow run')).toBeInTheDocument()
+    expect(screen.getByText('transcribe')).toBeInTheDocument()
+    expect(screen.getByText('1 of 2')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Open in Airflow' })).toHaveAttribute('rel', 'noopener noreferrer')
+    expect(screen.queryByText(/password|workspace_relative_path|AIRFLOW_API_PASSWORD/i)).not.toBeInTheDocument()
+  })
+
   it('disables start, keeps cancel enabled, and prevents duplicate cancel clicks while running', async () => {
     const runningStatus = projectStatus({ status: 'running', current_stage: 'reviewing_with_ai', stage: 'reviewing_with_ai', progress_percent: 89, message: 'Reviewing clip boundaries (2 of 5 complete)', clip_count: 5 })
     const cancelledStatus = projectStatus({ status: 'cancelled', current_stage: 'cancelled', stage: 'cancelled', progress_percent: 89, message: 'Cancelled', clip_count: 5 })

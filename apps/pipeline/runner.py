@@ -1,22 +1,12 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
-from typing import Protocol
+from collections.abc import Iterable
 
 from .context import PipelineContext
 from .events import PipelineEvent, message_for_stage, progress_for_stage, redact_text
+from .executor import EventSink, PipelineStage, PipelineStageExecutor
 from .exceptions import PipelineCancelled, PipelineError
 from .results import PipelineRunResult, PipelineStageResult
-
-
-class PipelineStage(Protocol):
-    stage: str
-
-    def run(self, context: PipelineContext) -> PipelineStageResult:
-        ...
-
-
-EventSink = Callable[[PipelineEvent], None]
 
 
 class PipelineRunner:
@@ -28,6 +18,7 @@ class PipelineRunner:
     ) -> None:
         self.stages = tuple(stages)
         self.event_sinks = tuple(event_sinks)
+        self.stage_executor = PipelineStageExecutor(event_sinks=(self._emit,))
 
     def run(self, context: PipelineContext) -> PipelineRunResult:
         results: list[PipelineStageResult] = []
@@ -37,32 +28,8 @@ class PipelineRunner:
                 context.raise_if_cancelled()
             except PipelineCancelled as exc:
                 return self._cancelled_result(results, stage=stage, exc=exc)
-            event_binding = getattr(pipeline_stage, "set_event_sink", None)
-            if callable(event_binding):
-                event_binding(self._emit)
-            self._emit(
-                PipelineEvent(
-                    event="stage_started",
-                    stage=stage,
-                    message=message_for_stage(stage),
-                    progress_percent=progress_for_stage(stage),
-                )
-            )
-            progress = progress_for_stage(stage)
-            if progress is not None:
-                self._emit(
-                    PipelineEvent(
-                        event="stage_progress",
-                        stage=stage,
-                        message=message_for_stage(stage),
-                        progress_percent=progress,
-                    )
-                )
             try:
-                result = pipeline_stage.run(context)
-                if not result.success:
-                    raise PipelineError(result.message)
-                context.raise_if_cancelled()
+                result = self.stage_executor.execute(context, pipeline_stage)
             except KeyboardInterrupt as exc:
                 return self._cancelled_result(
                     results, stage=stage, exc=PipelineCancelled("Pipeline cancelled by user.")
@@ -73,21 +40,6 @@ class PipelineRunner:
                 return self._failed_result(results, stage=stage, exc=exc, exit_code=1)
 
             results.append(result)
-            self._emit(
-                PipelineEvent(
-                    event="stage_completed",
-                    stage=stage,
-                    message=result.message,
-                    progress_percent=(
-                        result.progress_percent
-                        if result.progress_percent is not None
-                        else progress_for_stage(stage)
-                    ),
-                    success=True,
-                    produced_artifacts=result.produced_artifacts,
-                    metadata=result.metadata,
-                )
-            )
 
         try:
             context.raise_if_cancelled()

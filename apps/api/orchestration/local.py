@@ -22,7 +22,14 @@ from ..services.project_service import (
     get_project_status,
     safe_relative_path,
 )
-from .base import JobResult, PipelineStatus, ProjectAlreadyRunningError, ProjectOrchestratorNotFoundError
+from .base import (
+    LOCAL_PIPELINE_JOB_TYPE,
+    PIPELINE_JOB_TYPES,
+    JobResult,
+    PipelineStatus,
+    ProjectAlreadyRunningError,
+    ProjectOrchestratorNotFoundError,
+)
 from .stage_parser import (
     message_for_stage,
     parse_manager_stage,
@@ -30,7 +37,7 @@ from .stage_parser import (
     progress_for_stage,
 )
 
-PIPELINE_JOB_TYPE = "local_pipeline"
+PIPELINE_JOB_TYPE = LOCAL_PIPELINE_JOB_TYPE
 ACTIVE_STATUSES = {"queued", "running"}
 SECRET_LINE_RE = re.compile(
     r"(?i)(gemini_api_key|api[_-]?key|password|secret|token)\s*=\s*([^\s]+)"
@@ -75,7 +82,7 @@ class LocalPipelineOrchestrator:
                 project = project_repo.get(int(project_id))
                 if project is None:
                     raise ProjectOrchestratorNotFoundError(f"Unknown project_id: {project_id}")
-                if project.id in self._workers or job_repo.active_for_project(project.id, PIPELINE_JOB_TYPE) is not None:
+                if project.id in self._workers or job_repo.active_for_project_types(project.id, PIPELINE_JOB_TYPES) is not None:
                     raise ProjectAlreadyRunningError(f"Project {project.id} already has an active local pipeline run.")
 
                 workspace = ensure_project_workspace(project.id, project_root=self.project_root)
@@ -91,6 +98,7 @@ class LocalPipelineOrchestrator:
                     current_stage="waiting",
                     progress=progress_for_stage("waiting"),
                     log_path=safe_relative_path(log_path, project_root=self.project_root),
+                    orchestrator_type="local",
                 )
                 project.workspace_path = safe_relative_path(workspace, project_root=self.project_root)
                 project.auto_review = bool(project.auto_review)

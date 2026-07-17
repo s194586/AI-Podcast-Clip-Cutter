@@ -26,7 +26,8 @@ Transcription device selection is controlled by `TRANSCRIPTION_DEVICE=auto|cuda|
 
 ## Pipeline Orchestration
 
-FastAPI now exposes a local Project Flow through `apps/api/orchestration`.
+FastAPI exposes local and optional Airflow Project Flow implementations through
+the same `PipelineOrchestrator` protocol in `apps/api/orchestration`.
 
 ```text
 create project
@@ -46,13 +47,20 @@ The shared abstraction is:
 flowchart TB
   A[FastAPI] --> B[PipelineOrchestrator]
   B --> C[LocalPipelineOrchestrator]
-  C --> D[apps.pipeline.entrypoint]
-  D --> E[PipelineRunner]
-  E --> F[Reusable stages]
-  G[Future Airflow DAG] -. imports .-> F
+  B --> D[AirflowOrchestrator]
+  C --> E[apps.pipeline.entrypoint]
+  E --> F[PipelineRunner]
+  D --> G[podcast_clip_pipeline]
+  G --> H[PipelineStageExecutor]
+  F --> H
+  H --> I[Registered reusable stages]
 ```
 
-Apache Airflow and LangGraph are not implemented in v0.6. The existing Airflow directory remains an inactive prototype placeholder; its importable Python adapters delegate to the reusable stage services.
+`AirflowOrchestrator` uses authenticated Airflow 3 REST API calls and stores the
+application job-to-DAG-run mapping in SQLite. DAG run configuration is versioned,
+strictly allowlisted, relative-path-only, and reconstructed against the fixed
+container root. PostgreSQL stores only Airflow metadata. LocalExecutor runs the
+bounded stage tasks on the scheduler host. LangGraph remains deferred.
 
 ## Clip Review Agent
 
@@ -82,7 +90,7 @@ The Gemini structured decision is one of `render_ready`, `adjust_boundaries`, or
 
 `apps/api` exposes the local editor backend with FastAPI.
 
-- `GET /health` confirms the API is running.
+- `GET /health` confirms the API is running and reports the selected orchestrator.
 - `GET /project` returns a compatibility manifest for the current default SQLite project.
 - `GET /clips` loads clips for the default SQLite project.
 - `PATCH /clips/{clip_id}` saves edited start/end times.
@@ -107,7 +115,8 @@ The Gemini structured decision is one of `render_ready`, `adjust_boundaries`, or
 - `GET /projects/{project_id}/exports` returns safe project-scoped rendered artifact metadata.
 - `GET /projects/{project_id}/exports/{artifact_id}/download` streams one rendered artifact after verifying it is inside the project workspace.
 
-`apps/api/db` owns SQLAlchemy setup, models, and repository helpers.
+`apps/api/db` owns SQLAlchemy setup, models, and repository helpers. SQLite
+connections enable foreign keys, WAL journaling, and a 30-second busy timeout.
 
 `apps/api/services/project_service.py`, `clip_service.py`, `artifact_service.py`, and `legacy_import_service.py` keep routes thin and isolate persistence behavior.
 

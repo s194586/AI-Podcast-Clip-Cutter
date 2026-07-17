@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 from urllib.parse import urlparse
@@ -34,6 +35,7 @@ STAGE_MESSAGES = {
 }
 MEDIA_FORMAT_VARIANT_RE = re.compile(r"\.f\d+$", re.IGNORECASE)
 PROJECT_VIDEO_EXTENSIONS = {".mp4", ".mkv", ".mov", ".webm"}
+PIPELINE_JOB_TYPES = ("local_pipeline", "airflow_pipeline")
 
 
 def _iso(value) -> str | None:
@@ -88,6 +90,8 @@ def project_to_dict(project: Project, *, include_counts: bool = False, project_r
 
 def initialize_application_state(*, project_root: Path = PROJECT_ROOT) -> None:
     init_database()
+    if str(os.environ.get("PIPELINE_ORCHESTRATOR") or "local").strip().lower() == "airflow":
+        return
     with session_scope() as session:
         from .legacy_import_service import bootstrap_legacy_state_if_needed, stale_demo_warning
 
@@ -264,7 +268,7 @@ def get_project_status(project_id: int) -> dict[str, Any]:
         project = project_repo.get(project_id)
         if project is None:
             raise ProjectNotFoundError(f"Unknown project_id: {project_id}")
-        latest_job = JobRepository(session).latest_for_project(project.id, "local_pipeline")
+        latest_job = JobRepository(session).latest_for_project_types(project.id, PIPELINE_JOB_TYPES)
         raw_stage = project.current_stage or (latest_job.current_stage if latest_job else None) or "waiting"
         clip_count = project_repo.clip_count(project.id)
         stage, progress = _effective_stage_and_progress(project, project_repo=project_repo, clip_count=clip_count)
@@ -308,6 +312,17 @@ def _job_to_status_dict(job) -> dict[str, Any]:
         "finished_at": _iso(job.finished_at),
         "exit_code": job.exit_code,
         "error_message": job.error_message,
+        "orchestrator_type": job.orchestrator_type or "local",
+        "airflow_dag_id": job.airflow_dag_id,
+        "airflow_dag_run_id": job.airflow_dag_run_id,
+        "airflow_state": job.airflow_state,
+        "airflow_task_id": job.airflow_task_id,
+        "retry_attempt": job.airflow_try_number,
+        "retry_max_attempts": (
+            int(job.airflow_max_tries) + 1
+            if job.airflow_max_tries is not None
+            else None
+        ),
     }
 
 

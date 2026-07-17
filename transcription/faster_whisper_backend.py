@@ -3,6 +3,7 @@ from __future__ import annotations
 import gc
 from dataclasses import dataclass
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -154,6 +155,7 @@ class FasterWhisperBackend:
             "--show-error",
             "--location",
             "--ssl-no-revoke",
+            *self._curl_certificate_args(),
             url,
         ]
         result = subprocess.run(cmd, capture_output=True, text=True)
@@ -171,6 +173,7 @@ class FasterWhisperBackend:
             "--show-error",
             "--location",
             "--ssl-no-revoke",
+            *self._curl_certificate_args(),
             "--output",
             str(destination),
             url,
@@ -178,6 +181,13 @@ class FasterWhisperBackend:
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
             raise RuntimeError((result.stderr or result.stdout or "").strip() or f"curl download failed for {url}")
+
+    @staticmethod
+    def _curl_certificate_args() -> list[str]:
+        disabled = str(
+            os.environ.get("MODEL_DOWNLOAD_NO_CHECK_CERTIFICATES") or ""
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        return ["--insecure"] if disabled else []
 
     def transcribe(self, audio_path: Path) -> TranscriptionResult:
         try:
