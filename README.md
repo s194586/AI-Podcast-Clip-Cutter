@@ -305,10 +305,13 @@ podcast DAG successfully from source download through candidate import and the
 disabled automatic-review path, without rendering. The release is tagged
 `v0.7-airflow-orchestrator`.
 
-The next planned technical release is v0.8 LangGraph Boundary Review. LangGraph
-will orchestrate the existing semantic boundary-review flow; it will not replace
-Gemini semantic boundary selection with local heuristics. v0.8 is not yet
-implemented, so Gemini review remains a direct typed `ReviewAgentService` call.
+The v0.8 LangGraph Boundary Review implementation is on the
+`feat/langgraph-boundary-review` branch. LangGraph orchestrates the existing
+semantic boundary-review flow inside `ReviewAgentService`; it does not replace
+Gemini semantic boundary selection with local heuristics. The workflow permits
+one initial Gemini call and at most one corrective call for invalid structured
+or domain output. Provider, quota, timeout, and cancellation failures do not
+enter that corrective route.
 
 After v0.8, only final repository/demo hardening may remain before the project is
 considered complete. The remaining optional work is browser E2E testing,
@@ -316,6 +319,9 @@ deployment/production serving, and automatic handling of Gemini HTTP 429
 `Retry-After`. Content Packaging, publishing metadata, AI titles or
 descriptions, hashtags, and thumbnail-text generation are not part of the
 roadmap.
+
+See [docs/LANGGRAPH_REVIEW.md](docs/LANGGRAPH_REVIEW.md) for the state graph,
+retry policy, persistence decision, and local/Airflow integration.
 
 ## Product Direction
 

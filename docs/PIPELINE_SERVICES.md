@@ -2,7 +2,9 @@
 
 Pipeline orchestration lives outside `manager.py` in reusable, typed services
 under `apps/pipeline`. The CLI, local product worker, and Airflow tasks call the
-same stage implementation. LangGraph is not enabled.
+same stage implementation. The review stage delegates each clip to the same
+LangGraph-backed `ReviewAgentService` in local and Airflow modes; LangGraph
+logic is not duplicated in `PipelineRunner`.
 
 ## Architecture
 

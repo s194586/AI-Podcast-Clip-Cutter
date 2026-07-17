@@ -328,6 +328,12 @@ class ReviewAgentTests(unittest.TestCase):
         self.assertEqual(result["provider"], "local_stub")
         self.assertEqual(result["model"], "local_stub")
         self.assertIn(result["decision"], {"render_ready", "adjust_boundaries", "reject", "manual_review"})
+        self.assertEqual(result["raw_result"]["review_workflow"], "langgraph_boundary_review")
+        self.assertEqual(result["raw_result"]["review_workflow_version"], "1")
+        self.assertIn(
+            result["raw_result"]["review_workflow_route"],
+            {"applied", "manual_review", "provider_failure"},
+        )
 
     def test_gemini_schema_rejects_manual_review_and_schema_enum_has_three_decisions(self):
         with self.assertRaises(ValidationError):

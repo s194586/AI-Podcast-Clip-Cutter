@@ -4,6 +4,7 @@ fastapi
 uvicorn
 google-generativeai
 google-genai
+langgraph==1.1.10
 tqdm
 mediapipe
 opencv-python-headless

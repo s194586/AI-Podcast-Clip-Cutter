@@ -92,7 +92,16 @@ class ReviewCandidatesStage:
         }
         safe_metadata = {
             key: metadata[key]
-            for key in ("clip_id", "index", "total", "provider", "decision", "retry_used")
+            for key in (
+                "clip_id",
+                "index",
+                "total",
+                "provider",
+                "decision",
+                "retry_used",
+                "review_workflow",
+                "review_workflow_version",
+            )
             if key in metadata
         }
         self._event_sink(
