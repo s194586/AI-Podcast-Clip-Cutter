@@ -1,4 +1,4 @@
-# Podcast Shorts Cutter Web
+# AI Podcast Clip Cutter Web
 
 React Product UI v0.5 for the local FastAPI project flow.
 

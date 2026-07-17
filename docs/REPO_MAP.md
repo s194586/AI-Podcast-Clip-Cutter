@@ -1,4 +1,4 @@
-# Repository Map
+# AI Podcast Clip Cutter Repository Map
 
 This project is a local-first podcast clip cutter. The media pipeline proposes candidate clips, the FastAPI editor persists review state in SQLite, and the Gemini transcript boundary reviewer can refine candidate start/end boundaries before a human renders final shorts.
 
@@ -53,7 +53,7 @@ Transcription device selection is controlled by `TRANSCRIPTION_DEVICE`. The defa
 - `airflow_config.py`: strict versioned Airflow run-config validation and context reconstruction.
 - `entrypoint.py`: dedicated project worker invoked with `python -m apps.pipeline.entrypoint`.
 - `persistence.py`: project-state updates for direct entrypoint runs; job state remains orchestrator-owned.
-- `stages/`: download, transcribe, transcript validation, candidate generation/import, direct review, readiness, and legacy rendering wrappers.
+- `stages/`: download, transcribe, transcript validation, candidate generation/import, graph-backed review, readiness, and legacy rendering wrappers.
 
 ## `apps/api`
 
@@ -64,9 +64,11 @@ Transcription device selection is controlled by `TRANSCRIPTION_DEVICE`. The defa
 - `services/`: project, clip, artifact, render, legacy import, and compatibility service layers.
 - `orchestration/`: local subprocess and Airflow REST implementations, shared job state, and startup recovery/reconciliation.
 - `tools/import_local_project.py`: CLI import helper for refreshing SQLite from local pipeline outputs.
-- `static/`: current browser editor implemented with static HTML/CSS/JavaScript.
+- `static/`: legacy compatibility editor implemented with static HTML/CSS/JavaScript.
 
-The compatibility endpoints still power the static editor. Project-specific endpoints now support create/start/status/logs/cancel, project clip editing, single/batch Gemini review, and project-specific render.
+Compatibility endpoints still support the static fallback. Project-specific
+endpoints support create/start/status/logs/cancel, project clip editing,
+single/batch boundary review, and project-specific rendering.
 
 ## `apps/review_agent`
 
@@ -77,6 +79,11 @@ The compatibility endpoints still power the static editor. Project-specific endp
 - `schemas.py`: typed review contracts and result models.
 - `service.py`: loads clips, calls the selected provider, validates option indexes, applies safe reviewed boundaries, and persists evaluations.
 - `tools.py`: transcript loading, privacy pattern checks, and evaluation persistence helpers.
+- `graph/state.py`: sanitized typed orchestration state.
+- `graph/runtime.py`: ephemeral callbacks and provider/context objects that are not checkpointed.
+- `graph/nodes.py`: context, provider, validation, retry, apply, failure, and cancellation nodes.
+- `graph/routing.py`: bounded conditional routes.
+- `graph/workflow.py`: compiled per-clip LangGraph workflow without a persistent checkpointer.
 
 The active provider contract uses strict integer option indexes. Gemini returns `render_ready`, `adjust_boundaries`, or `reject`; backend-created `manual_review` is reserved for technical/provider validation failures.
 
@@ -98,9 +105,11 @@ ai_start/ai_end -> reviewed_start/reviewed_end -> edited_start/edited_end
 
 Rendering uses `edited_start` and `edited_end`.
 
-## Current Static Frontend
+## Static Compatibility Frontend
 
-The current editor lives in `apps/api/static`. It is intentionally not redesigned yet. It supports a minimal Project Flow panel plus loading clips, previewing source video, manual slider correction, accept/reject, single/batch AI review, and final render actions.
+The fallback editor lives in `apps/api/static`. It supports a minimal Project
+Flow panel plus loading clips, previewing source video, manual slider
+correction, accept/reject, single/batch review, and final render actions.
 
 ## `apps/web`
 
@@ -111,7 +120,9 @@ The current editor lives in `apps/api/static`. It is intentionally not redesigne
 - `src/pages/`: dashboard, new project, processing overview, clip editor, and exports routes.
 - `src/test/`: Vitest setup and route-level test helpers.
 
-The app runs with Vite and proxies local backend calls to `http://127.0.0.1:8010`. It is not mounted by FastAPI yet; `apps/api/static` remains the fallback UI.
+The portfolio UI runs with Vite and proxies local backend calls to
+`http://127.0.0.1:8010`. It is developed and validated separately from
+FastAPI; `apps/api/static` remains the compatibility fallback.
 
 ## `orchestration/airflow`
 
@@ -124,7 +135,9 @@ This is the optional Dockerized Airflow integration. Local mode remains default.
 - `README.md`: exact configuration, start/stop/reset, and offline validation procedures.
 
 Airflow uses PostgreSQL for scheduler metadata and shared application SQLite for
-project/editor state. LangGraph is not implemented.
+project/editor state. Its review stage calls the same implemented
+LangGraph-backed `ReviewAgentService` as local mode; graph state is not placed
+in XCom.
 
 ## Runtime Directories
 
@@ -141,6 +154,8 @@ These directories are local runtime state and should not be committed:
 - `data/projects/`
 - `data/projects/{project_id}/workspace/`
 - Airflow logs/config/database files
+- frontend `node_modules/` and `dist/`
+- Python `__pycache__/` and temporary test/smoke directories
 
 SQLite files under `data/` are runtime state unless a test explicitly creates a temporary database outside the repo.
 
@@ -152,7 +167,9 @@ The committed demo candidate file is `examples/top_windows.example.json`.
 
 ## Tests
 
-Tests live in `tests/` and use `unittest`.
+Tests live in `tests/` and use `unittest`. They cover deterministic stages,
+project/API behavior, provider boundaries, LangGraph routes, local/Airflow
+orchestration, timeouts/cancellation, and disposable release-smoke persistence.
 
 Run the local validation gate:
 

@@ -111,5 +111,10 @@ cancelled project to ready.
 
 SQLite uses WAL, a 30-second busy timeout, and foreign keys. It is appropriate
 for this single-project-at-a-time local deployment, not a horizontally scaled
-API. Moving application persistence to PostgreSQL is a later production step.
-LangGraph remains deferred.
+API. Moving application persistence to PostgreSQL would be part of an optional
+production deployment.
+
+The shared `ReviewAgentService` uses the implemented per-clip LangGraph
+boundary-review workflow. Graph state is not passed through XCom, and
+`review_boundaries` retains zero Airflow retries. When `auto_review=false`, the
+stage bypasses the graph and provider safely.

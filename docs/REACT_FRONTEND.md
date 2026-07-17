@@ -1,6 +1,7 @@
-# React Frontend
+# AI Podcast Clip Cutter React Frontend
 
-`apps/web` contains the Product UI v0.5 React application. It is separate from the legacy FastAPI static UI and is intended for manual validation before any production serving switch.
+`apps/web` contains the implemented React portfolio UI. It is developed and
+validated separately from the legacy FastAPI static compatibility UI.
 
 ## Stack
 

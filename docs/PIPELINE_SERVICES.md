@@ -1,4 +1,4 @@
-# Pipeline Services
+# AI Podcast Clip Cutter Pipeline Services
 
 Pipeline orchestration lives outside `manager.py` in reusable, typed services
 under `apps/pipeline`. The CLI, local product worker, and Airflow tasks call the

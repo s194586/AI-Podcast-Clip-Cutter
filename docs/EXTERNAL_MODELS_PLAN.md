@@ -1,6 +1,7 @@
 # External Models Notes
 
-Podcast Shorts Cutter is a local-first MVP. External providers are optional upgrades, not requirements for the editor workflow.
+AI Podcast Clip Cutter is a local-first MVP. External providers are optional
+upgrades, not requirements for the editor workflow.
 
 ## Current Local Limits
 
