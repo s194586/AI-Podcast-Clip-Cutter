@@ -1,8 +1,8 @@
 # Pipeline Services
 
-v0.6 moves pipeline orchestration out of `manager.py` and into reusable, typed Python services under `apps/pipeline`. The refactor preserves the existing media algorithms and artifacts while giving the CLI, local product worker, and future orchestrators one implementation to call.
-
-Apache Airflow and LangGraph are not implemented or enabled in this release.
+Pipeline orchestration lives outside `manager.py` in reusable, typed services
+under `apps/pipeline`. The CLI, local product worker, and Airflow tasks call the
+same stage implementation. LangGraph is not enabled.
 
 ## Architecture
 
@@ -25,6 +25,7 @@ Neither object contains API keys. Review and Gemini integrations resolve credent
 - `stage_progress`;
 - `stage_completed`;
 - `stage_failed`;
+- `stage_retrying`;
 - `pipeline_completed`.
 
 Review additionally emits `review_clip_started`, `review_clip_completed`, `review_clip_manual`, and `review_clip_failed`. For five clips, terminal updates advance monotonically through 87, 89, 91, 93, and 95 percent before `ready` reaches 100.
@@ -121,16 +122,26 @@ An explicit retry creates a new job for the same project. Downloaded media and t
 
 Project retries also preserve current transcript-validation and deterministic-candidate artifacts when their source timestamps remain valid. Candidate import stays idempotent. This allows a cancelled review run to restart the same project and resume review without creating a replacement project or overwriting completed/user-reviewed boundaries.
 
-## Future Airflow
+## Airflow
 
 ```mermaid
 flowchart LR
-  A[Future Airflow DAG] -. imports .-> B[Reusable stage services]
-  A -. or composes .-> C[PipelineRunner]
-  C --> B
-  B --> D[Same artifacts and SQLite contracts]
+  A[Airflow DAG] --> B[PipelineStageExecutor]
+  C[PipelineRunner] --> B
+  B --> D[Stage registry]
+  D --> E[Reusable stage services]
+  E --> F[Same artifacts and SQLite contracts]
 ```
 
-The existing `orchestration/airflow` directory is an inactive prototype placeholder. Its importable helper functions are thin adapters over `apps.pipeline`, demonstrating the future import boundary without adding Airflow to the active application or test dependencies. A future implementation must provide orchestration-specific scheduling/retry policy without copying stage business logic.
+`orchestration/airflow/dags/podcast_pipeline_dag.py` declares one task per
+registered project stage. `pipeline_tasks.py` reconstructs a strict versioned
+context and invokes the common executor. It does not call `manager.py` or the
+full runner. The DAG is parse-safe when Airflow is absent from the normal local
+environment, while the pinned container performs the real parse and execution.
 
-LangGraph is also not part of v0.6. The boundary reviewer remains the existing direct typed service.
+Airflow configuration contains no API keys or local absolute paths. The review
+provider resolves credentials from container environment at task runtime. XCom
+contains compact IDs, stage name, success, and skip state only. Review has zero
+Airflow retries; explicit application retry creates a new job and DAG run.
+
+The boundary reviewer remains the existing direct typed service.

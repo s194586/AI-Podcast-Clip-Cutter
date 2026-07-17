@@ -133,6 +133,9 @@ def download_content(url, input_dir, metadata_dir, prefer_1080=True):
         'concurrent_fragment_downloads': 4,
         'keepvideo': True,
         'continuedl': True,
+        'nocheckcertificate': str(
+            os.environ.get('YTDLP_NO_CHECK_CERTIFICATES') or ''
+        ).strip().lower() in {'1', 'true', 'yes', 'on'},
     }
 
     print('Rozpoczynam pobieranie — to może chwilę potrwać dla długich plików...')

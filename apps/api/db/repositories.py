@@ -174,6 +174,14 @@ class JobRepository:
         finished_at: Any = None,
         exit_code: int | None = None,
         error_message: str | None = None,
+        orchestrator_type: str = "local",
+        airflow_dag_id: str | None = None,
+        airflow_dag_run_id: str | None = None,
+        airflow_state: str | None = None,
+        airflow_task_id: str | None = None,
+        airflow_try_number: int | None = None,
+        airflow_max_tries: int | None = None,
+        cancel_requested: bool = False,
     ) -> Job:
         job = Job(
             project_id=project_id,
@@ -188,6 +196,14 @@ class JobRepository:
             finished_at=finished_at,
             exit_code=exit_code,
             error_message=error_message,
+            orchestrator_type=orchestrator_type,
+            airflow_dag_id=airflow_dag_id,
+            airflow_dag_run_id=airflow_dag_run_id,
+            airflow_state=airflow_state,
+            airflow_task_id=airflow_task_id,
+            airflow_try_number=airflow_try_number,
+            airflow_max_tries=airflow_max_tries,
+            cancel_requested=cancel_requested,
         )
         self.session.add(job)
         self.session.flush()
@@ -208,6 +224,35 @@ class JobRepository:
             statement = statement.where(Job.job_type == job_type)
         return self.session.scalars(statement.order_by(Job.created_at.desc(), Job.id.desc()).limit(1)).first()
 
+    def latest_for_project_types(self, project_id: int, job_types: tuple[str, ...]) -> Job | None:
+        return self.session.scalars(
+            select(Job)
+            .where(Job.project_id == project_id, Job.job_type.in_(job_types))
+            .order_by(Job.created_at.desc(), Job.id.desc())
+            .limit(1)
+        ).first()
+
+    def active_for_project_types(self, project_id: int, job_types: tuple[str, ...]) -> Job | None:
+        return self.session.scalars(
+            select(Job)
+            .where(
+                Job.project_id == project_id,
+                Job.job_type.in_(job_types),
+                Job.status.in_(("queued", "running")),
+            )
+            .order_by(Job.created_at.desc(), Job.id.desc())
+            .limit(1)
+        ).first()
+
+    def list_active_types(self, job_types: tuple[str, ...]) -> list[Job]:
+        return list(
+            self.session.scalars(
+                select(Job)
+                .where(Job.job_type.in_(job_types), Job.status.in_(("queued", "running")))
+                .order_by(Job.created_at.asc(), Job.id.asc())
+            ).all()
+        )
+
     def list_active(self, job_type: str | None = None) -> list[Job]:
         statement = select(Job).where(Job.status.in_(("queued", "running")))
         if job_type is not None:
@@ -227,6 +272,14 @@ class JobRepository:
         finished_at: Any = _UNSET,
         exit_code: Any = _UNSET,
         error_message: Any = _UNSET,
+        orchestrator_type: Any = _UNSET,
+        airflow_dag_id: Any = _UNSET,
+        airflow_dag_run_id: Any = _UNSET,
+        airflow_state: Any = _UNSET,
+        airflow_task_id: Any = _UNSET,
+        airflow_try_number: Any = _UNSET,
+        airflow_max_tries: Any = _UNSET,
+        cancel_requested: Any = _UNSET,
     ) -> None:
         if status is not None:
             job.status = status
@@ -247,6 +300,22 @@ class JobRepository:
             job.exit_code = exit_code
         if error_message is not _UNSET:
             job.error_message = error_message
+        if orchestrator_type is not _UNSET:
+            job.orchestrator_type = orchestrator_type
+        if airflow_dag_id is not _UNSET:
+            job.airflow_dag_id = airflow_dag_id
+        if airflow_dag_run_id is not _UNSET:
+            job.airflow_dag_run_id = airflow_dag_run_id
+        if airflow_state is not _UNSET:
+            job.airflow_state = airflow_state
+        if airflow_task_id is not _UNSET:
+            job.airflow_task_id = airflow_task_id
+        if airflow_try_number is not _UNSET:
+            job.airflow_try_number = airflow_try_number
+        if airflow_max_tries is not _UNSET:
+            job.airflow_max_tries = airflow_max_tries
+        if cancel_requested is not _UNSET:
+            job.cancel_requested = bool(cancel_requested)
         job.updated_at = utc_now()
 
     def latest_failed_error(self, project_id: int) -> str | None:

@@ -48,6 +48,9 @@ Transcription device selection is controlled by `TRANSCRIPTION_DEVICE`. The defa
 - `events.py`: versioned structured lifecycle markers and coarse product progress.
 - `results.py` and `exceptions.py`: typed stage/run results and controlled failure categories.
 - `runner.py`: ordered stage execution with dependency stop-on-failure behavior.
+- `executor.py`: one-stage lifecycle/cancellation boundary shared by runners and Airflow.
+- `registry.py`: canonical project stage names and constructors.
+- `airflow_config.py`: strict versioned Airflow run-config validation and context reconstruction.
 - `entrypoint.py`: dedicated project worker invoked with `python -m apps.pipeline.entrypoint`.
 - `persistence.py`: project-state updates for direct entrypoint runs; job state remains orchestrator-owned.
 - `stages/`: download, transcribe, transcript validation, candidate generation/import, direct review, readiness, and legacy rendering wrappers.
@@ -59,7 +62,7 @@ Transcription device selection is controlled by `TRANSCRIPTION_DEVICE`. The defa
 - `main.py`: route definitions and static frontend mounting.
 - `db/`: SQLAlchemy database setup, models, and repositories.
 - `services/`: project, clip, artifact, render, legacy import, and compatibility service layers.
-- `orchestration/`: local project pipeline abstraction, stage parser, job recovery, and subprocess-backed `LocalPipelineOrchestrator`.
+- `orchestration/`: local subprocess and Airflow REST implementations, shared job state, and startup recovery/reconciliation.
 - `tools/import_local_project.py`: CLI import helper for refreshing SQLite from local pipeline outputs.
 - `static/`: current browser editor implemented with static HTML/CSS/JavaScript.
 
@@ -112,13 +115,16 @@ The app runs with Vite and proxies local backend calls to `http://127.0.0.1:8010
 
 ## `orchestration/airflow`
 
-This is an inactive future-integration placeholder. Airflow is not installed or enabled by v0.6.
+This is the optional Dockerized Airflow integration. Local mode remains default.
 
-- `dags/podcast_pipeline_dag.py`: inactive DAG prototype; it is not loaded by the product runtime.
-- `pipeline_tasks.py`: thin importable adapters over `apps.pipeline` services; no copied stage algorithms.
-- `README.md`: placeholder status and the future integration boundary.
+- `dags/podcast_pipeline_dag.py`: real sequential `podcast_clip_pipeline` DAG.
+- `pipeline_tasks.py`: thin one-stage adapter over the common executor/registry.
+- `Dockerfile`: pinned Airflow 3.3.0 Python 3.12 application image with FFmpeg.
+- `init_airflow.py`: secret-safe Simple Auth password initialization and DB migration.
+- `README.md`: exact configuration, start/stop/reset, and offline validation procedures.
 
-The active product path does not use this directory. LangGraph is also not implemented.
+Airflow uses PostgreSQL for scheduler metadata and shared application SQLite for
+project/editor state. LangGraph is not implemented.
 
 ## Runtime Directories
 

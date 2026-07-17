@@ -259,6 +259,25 @@ export function ProjectPage() {
           Technical details
         </summary>
         <div className="mt-4">
+          {status?.orchestrator_type === 'airflow' ? (
+            <div className="mb-4 border-b border-app-border pb-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <h3 className="text-sm font-semibold text-app-text">Airflow run</h3>
+                {status.airflow_ui_url ? (
+                  <a className="app-button" href={status.airflow_ui_url} target="_blank" rel="noopener noreferrer">
+                    <ExternalLink className="h-4 w-4" aria-hidden="true" />
+                    Open in Airflow
+                  </a>
+                ) : null}
+              </div>
+              <dl className="mt-3 grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
+                <div><dt className="app-label">State</dt><dd className="mt-1 text-app-text">{status.airflow_state ?? 'Unavailable'}</dd></div>
+                <div><dt className="app-label">Current task</dt><dd className="mt-1 break-words text-app-text">{status.airflow_task_id ?? 'Waiting'}</dd></div>
+                <div><dt className="app-label">Attempt</dt><dd className="mt-1 text-app-text">{status.retry_attempt ?? 0} of {status.retry_max_attempts ?? 0}</dd></div>
+                <div><dt className="app-label">Run ID</dt><dd className="mt-1 break-all text-app-muted">{status.airflow_dag_run_id ?? 'Pending'}</dd></div>
+              </dl>
+            </div>
+          ) : null}
           <button type="button" className="app-button" onClick={() => void loadLogs()} disabled={logsLoading}>
             {logsLoading ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <RefreshCcw className="h-4 w-4" aria-hidden="true" />}
             Refresh log tail

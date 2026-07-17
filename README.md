@@ -54,7 +54,7 @@ subtitler.py            Burns subtitles into rendered clips
 apps/api                FastAPI editor backend
 apps/api/static         Browser review UI
 apps/review_agent       Transcript boundary reviewer with Gemini and local_stub modes
-orchestration/airflow   Inactive future-integration placeholder and thin adapters
+orchestration/airflow   Optional Airflow DAG, task adapters, image, and operations
 ```
 
 `analyze_virals.py` still keeps its historical filename for compatibility, but the active product direction is podcast-only.
@@ -187,6 +187,24 @@ POST /projects
 
 See [docs/PROJECT_FLOW.md](docs/PROJECT_FLOW.md) and [docs/PIPELINE_SERVICES.md](docs/PIPELINE_SERVICES.md).
 
+## Optional Airflow Mode
+
+Local orchestration remains the default. Start the included Docker Compose stack
+when durable DAG-run visibility and per-stage retries are useful. The stack pins
+Airflow 3.3.0, PostgreSQL 16.14, LocalExecutor, the API server, scheduler, and DAG
+processor. It does not include Redis, Celery workers, or a triggerer because the
+DAG uses ordinary Python tasks and intentionally limits active work.
+
+```powershell
+Copy-Item .\orchestration\airflow\airflow.env.example .\orchestration\airflow\.env.airflow
+docker compose --env-file .\orchestration\airflow\.env.airflow build
+docker compose --env-file .\orchestration\airflow\.env.airflow up airflow-init
+docker compose --env-file .\orchestration\airflow\.env.airflow up -d
+```
+
+See [orchestration/airflow/README.md](orchestration/airflow/README.md) before
+starting, stopping, resetting, or running an isolated infrastructure check.
+
 ## Run Tests
 
 ```powershell
@@ -276,11 +294,12 @@ See [docs/CLIP_REVIEW_AGENT.md](docs/CLIP_REVIEW_AGENT.md).
 
 For a codebase overview, see [docs/REPO_MAP.md](docs/REPO_MAP.md). The planned frontend migration is captured in [docs/FRONTEND_REDESIGN_PLAN.md](docs/FRONTEND_REDESIGN_PLAN.md).
 
-## Future Orchestration
+## Orchestration Direction
 
-Apache Airflow is not installed, enabled, or implemented as a product orchestrator in v0.6. The existing `orchestration/airflow` directory is an inactive prototype placeholder whose Python helpers now delegate to `apps.pipeline` rather than duplicating pipeline logic. A future DAG can import individual stage services or compose the same `PipelineRunner` without invoking `manager.py`.
-
-LangGraph is also not implemented in this release. Gemini review remains a direct call to the existing typed `ReviewAgentService`.
+Airflow is an optional Dockerized product orchestrator. The DAG delegates each
+task to the same registered stage services as local mode and never invokes
+`manager.py` or wraps the complete `PipelineRunner` in one task. LangGraph is
+still deferred; Gemini review remains a direct typed `ReviewAgentService` call.
 
 ## Product Direction
 

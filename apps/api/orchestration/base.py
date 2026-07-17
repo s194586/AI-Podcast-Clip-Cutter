@@ -4,6 +4,11 @@ from dataclasses import dataclass
 from typing import Protocol
 
 
+LOCAL_PIPELINE_JOB_TYPE = "local_pipeline"
+AIRFLOW_PIPELINE_JOB_TYPE = "airflow_pipeline"
+PIPELINE_JOB_TYPES = (LOCAL_PIPELINE_JOB_TYPE, AIRFLOW_PIPELINE_JOB_TYPE)
+
+
 class ProjectAlreadyRunningError(RuntimeError):
     pass
 
@@ -25,6 +30,11 @@ class JobResult:
     progress_percent: float
     message: str
     error_message: str | None = None
+    orchestrator_type: str = "local"
+    airflow_dag_id: str | None = None
+    airflow_dag_run_id: str | None = None
+    airflow_state: str | None = None
+    airflow_ui_url: str | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -36,6 +46,11 @@ class JobResult:
             "progress_percent": self.progress_percent,
             "message": self.message,
             "error_message": self.error_message,
+            "orchestrator_type": self.orchestrator_type,
+            "airflow_dag_id": self.airflow_dag_id,
+            "airflow_dag_run_id": self.airflow_dag_run_id,
+            "airflow_state": self.airflow_state,
+            "airflow_ui_url": self.airflow_ui_url,
         }
 
 
@@ -52,6 +67,14 @@ class PipelineStatus:
     completed_at: str | None = None
     job_id: int | None = None
     log_path: str | None = None
+    orchestrator_type: str = "local"
+    airflow_dag_id: str | None = None
+    airflow_dag_run_id: str | None = None
+    airflow_state: str | None = None
+    airflow_ui_url: str | None = None
+    airflow_task_id: str | None = None
+    retry_attempt: int | None = None
+    retry_max_attempts: int | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -67,6 +90,14 @@ class PipelineStatus:
             "completed_at": self.completed_at,
             "job_id": self.job_id,
             "log_path": self.log_path,
+            "orchestrator_type": self.orchestrator_type,
+            "airflow_dag_id": self.airflow_dag_id,
+            "airflow_dag_run_id": self.airflow_dag_run_id,
+            "airflow_state": self.airflow_state,
+            "airflow_ui_url": self.airflow_ui_url,
+            "airflow_task_id": self.airflow_task_id,
+            "retry_attempt": self.retry_attempt,
+            "retry_max_attempts": self.retry_max_attempts,
         }
 
 

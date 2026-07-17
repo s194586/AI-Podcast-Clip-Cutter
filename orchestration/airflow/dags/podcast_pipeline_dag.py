@@ -1,82 +1,134 @@
 from __future__ import annotations
 
-import os
-import sys
-from datetime import datetime
-from pathlib import Path
-from typing import Any, Callable
+from datetime import datetime, timedelta, timezone
 
-PROJECT_ROOT = Path(os.environ.get("PODCAST_CUTTER_PROJECT_ROOT", Path(__file__).resolve().parents[3])).resolve()
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+from orchestration.airflow.pipeline_tasks import execute_airflow_stage
 
-from orchestration.airflow import pipeline_tasks
 
-try:  # pragma: no cover - optional dependency path
-    from airflow.decorators import dag, task
-    from airflow.operators.python import get_current_context
-except Exception as exc:  # pragma: no cover - default local test path
+DAG_ID = "podcast_clip_pipeline"
+TASK_ORDER = (
+    "prepare_workspace",
+    "download_source",
+    "transcribe",
+    "validate_transcript",
+    "generate_candidates",
+    "import_candidates",
+    "review_boundaries",
+    "mark_ready",
+)
+TASK_RETRIES = {
+    "prepare_workspace": 0,
+    "download_source": 1,
+    "transcribe": 1,
+    "validate_transcript": 0,
+    "generate_candidates": 1,
+    "import_candidates": 2,
+    "review_boundaries": 0,
+    "mark_ready": 1,
+}
+
+try:  # pragma: no cover - Airflow is installed only in the container image
+    from airflow.sdk import dag, get_current_context, task
+except ImportError as exc:  # pragma: no cover - regular application test environment
     AIRFLOW_AVAILABLE = False
     DAG_IMPORT_ERROR = exc
-    podcast_pipeline = None
-else:  # pragma: no cover - requires Airflow installation
+    podcast_clip_pipeline = None
+else:
     AIRFLOW_AVAILABLE = True
     DAG_IMPORT_ERROR = None
 
-    def _execute_step(function: Callable[[dict[str, Any]], dict[str, Any]], config: dict[str, Any]) -> dict[str, Any]:
-        try:
-            return function(config)
-        except Exception as exc:
-            project_id = config.get("project_id")
-            if project_id is not None:
-                pipeline_tasks.mark_project_failed(int(project_id), str(exc))
-            raise
+    def _run_task(stage_name: str) -> dict:
+        context = get_current_context()
+        dag_run = context["dag_run"]
+        task_instance = context["task_instance"]
+        retries = TASK_RETRIES[stage_name]
+        return execute_airflow_stage(
+            dict(dag_run.conf or {}),
+            stage_name,
+            try_number=int(task_instance.try_number),
+            max_attempts=retries + 1,
+        )
+
 
     @dag(
-        dag_id="podcast_deterministic_pipeline",
-        description="Prepare reviewed podcast clip candidates; rendering remains human-triggered.",
-        start_date=datetime(2026, 1, 1),
+        dag_id=DAG_ID,
+        description="Sequential podcast clip preparation using reusable pipeline stages.",
         schedule=None,
+        start_date=datetime(2025, 1, 1, tzinfo=timezone.utc),
         catchup=False,
-        tags=["podcast-cutter", "deterministic-pipeline"],
+        max_active_runs=1,
+        max_active_tasks=1,
+        tags=["podcast-cutter", "pipeline-services"],
     )
-    def podcast_pipeline_dag():
-        @task
-        def validate_project_config_task() -> dict[str, Any]:
-            context = get_current_context()
-            dag_run = context.get("dag_run")
-            return pipeline_tasks.validate_project_config(getattr(dag_run, "conf", None))
+    def _podcast_clip_pipeline():
+        @task(task_id="prepare_workspace", retries=TASK_RETRIES["prepare_workspace"])
+        def prepare_workspace():
+            return _run_task("prepare_workspace")
 
-        @task
-        def download_media_task(config: dict[str, Any]) -> dict[str, Any]:
-            return _execute_step(pipeline_tasks.download_media, config)
+        @task(
+            task_id="download_source",
+            retries=TASK_RETRIES["download_source"],
+            retry_delay=timedelta(seconds=30),
+        )
+        def download_source():
+            return _run_task("download_source")
 
-        @task
-        def transcribe_audio_task(config: dict[str, Any]) -> dict[str, Any]:
-            return _execute_step(pipeline_tasks.transcribe_audio, config)
+        @task(
+            task_id="transcribe",
+            retries=TASK_RETRIES["transcribe"],
+            retry_delay=timedelta(minutes=2),
+        )
+        def transcribe():
+            return _run_task("transcribe")
 
-        @task
-        def generate_candidates_task(config: dict[str, Any]) -> dict[str, Any]:
-            return _execute_step(pipeline_tasks.generate_candidates, config)
+        @task(task_id="validate_transcript", retries=TASK_RETRIES["validate_transcript"])
+        def validate_transcript():
+            return _run_task("validate_transcript")
 
-        @task
-        def import_candidates_to_sqlite_task(config: dict[str, Any]) -> dict[str, Any]:
-            return _execute_step(pipeline_tasks.import_candidates_to_sqlite, config)
+        @task(
+            task_id="generate_candidates",
+            retries=TASK_RETRIES["generate_candidates"],
+            retry_delay=timedelta(seconds=30),
+        )
+        def generate_candidates():
+            return _run_task("generate_candidates")
 
-        @task
-        def review_candidates_with_gemini_task(config: dict[str, Any]) -> dict[str, Any]:
-            return _execute_step(pipeline_tasks.review_candidates_with_gemini, config)
+        @task(
+            task_id="import_candidates",
+            retries=TASK_RETRIES["import_candidates"],
+            retry_delay=timedelta(seconds=15),
+        )
+        def import_candidates():
+            return _run_task("import_candidates")
 
-        @task
-        def mark_project_ready_task(config: dict[str, Any]) -> dict[str, Any]:
-            return _execute_step(pipeline_tasks.mark_project_ready, config)
+        @task(task_id="review_boundaries", retries=TASK_RETRIES["review_boundaries"])
+        def review_boundaries():
+            return _run_task("review_boundaries")
 
-        config = validate_project_config_task()
-        media = download_media_task(config)
-        transcript = transcribe_audio_task(media)
-        candidates = generate_candidates_task(transcript)
-        imported = import_candidates_to_sqlite_task(candidates)
-        reviewed = review_candidates_with_gemini_task(imported)
-        mark_project_ready_task(reviewed)
+        @task(
+            task_id="mark_ready",
+            retries=TASK_RETRIES["mark_ready"],
+            retry_delay=timedelta(seconds=10),
+        )
+        def mark_ready():
+            return _run_task("mark_ready")
 
-    podcast_pipeline = podcast_pipeline_dag()
+        stages = (
+            prepare_workspace(),
+            download_source(),
+            transcribe(),
+            validate_transcript(),
+            generate_candidates(),
+            import_candidates(),
+            review_boundaries(),
+            mark_ready(),
+        )
+        for upstream, downstream in zip(stages, stages[1:]):
+            upstream >> downstream
+
+
+    podcast_clip_pipeline = _podcast_clip_pipeline()
+
+
+# Compatibility name for callers that imported the v0.6 placeholder symbol.
+podcast_pipeline = podcast_clip_pipeline

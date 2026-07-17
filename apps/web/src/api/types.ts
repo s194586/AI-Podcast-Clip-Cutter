@@ -41,6 +41,14 @@ export interface JobStatus {
   finished_at?: string | null
   exit_code?: number | null
   error_message?: string | null
+  orchestrator_type?: string | null
+  airflow_dag_id?: string | null
+  airflow_dag_run_id?: string | null
+  airflow_state?: string | null
+  airflow_ui_url?: string | null
+  airflow_task_id?: string | null
+  retry_attempt?: number | null
+  retry_max_attempts?: number | null
 }
 
 export interface ProjectStatus {
@@ -57,6 +65,14 @@ export interface ProjectStatus {
   clip_count: number
   last_error?: string | null
   job?: JobStatus | null
+  orchestrator_type?: string | null
+  airflow_dag_id?: string | null
+  airflow_dag_run_id?: string | null
+  airflow_state?: string | null
+  airflow_ui_url?: string | null
+  airflow_task_id?: string | null
+  retry_attempt?: number | null
+  retry_max_attempts?: number | null
 }
 
 export interface ProjectLogTail {
@@ -112,6 +128,7 @@ export interface Clip {
 
 export interface HealthStatus {
   status: string
+  pipeline_orchestrator?: string
   clip_review_provider?: string | null
   clip_review_model?: string | null
   clip_review_mode_source?: string | null

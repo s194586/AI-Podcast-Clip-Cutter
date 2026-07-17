@@ -1,0 +1,160 @@
+name: ai-podcast-clip-cutter
+
+x-airflow-environment: &airflow-environment
+  AIRFLOW__CORE__EXECUTOR: LocalExecutor
+  AIRFLOW__CORE__PARALLELISM: "2"
+  AIRFLOW__CORE__MAX_ACTIVE_TASKS_PER_DAG: "1"
+  AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
+  AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+  AIRFLOW__CORE__DAGS_FOLDER: /opt/ai-cutter/orchestration/airflow/dags
+  AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS: ${AIRFLOW_API_USERNAME:?AIRFLOW_API_USERNAME is required}:admin
+  AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS_FILE: /opt/airflow/secrets/simple_auth_manager_passwords.json.generated
+  AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:${AIRFLOW_DB_PASSWORD:?AIRFLOW_DB_PASSWORD is required}@postgres/airflow
+  AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_JWT_SECRET:?AIRFLOW_JWT_SECRET is required}
+  AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-api-server:8080/execution/
+  AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
+  AIRFLOW_API_USERNAME: ${AIRFLOW_API_USERNAME}
+  AIRFLOW_DB_PASSWORD: ${AIRFLOW_DB_PASSWORD}
+  AIRFLOW_JWT_SECRET: ${AIRFLOW_JWT_SECRET}
+  PODCAST_CUTTER_PROJECT_ROOT: /opt/ai-cutter
+  PODCAST_CUTTER_DB_URL: sqlite:////opt/ai-cutter/data/podcast_cutter.db
+  CLIP_REVIEW_MODE: ${CLIP_REVIEW_MODE:-local_stub}
+  GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+  GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.5-flash}
+  GEMINI_REQUEST_TIMEOUT_SECONDS: ${GEMINI_REQUEST_TIMEOUT_SECONDS:-300}
+  GEMINI_BATCH_TIMEOUT_SECONDS: ${GEMINI_BATCH_TIMEOUT_SECONDS:-1800}
+  YTDLP_NO_CHECK_CERTIFICATES: ${YTDLP_NO_CHECK_CERTIFICATES:-false}
+  MODEL_DOWNLOAD_NO_CHECK_CERTIFICATES: ${MODEL_DOWNLOAD_NO_CHECK_CERTIFICATES:-false}
+  PYTHONPATH: /opt/ai-cutter
+  PYTHONDONTWRITEBYTECODE: "1"
+
+x-airflow-common: &airflow-common
+  build:
+    context: .
+    dockerfile: orchestration/airflow/Dockerfile
+  image: ai-podcast-clip-cutter-airflow:3.3.0
+  environment: *airflow-environment
+  volumes:
+    - type: bind
+      source: ${APP_DATA_HOST_PATH:-./data}
+      target: /opt/ai-cutter/data
+    - airflow-logs:/opt/airflow/logs
+  restart: unless-stopped
+
+services:
+  postgres:
+    image: postgres:16.14-bookworm
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: ${AIRFLOW_DB_PASSWORD:?AIRFLOW_DB_PASSWORD is required}
+      POSTGRES_DB: airflow
+    volumes:
+      - airflow-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflow -d airflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  airflow-init:
+    <<: *airflow-common
+    command: ["python", "/opt/ai-cutter/orchestration/airflow/init_airflow.py"]
+    environment:
+      <<: *airflow-environment
+      AIRFLOW_API_PASSWORD: ${AIRFLOW_API_PASSWORD:?AIRFLOW_API_PASSWORD is required}
+    volumes:
+      - type: bind
+        source: ${APP_DATA_HOST_PATH:-./data}
+        target: /opt/ai-cutter/data
+      - airflow-logs:/opt/airflow/logs
+      - airflow-secrets:/opt/airflow/secrets
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  airflow-api-server:
+    <<: *airflow-common
+    command: ["api-server"]
+    ports:
+      - "127.0.0.1:${AIRFLOW_PORT:-8080}:8080"
+    volumes:
+      - type: bind
+        source: ${APP_DATA_HOST_PATH:-./data}
+        target: /opt/ai-cutter/data
+      - airflow-logs:/opt/airflow/logs
+      - airflow-secrets:/opt/airflow/secrets
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8080/api/v2/monitor/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 45s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: ["scheduler"]
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8974/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 45s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-dag-processor:
+    <<: *airflow-common
+    command: ["dag-processor"]
+    healthcheck:
+      test: ["CMD-SHELL", "airflow jobs check --job-type DagProcessorJob --hostname \"$${HOSTNAME}\""]
+      interval: 30s
+      timeout: 15s
+      retries: 5
+      start_period: 60s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+
+  app-api:
+    <<: *airflow-common
+    command: ["python", "-m", "uvicorn", "apps.api.main:app", "--host", "0.0.0.0", "--port", "8010"]
+    environment:
+      <<: *airflow-environment
+      PIPELINE_ORCHESTRATOR: airflow
+      AIRFLOW_API_BASE_URL: http://airflow-api-server:8080
+      AIRFLOW_UI_BASE_URL: http://localhost:${AIRFLOW_PORT:-8080}
+      AIRFLOW_DAG_ID: podcast_clip_pipeline
+      AIRFLOW_API_PASSWORD: ${AIRFLOW_API_PASSWORD:?AIRFLOW_API_PASSWORD is required}
+      AIRFLOW_API_TIMEOUT_SECONDS: ${AIRFLOW_API_TIMEOUT_SECONDS:-10}
+      AIRFLOW_CONTAINER_ROOT: /opt/ai-cutter
+    ports:
+      - "127.0.0.1:${APP_API_PORT:-8010}:8010"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8010/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    depends_on:
+      airflow-api-server:
+        condition: service_healthy
+      airflow-scheduler:
+        condition: service_healthy
+
+volumes:
+  airflow-postgres:
+  airflow-logs:
+  airflow-secrets:

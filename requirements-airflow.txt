@@ -1,3 +1,3 @@
-# Optional Airflow environment. Keep this separate from requirements.txt so
-# normal local editor/API development does not install the scheduler stack.
-apache-airflow>=2.9,<3.0
+# Optional host-side DAG parsing only. The supported runtime is the pinned
+# official image in orchestration/airflow/Dockerfile.
+apache-airflow==3.3.0

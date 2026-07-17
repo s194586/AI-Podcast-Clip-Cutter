@@ -15,6 +15,7 @@ from .orchestration import (
     ProjectAlreadyRunningError,
     ProjectOrchestratorConfigurationError,
     ProjectOrchestratorNotFoundError,
+    configured_orchestrator_name,
     get_pipeline_orchestrator,
     recover_orphaned_jobs,
 )
@@ -147,6 +148,25 @@ def _public_render_result(result: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def _orchestrated_project_status(project_id: int, *, project_root: Path) -> dict[str, Any]:
+    orchestrator_status = get_pipeline_orchestrator(project_root=project_root).get_status(project_id)
+    payload = get_project_status(project_id)
+    safe_fields = {
+        "orchestrator_type",
+        "airflow_dag_id",
+        "airflow_dag_run_id",
+        "airflow_state",
+        "airflow_ui_url",
+        "airflow_task_id",
+        "retry_attempt",
+        "retry_max_attempts",
+        "error_message",
+    }
+    status_payload = orchestrator_status.to_dict()
+    payload.update({key: status_payload.get(key) for key in safe_fields})
+    return payload
+
+
 @app.get("/", include_in_schema=False)
 def index() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")
@@ -157,6 +177,7 @@ def health() -> dict[str, Any]:
     review_config = safe_review_config_summary(project_root=api_project_root())
     return {
         "status": "ok",
+        "pipeline_orchestrator": configured_orchestrator_name(),
         "clip_review_provider": review_config.get("provider"),
         "clip_review_model": review_config.get("model"),
         "clip_review_mode_source": review_config.get("mode_source"),
@@ -187,7 +208,10 @@ def create_project_endpoint(payload: ProjectCreatePayload) -> dict[str, Any]:
         response: dict[str, Any] = {"project": _public_project(project)}
         if payload.auto_start:
             response["job"] = get_pipeline_orchestrator(project_root=project_root).start_project(project["id"]).to_dict()
-            response["status"] = get_project_status(project["id"])
+            response["status"] = _orchestrated_project_status(
+                project["id"],
+                project_root=project_root,
+            )
         return response
     except ProjectValidationError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -202,7 +226,10 @@ def start_project_endpoint(project_id: int) -> dict[str, Any]:
     try:
         project_root = api_project_root()
         job = get_pipeline_orchestrator(project_root=project_root).start_project(project_id)
-        return {"job": job.to_dict(), "status": get_project_status(project_id)}
+        return {
+            "job": job.to_dict(),
+            "status": _orchestrated_project_status(project_id, project_root=project_root),
+        }
     except ProjectAlreadyRunningError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ProjectOrchestratorNotFoundError as exc:
@@ -235,9 +262,14 @@ def get_project_clips_endpoint(project_id: int) -> dict[str, Any]:
 @app.get("/projects/{project_id}/status")
 def get_project_status_endpoint(project_id: int) -> dict[str, Any]:
     try:
-        return get_project_status(project_id)
+        project_root = api_project_root()
+        return _orchestrated_project_status(project_id, project_root=project_root)
     except ProjectNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ProjectOrchestratorNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ProjectOrchestratorConfigurationError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @app.get("/projects/{project_id}/logs")
@@ -246,6 +278,8 @@ def get_project_logs_endpoint(project_id: int, tail: int = 200) -> dict[str, Any
         return get_pipeline_orchestrator(project_root=api_project_root()).read_project_log_tail(project_id, tail=tail)
     except ProjectOrchestratorNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ProjectOrchestratorConfigurationError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @app.post("/projects/{project_id}/cancel")
@@ -254,6 +288,8 @@ def cancel_project_endpoint(project_id: int) -> dict[str, Any]:
         return get_pipeline_orchestrator(project_root=api_project_root()).cancel_project(project_id).to_dict()
     except ProjectOrchestratorNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ProjectOrchestratorConfigurationError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @app.patch("/projects/{project_id}/clips/{clip_id}")

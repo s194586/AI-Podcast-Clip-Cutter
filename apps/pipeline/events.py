@@ -13,6 +13,7 @@ EVENT_TYPES = {
     "stage_progress",
     "stage_completed",
     "stage_failed",
+    "stage_retrying",
     "pipeline_completed",
     "pipeline_cancelled",
     "review_clip_started",

@@ -2,7 +2,8 @@
 
 The FastAPI project flow creates and processes a podcast without asking the user to run the CLI, import candidates, or call review endpoints manually. SQLite remains the source of truth and final rendering remains human-triggered.
 
-Apache Airflow and LangGraph are not part of this release.
+Local mode is the default. Dockerized Airflow is optional. LangGraph remains
+outside this release.
 
 ## User Flow
 
@@ -33,6 +34,30 @@ flowchart LR
 The orchestrator uses `sys.executable`, `shell=False`, and a list of arguments. The source URL is one argument and the project workspace is an explicit absolute path. The command contains no API keys. Standard output and error are captured into `data/projects/{project_id}/workspace/logs/pipeline.log`.
 
 The subprocess emits exact `@@PIPELINE_EVENT@@` JSON markers for stage start, progress, completion, failure, and pipeline completion. The orchestrator uses those markers to update project and job state. Historical human-log inference remains only as a fallback for old logs.
+
+## Airflow Worker Boundary
+
+```mermaid
+flowchart LR
+  A[React] --> B[FastAPI]
+  B --> C[AirflowOrchestrator]
+  C --> D[Airflow REST API]
+  D --> E[podcast_clip_pipeline]
+  E --> F[PipelineStageExecutor]
+  F --> G[Registered stages]
+  G --> H[Shared workspace and SQLite]
+```
+
+The application persists a job before submitting a deterministic DAG run ID.
+The run `conf` carries only schema version, numeric project/job IDs, source URL,
+exact workspace-relative path, auto-review, and subtitle checker mode. Absolute,
+Windows-style, unknown, and traversal paths are rejected before any stage runs.
+Task XCom values contain only compact stage summaries.
+
+FastAPI reconciles Airflow run/task state during polling and startup. Airflow
+retries are bounded per deterministic stage; review has no scheduler retry to
+avoid repeated provider quota calls. Cancellation is cooperative and best effort,
+with application cancellation persisted before remote state changes.
 
 ## Product Stages
 
@@ -83,7 +108,11 @@ A single provider timeout or HTTP 499 result is persisted as a failed `manual_re
 
 A stage failure stops all dependent stages, emits a safe structured failure, returns a nonzero entrypoint exit code, and persists failed project/job state. Product error messages are concise; technical logs retain underlying command output. Successful files are not deleted solely because a later stage failed.
 
-Retry is explicit through another project start. Existing source media and transcripts are reused, candidate import is idempotent, and a new job row is created for the same project. FastAPI startup marks orphaned queued/running jobs failed and never automatically reruns expensive work.
+Retry is explicit through another project start. Existing source media and
+transcripts are reused, candidate import is idempotent, and a new job row is
+created for the same project. FastAPI startup recovers local orphaned jobs or
+reconciles active Airflow jobs, depending on the configured backend. It never
+automatically reruns expensive work.
 
 Cancellation terminates the isolated process tree where supported, marks project/job state cancelled, and preserves the workspace and logs.
 

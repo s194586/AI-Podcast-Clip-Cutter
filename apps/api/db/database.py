@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -45,8 +45,14 @@ def configure_database(database_url: str | None = None) -> Engine:
         database_path.parent.mkdir(parents=True, exist_ok=True)
 
     url = make_url(resolved_url)
-    connect_args = {"check_same_thread": False} if url.drivername.startswith("sqlite") else {}
+    connect_args = (
+        {"check_same_thread": False, "timeout": 30}
+        if url.drivername.startswith("sqlite")
+        else {}
+    )
     _engine = create_engine(resolved_url, connect_args=connect_args, future=True)
+    if url.drivername.startswith("sqlite"):
+        event.listen(_engine, "connect", _configure_sqlite_connection)
     _session_factory = sessionmaker(bind=_engine, autoflush=False, expire_on_commit=False, future=True)
     _configured_url = resolved_url
     return _engine
@@ -54,6 +60,16 @@ def configure_database(database_url: str | None = None) -> Engine:
 
 def get_engine() -> Engine:
     return configure_database()
+
+
+def _configure_sqlite_connection(dbapi_connection, _connection_record) -> None:
+    cursor = dbapi_connection.cursor()
+    try:
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.execute("PRAGMA busy_timeout=30000")
+        cursor.execute("PRAGMA journal_mode=WAL")
+    finally:
+        cursor.close()
 
 
 def init_database() -> None:
@@ -154,13 +170,31 @@ def _ensure_sqlite_job_flow_columns(engine: Engine) -> None:
         "started_at": "ALTER TABLE jobs ADD COLUMN started_at DATETIME",
         "finished_at": "ALTER TABLE jobs ADD COLUMN finished_at DATETIME",
         "exit_code": "ALTER TABLE jobs ADD COLUMN exit_code INTEGER",
+        "orchestrator_type": "ALTER TABLE jobs ADD COLUMN orchestrator_type VARCHAR(32) DEFAULT 'local'",
+        "airflow_dag_id": "ALTER TABLE jobs ADD COLUMN airflow_dag_id VARCHAR(256)",
+        "airflow_dag_run_id": "ALTER TABLE jobs ADD COLUMN airflow_dag_run_id VARCHAR(512)",
+        "airflow_state": "ALTER TABLE jobs ADD COLUMN airflow_state VARCHAR(64)",
+        "airflow_task_id": "ALTER TABLE jobs ADD COLUMN airflow_task_id VARCHAR(256)",
+        "airflow_try_number": "ALTER TABLE jobs ADD COLUMN airflow_try_number INTEGER",
+        "airflow_max_tries": "ALTER TABLE jobs ADD COLUMN airflow_max_tries INTEGER",
+        "cancel_requested": "ALTER TABLE jobs ADD COLUMN cancel_requested BOOLEAN DEFAULT 0",
     }
     missing = [name for name in column_sql if name not in existing_columns]
-    if not missing:
-        return
     with engine.begin() as connection:
         for column_name in missing:
             connection.execute(text(column_sql[column_name]))
+        connection.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_jobs_orchestrator_type "
+                "ON jobs (orchestrator_type)"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ix_jobs_airflow_dag_run_id "
+                "ON jobs (airflow_dag_run_id) WHERE airflow_dag_run_id IS NOT NULL"
+            )
+        )
 
 
 def get_session() -> Session:
