@@ -298,8 +298,24 @@ For a codebase overview, see [docs/REPO_MAP.md](docs/REPO_MAP.md). The planned f
 
 Airflow is an optional Dockerized product orchestrator. The DAG delegates each
 task to the same registered stage services as local mode and never invokes
-`manager.py` or wraps the complete `PipelineRunner` in one task. LangGraph is
-still deferred; Gemini review remains a direct typed `ReviewAgentService` call.
+`manager.py` or wraps the complete `PipelineRunner` in one task.
+
+v0.7 Airflow Orchestrator is complete. A real Airflow smoke test ran the
+podcast DAG successfully from source download through candidate import and the
+disabled automatic-review path, without rendering. The release is tagged
+`v0.7-airflow-orchestrator`.
+
+The next planned technical release is v0.8 LangGraph Boundary Review. LangGraph
+will orchestrate the existing semantic boundary-review flow; it will not replace
+Gemini semantic boundary selection with local heuristics. v0.8 is not yet
+implemented, so Gemini review remains a direct typed `ReviewAgentService` call.
+
+After v0.8, only final repository/demo hardening may remain before the project is
+considered complete. The remaining optional work is browser E2E testing,
+deployment/production serving, and automatic handling of Gemini HTTP 429
+`Retry-After`. Content Packaging, publishing metadata, AI titles or
+descriptions, hashtags, and thumbnail-text generation are not part of the
+roadmap.
 
 ## Product Direction
 

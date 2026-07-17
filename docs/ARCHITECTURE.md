@@ -60,7 +60,21 @@ flowchart TB
 application job-to-DAG-run mapping in SQLite. DAG run configuration is versioned,
 strictly allowlisted, relative-path-only, and reconstructed against the fixed
 container root. PostgreSQL stores only Airflow metadata. LocalExecutor runs the
-bounded stage tasks on the scheduler host. LangGraph remains deferred.
+bounded stage tasks on the scheduler host.
+
+v0.7 Airflow Orchestrator is complete and tagged
+`v0.7-airflow-orchestrator`. Its real Airflow smoke test completed the DAG from
+source download through candidate import and the disabled automatic-review path,
+with rendering excluded as designed.
+
+The next planned technical release is v0.8 LangGraph Boundary Review, which is
+not implemented yet. LangGraph will orchestrate the existing boundary-review
+flow around `ReviewAgentService`; it will not replace semantic boundary
+selection with local heuristics. After v0.8, only final repository/demo
+hardening may remain before the project is considered complete. Optional work
+is limited to browser E2E tests, deployment/production serving, and automatic
+Gemini HTTP 429 `Retry-After` handling. Content Packaging and publishing
+metadata generation are not part of the roadmap.
 
 ## Clip Review Agent
 
