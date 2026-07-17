@@ -1,4 +1,4 @@
-# Project Flow
+# AI Podcast Clip Cutter Project Flow
 
 The FastAPI project flow creates and processes a podcast without asking the user to run the CLI, import candidates, or call review endpoints manually. SQLite remains the source of truth and final rendering remains human-triggered.
 

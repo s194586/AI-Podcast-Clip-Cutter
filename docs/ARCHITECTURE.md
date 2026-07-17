@@ -1,6 +1,6 @@
-# Architecture
+# AI Podcast Clip Cutter Architecture
 
-Podcast Shorts Cutter is a local-first, human-in-the-loop editor for podcast and talking-head material.
+AI Podcast Clip Cutter is a local-first, human-in-the-loop editor for podcast and talking-head material.
 
 The pipeline proposes draft clips from a long source video. The browser editor lets a user review candidates, adjust start/end times, accept or reject clips, and render final short-form MP4 files.
 

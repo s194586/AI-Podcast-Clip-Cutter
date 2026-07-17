@@ -6,7 +6,9 @@ This is a plan only. The current static frontend in `apps/api/static` should rem
 
 `apps/web` now contains the first React Product UI implementation. It covers the project dashboard, new project form, processing overview, clip editor, and exports page against project-scoped FastAPI endpoints. The legacy static frontend remains unchanged and is still the FastAPI fallback.
 
-Production integration is intentionally deferred until manual validation is complete. The React app runs through Vite and uses the development proxy documented in [REACT_FRONTEND.md](REACT_FRONTEND.md).
+The React product UI is implemented and validated as a separate Vite
+development application. Production serving/deployment remains optional. The
+development proxy is documented in [REACT_FRONTEND.md](REACT_FRONTEND.md).
 
 ## Proposed Stack
 
