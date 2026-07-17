@@ -2,8 +2,9 @@
 
 The FastAPI project flow creates and processes a podcast without asking the user to run the CLI, import candidates, or call review endpoints manually. SQLite remains the source of truth and final rendering remains human-triggered.
 
-Local mode is the default. Dockerized Airflow is optional. LangGraph remains
-outside this release.
+Local mode is the default. Dockerized Airflow is optional. Both modes use the
+same graph-backed `ReviewAgentService` for automatic semantic boundary review.
+LangGraph is internal orchestration and does not change public project APIs.
 
 ## User Flow
 

@@ -21,6 +21,8 @@ from apps.api.services.project_state import PROJECT_ROOT
 
 from .config import ReviewConfig, ReviewConfigError, load_review_config, normalize_review_mode_value
 from .context import build_clip_transcript_context
+from .graph import GRAPH_WORKFLOW_NAME, GRAPH_WORKFLOW_VERSION, run_review_workflow
+from .graph.runtime import ReviewGraphRuntime
 from .providers import (
     GeminiBoundaryReviewer,
     LocalStubBoundaryReviewer,
@@ -127,115 +129,138 @@ class ReviewAgentService:
         except LookupError as exc:
             raise ClipReviewNotFoundError(str(exc)) from exc
 
-        context_seconds = self.config.context_seconds
-        transcript_path = self._resolve_transcript_path(project.get("transcript_path"))
-        context = build_clip_transcript_context(
-            transcript_path,
-            float(clip["ai_start"]),
-            float(clip["ai_end"]),
-            context_seconds=context_seconds,
-            clip_id=str(clip["id"]),
-            allowed_start_min=float(clip["min_start"]),
-            allowed_start_max=float(clip["max_start"]),
-            allowed_end_min=float(clip["min_end"]),
-            allowed_end_max=float(clip["max_end"]),
-            min_duration_seconds=MIN_EDITED_DURATION_SECONDS,
-            max_duration_seconds=MAX_EDITED_DURATION_SECONDS,
-        )
-        provider = self._create_provider(
-            request_timeout_seconds=_remaining_request_timeout(
-                self.config.request_timeout_seconds,
-                deadline,
-            )
-        )
+        graph_artifacts: dict[str, Any] = {}
 
-        def call_provider(corrective_message: str | None = None) -> GeminiBoundaryDecision:
+        def build_context() -> tuple[dict[str, Any], Any]:
             _raise_if_cancelled(cancellation_check)
-            timeout_seconds = _remaining_request_timeout(
-                self.config.request_timeout_seconds,
-                deadline,
+            _raise_if_deadline_expired(deadline)
+            transcript_path = self._resolve_transcript_path(project.get("transcript_path"))
+            context = build_clip_transcript_context(
+                transcript_path,
+                float(clip["ai_start"]),
+                float(clip["ai_end"]),
+                context_seconds=self.config.context_seconds,
+                clip_id=str(clip["id"]),
+                allowed_start_min=float(clip["min_start"]),
+                allowed_start_max=float(clip["max_start"]),
+                allowed_end_min=float(clip["min_end"]),
+                allowed_end_max=float(clip["max_end"]),
+                min_duration_seconds=MIN_EDITED_DURATION_SECONDS,
+                max_duration_seconds=MAX_EDITED_DURATION_SECONDS,
             )
+            provider = self._create_provider(
+                request_timeout_seconds=_remaining_request_timeout(
+                    self.config.request_timeout_seconds,
+                    deadline,
+                )
+            )
+            graph_artifacts["provider"] = provider
+            return context, provider
+
+        def invoke_provider(
+            provider: Any,
+            context: dict[str, Any],
+            corrective_message: str | None,
+        ) -> GeminiBoundaryDecision:
+            _raise_if_cancelled(cancellation_check)
+            _raise_if_deadline_expired(deadline)
             try:
                 return _call_provider_review(
                     provider,
                     context,
                     corrective_message=corrective_message,
-                    timeout_seconds=timeout_seconds,
+                    timeout_seconds=_remaining_request_timeout(
+                        self.config.request_timeout_seconds,
+                        deadline,
+                    ),
                     cancellation_check=cancellation_check,
                 )
             except ReviewProviderCancelledError as exc:
                 raise ClipReviewCancelledError("Boundary review cancelled by user.") from exc
 
-        debug_metadata = _debug_metadata()
-        try:
-            decision = call_provider()
-            result = self._result_from_decision(
-                project_id=int(project["id"]),
-                clip=clip,
-                context=context,
-                decision=decision,
-                provider=provider.provider,
-                model=provider.model,
-                apply_safe_suggestions=apply_safe_suggestions,
-                debug_metadata=debug_metadata,
-            )
-        except (ReviewProviderOutputError, BoundaryOptionSelectionError) as exc:
-            debug_metadata["retry_used"] = True
-            debug_metadata["provider_attempt_count"] = 2
-            debug_metadata["first_attempt_validation_error"] = str(exc)
+        def validate_decision(
+            context: dict[str, Any],
+            decision: GeminiBoundaryDecision,
+            debug_metadata: dict[str, Any],
+        ) -> dict[str, Any]:
             try:
-                retry_decision = call_provider(
-                    _boundary_retry_message(context, exc),
-                )
-                result = self._result_from_decision(
+                return self._result_from_decision(
                     project_id=int(project["id"]),
                     clip=clip,
                     context=context,
-                    decision=retry_decision,
-                    provider=provider.provider,
-                    model=provider.model,
+                    decision=decision,
+                    provider=str(graph_artifacts["provider"].provider),
+                    model=str(graph_artifacts["provider"].model),
                     apply_safe_suggestions=apply_safe_suggestions,
                     debug_metadata=debug_metadata,
                 )
-            except ReviewProviderError as retry_exc:
-                debug_metadata["final_validation_error"] = str(retry_exc)
-                result = self._failed_result(
-                    project_id=int(project["id"]),
-                    clip=clip,
-                    context=context,
-                    provider=provider.provider,
-                    model=provider.model,
-                    warning=str(retry_exc),
-                    apply_safe_suggestions=apply_safe_suggestions,
-                    debug_metadata=debug_metadata,
-                    failure_category=_failure_category(retry_exc),
-                )
-        except ReviewProviderError as exc:
-            debug_metadata["final_validation_error"] = str(exc)
-            result = self._failed_result(
+            except (ReviewProviderOutputError, BoundaryOptionSelectionError):
+                raise
+            except Exception as exc:
+                raise ReviewProviderError(f"Review validation failed: {exc}") from exc
+
+        def failed_result(
+            context: dict[str, Any],
+            warning: str,
+            failure_category: str | None,
+            debug_metadata: dict[str, Any],
+        ) -> dict[str, Any]:
+            return self._failed_result(
                 project_id=int(project["id"]),
                 clip=clip,
                 context=context,
-                provider=provider.provider,
-                model=provider.model,
-                warning=str(exc),
+                provider=str(graph_artifacts["provider"].provider),
+                model=str(graph_artifacts["provider"].model),
+                warning=warning,
                 apply_safe_suggestions=apply_safe_suggestions,
                 debug_metadata=debug_metadata,
-            )
-        except ClipReviewError:
-            raise
-        except Exception as exc:
-            result = self._failed_result(
-                project_id=int(project["id"]),
-                clip=clip,
-                context=context,
-                provider=provider.provider,
-                model=provider.model,
-                warning=f"Review validation failed: {exc}",
-                apply_safe_suggestions=apply_safe_suggestions,
-                debug_metadata=debug_metadata,
+                failure_category=failure_category,
             )
 
+        graph_state = run_review_workflow(
+            runtime=ReviewGraphRuntime(
+                build_context=build_context,
+                invoke_provider=invoke_provider,
+                validate_decision=validate_decision,
+                failed_result=failed_result,
+                corrective_message=_boundary_retry_message,
+                failure_category=_failure_category,
+                cancellation_check=cancellation_check,
+                retryable_errors=(ReviewProviderOutputError, BoundaryOptionSelectionError),
+                provider_errors=(ReviewProviderError,),
+                cancelled_errors=(ClipReviewCancelledError, ReviewProviderCancelledError),
+            ),
+            initial_state={
+                "project_id": int(project["id"]),
+                "clip_id": str(clip["id"]),
+                "review_mode": self.mode,
+                "original_candidate_start": float(clip["ai_start"]),
+                "original_candidate_end": float(clip["ai_end"]),
+                "existing_reviewed_start": clip.get("reviewed_start"),
+                "existing_reviewed_end": clip.get("reviewed_end"),
+                "existing_edited_start": float(clip["edited_start"]),
+                "existing_edited_end": float(clip["edited_end"]),
+            },
+        )
+        if graph_state.get("terminal_route") == "cancelled":
+            raise ClipReviewCancelledError("Boundary review cancelled by user.")
+        result = graph_state.get("result")
+        if not isinstance(result, dict):
+            raise ClipReviewError("Boundary review graph ended without a terminal result.")
+        result["review_workflow"] = GRAPH_WORKFLOW_NAME
+        result["review_workflow_version"] = GRAPH_WORKFLOW_VERSION
+        result["review_workflow_route"] = graph_state.get("terminal_route")
+        result["review_workflow_duration_ms"] = int(graph_state.get("duration_ms") or 0)
+        raw_result = dict(result.get("raw_result") or {})
+        raw_result.update(
+            {
+                "review_workflow": GRAPH_WORKFLOW_NAME,
+                "review_workflow_version": GRAPH_WORKFLOW_VERSION,
+                "review_workflow_route": graph_state.get("terminal_route"),
+                "review_workflow_duration_ms": int(graph_state.get("duration_ms") or 0),
+            }
+        )
+        result["raw_result"] = raw_result
         _raise_if_cancelled(cancellation_check)
         _raise_if_deadline_expired(deadline)
         saved = save_evaluation(result)
@@ -303,6 +328,14 @@ class ReviewAgentService:
                 provider=str(result.get("provider") or self.provider_name),
                 decision=str(result.get("decision") or "unknown"),
                 retry_used=bool(result.get("retry_used")),
+                review_workflow=str(
+                    (result.get("raw_result") or {}).get("review_workflow")
+                    or GRAPH_WORKFLOW_NAME
+                ),
+                review_workflow_version=str(
+                    (result.get("raw_result") or {}).get("review_workflow_version")
+                    or GRAPH_WORKFLOW_VERSION
+                ),
             )
             _raise_if_cancelled(cancellation_check)
             if index < total:

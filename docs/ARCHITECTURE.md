@@ -67,14 +67,20 @@ v0.7 Airflow Orchestrator is complete and tagged
 source download through candidate import and the disabled automatic-review path,
 with rendering excluded as designed.
 
-The next planned technical release is v0.8 LangGraph Boundary Review, which is
-not implemented yet. LangGraph will orchestrate the existing boundary-review
-flow around `ReviewAgentService`; it will not replace semantic boundary
-selection with local heuristics. After v0.8, only final repository/demo
+The v0.8 LangGraph Boundary Review implementation orchestrates the existing
+boundary-review flow inside `ReviewAgentService`; it does not replace semantic
+boundary selection with local heuristics. Each clip gets an independent,
+in-memory graph invocation with one bounded corrective route. There is no graph
+checkpointer or durable human interrupt: unresolved results terminate as
+`manual_review`, and the application database remains authoritative. After
+v0.8, only final repository/demo
 hardening may remain before the project is considered complete. Optional work
 is limited to browser E2E tests, deployment/production serving, and automatic
 Gemini HTTP 429 `Retry-After` handling. Content Packaging and publishing
 metadata generation are not part of the roadmap.
+
+See [LANGGRAPH_REVIEW.md](LANGGRAPH_REVIEW.md) for the exact nodes and
+conditional edges.
 
 ## Clip Review Agent
 
