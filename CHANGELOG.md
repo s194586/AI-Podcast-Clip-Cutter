@@ -2,6 +2,14 @@
 
 Release summaries are based on the verified Git history.
 
+## v1.0.1 — 2026-07-18
+
+- Added secure optional custom CA trust for Docker and Airflow without disabling certificate verification.
+- Migrated Gemini review to the pinned `google-genai==2.11.0` SDK.
+- Added supported Interactions `output_text` and model-output content parsing.
+- Improved provider compatibility, quota, timeout, output, and boundary failure classification.
+- Made all-failed and mixed Gemini batch summaries report applied and attention-required counts truthfully.
+
 ## v1.0.0 — Portfolio-ready documentation and hardening
 
 - Reorganized the repository entry point around the product problem, architecture, operation, validation, decisions, safety, and limitations.

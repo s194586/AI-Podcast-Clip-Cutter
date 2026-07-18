@@ -36,6 +36,30 @@ Keep `CLIP_REVIEW_MODE=local_stub` for offline manual review endpoints. The DAG'
 automatic review stage is explicitly Gemini with no silent fallback; projects
 used for offline pipeline fixtures must set `auto_review=false`.
 
+### Optional local HTTPS-inspection root
+
+If antivirus or a corporate proxy replaces public HTTPS certificates with a
+root already trusted by Windows, export only that public root certificate as
+PEM to this ignored, fixed location:
+
+```text
+orchestration/airflow/secrets/custom-ca/root-ca.pem
+```
+
+Then set `CUSTOM_CA_REQUIRED=true` in the ignored `.env.airflow` file. Compose
+mounts that directory read-only. Container startup accepts only the fixed
+`root-ca.pem` name, rejects symlinks, oversized files, invalid/expired
+certificates, and certificates without `CA:TRUE`, then updates the Linux trust
+store before dropping privileges to the Airflow user. Certificate contents are
+not logged. yt-dlp is configured to use this system store with certificate
+verification enabled. Do not copy the Windows certificate store or commit a
+local root.
+
+The same fixed PEM is exposed to Docker BuildKit as a build secret. Dependency
+installation uses a temporary combined bundle with normal TLS verification;
+the temporary file is removed in the same build step and the secret is not
+copied into an image layer. No `--trusted-host` or certificate bypass is used.
+
 ## Start
 
 Stop any host FastAPI process using the same SQLite file before Airflow mode.

@@ -23,8 +23,12 @@ x-airflow-environment: &airflow-environment
   GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.5-flash}
   GEMINI_REQUEST_TIMEOUT_SECONDS: ${GEMINI_REQUEST_TIMEOUT_SECONDS:-300}
   GEMINI_BATCH_TIMEOUT_SECONDS: ${GEMINI_BATCH_TIMEOUT_SECONDS:-1800}
-  YTDLP_NO_CHECK_CERTIFICATES: ${YTDLP_NO_CHECK_CERTIFICATES:-false}
   MODEL_DOWNLOAD_NO_CHECK_CERTIFICATES: ${MODEL_DOWNLOAD_NO_CHECK_CERTIFICATES:-false}
+  CUSTOM_CA_REQUIRED: ${CUSTOM_CA_REQUIRED:-false}
+  SSL_CERT_FILE: /etc/ssl/certs/ca-certificates.crt
+  REQUESTS_CA_BUNDLE: /etc/ssl/certs/ca-certificates.crt
+  CURL_CA_BUNDLE: /etc/ssl/certs/ca-certificates.crt
+  GRPC_DEFAULT_SSL_ROOTS_FILE_PATH: /etc/ssl/certs/ca-certificates.crt
   PYTHONPATH: /opt/ai-cutter
   PYTHONDONTWRITEBYTECODE: "1"
 
@@ -32,13 +36,21 @@ x-airflow-common: &airflow-common
   build:
     context: .
     dockerfile: orchestration/airflow/Dockerfile
+    secrets:
+      - source: custom_ca
+        target: custom_ca
   image: ai-podcast-clip-cutter-airflow:3.3.0
+  user: "0:0"
   environment: *airflow-environment
   volumes:
     - type: bind
       source: ${APP_DATA_HOST_PATH:-./data}
       target: /opt/ai-cutter/data
     - airflow-logs:/opt/airflow/logs
+    - type: bind
+      source: ./orchestration/airflow/secrets/custom-ca
+      target: /opt/airflow/custom-ca
+      read_only: true
   restart: unless-stopped
 
 services:
@@ -70,6 +82,10 @@ services:
         target: /opt/ai-cutter/data
       - airflow-logs:/opt/airflow/logs
       - airflow-secrets:/opt/airflow/secrets
+      - type: bind
+        source: ./orchestration/airflow/secrets/custom-ca
+        target: /opt/airflow/custom-ca
+        read_only: true
     depends_on:
       postgres:
         condition: service_healthy
@@ -86,6 +102,10 @@ services:
         target: /opt/ai-cutter/data
       - airflow-logs:/opt/airflow/logs
       - airflow-secrets:/opt/airflow/secrets
+      - type: bind
+        source: ./orchestration/airflow/secrets/custom-ca
+        target: /opt/airflow/custom-ca
+        read_only: true
     healthcheck:
       test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8080/api/v2/monitor/health"]
       interval: 15s
@@ -158,3 +178,7 @@ volumes:
   airflow-postgres:
   airflow-logs:
   airflow-secrets:
+
+secrets:
+  custom_ca:
+    file: ./orchestration/airflow/secrets/custom-ca/root-ca.pem

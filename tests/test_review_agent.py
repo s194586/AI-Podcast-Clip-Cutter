@@ -22,6 +22,8 @@ from apps.review_agent.context import (
 )
 from apps.review_agent.providers import (
     GeminiBoundaryReviewer,
+    ReviewProviderCompatibilityError,
+    ReviewProviderExtractionError,
     ReviewProviderError,
     ReviewProviderOutputError,
     build_gemini_prompt,
@@ -255,26 +257,37 @@ class ReviewAgentTests(unittest.TestCase):
             clip_id="clip_001",
         )
         calls = []
+        client_closed = []
 
         class FakeInteractions:
             def create(self, **kwargs):
                 calls.append(kwargs)
+                output = json.dumps(
+                    {
+                        "decision": "render_ready",
+                        "selected_start_option_index": context["current_aligned_start_option_index"],
+                        "selected_end_option_index": context["current_aligned_end_option_index"],
+                        "reasoning_summary": "The candidate is coherent.",
+                        "start_reason": "It starts at a complete thought.",
+                        "end_reason": "It ends at the payoff.",
+                        "warnings": [],
+                    }
+                )
                 return SimpleNamespace(
-                    output_text=json.dumps(
-                        {
-                            "decision": "render_ready",
-                            "selected_start_option_index": context["current_aligned_start_option_index"],
-                            "selected_end_option_index": context["current_aligned_end_option_index"],
-                            "reasoning_summary": "The candidate is coherent.",
-                            "start_reason": "It starts at a complete thought.",
-                            "end_reason": "It ends at the payoff.",
-                            "warnings": [],
-                        }
-                    )
+                    steps=[
+                        SimpleNamespace(
+                            type="model_output",
+                            content=[SimpleNamespace(type="text", text=output)],
+                            error=None,
+                        )
+                    ]
                 )
 
         class FakeClient:
             interactions = FakeInteractions()
+
+            def close(self):
+                client_closed.append(True)
 
         reviewer = GeminiBoundaryReviewer(
             api_key="secret-key",
@@ -284,6 +297,7 @@ class ReviewAgentTests(unittest.TestCase):
         decision = reviewer.review(context)
 
         self.assertEqual(decision.decision, "render_ready")
+        self.assertEqual(client_closed, [True])
         self.assertEqual(calls[0]["model"], "gemini-test-model")
         self.assertIn("schema", calls[0]["response_format"])
         prompt = calls[0]["input"]
@@ -303,6 +317,42 @@ class ReviewAgentTests(unittest.TestCase):
         self.assertNotIn("secret-key", prompt)
         self.assertIn("You must make the editorial decision yourself.", prompt)
         self.assertIn("improving the setup, opening sentence, question, answer completeness, payoff, or ending", prompt)
+
+    def test_interactions_steps_adapter_rejects_legacy_outputs_only(self):
+        class FakeInteractions:
+            def create(self, **_kwargs):
+                return SimpleNamespace(outputs=[SimpleNamespace(type="text", text="legacy")])
+
+        reviewer = GeminiBoundaryReviewer(
+            api_key="offline",
+            client_factory=lambda _api_key: SimpleNamespace(interactions=FakeInteractions()),
+        )
+        with self.assertRaises(ReviewProviderCompatibilityError):
+            reviewer.review({})
+
+    def test_interactions_steps_adapter_rejects_missing_or_non_text_model_output(self):
+        responses = (
+            SimpleNamespace(steps=[SimpleNamespace(type="user_input", content=[])]),
+            SimpleNamespace(
+                steps=[
+                    SimpleNamespace(
+                        type="model_output",
+                        content=[SimpleNamespace(type="image", data="not-used")],
+                        error=None,
+                    )
+                ]
+            ),
+        )
+        for response in responses:
+            with self.subTest(response=response):
+                reviewer = GeminiBoundaryReviewer(
+                    api_key="offline",
+                    client_factory=lambda _api_key, value=response: SimpleNamespace(
+                        interactions=SimpleNamespace(create=lambda **_kwargs: value)
+                    ),
+                )
+                with self.assertRaises(ReviewProviderExtractionError):
+                    reviewer.review({})
 
     def test_gemini_mode_without_api_key_fails_clearly_without_fallback(self):
         project_id = self._seed_project()
@@ -431,7 +481,7 @@ class ReviewAgentTests(unittest.TestCase):
         self.assertIsNone(result["reviewed_start"])
         self.assertIsNone(result["reviewed_end"])
         self.assertTrue(result["failed"])
-        self.assertIn("Gemini API error", result["failure_reason"])
+        self.assertEqual(result["failure_reason"], "Gemini provider request failed.")
         clip = clip_service.load_clips(project_id=project_id, project_root=self.root)[0]
         self.assertEqual(clip["edited_start"], 100.0)
         self.assertEqual(clip["edited_end"], 140.0)
@@ -939,7 +989,7 @@ class ReviewAgentTests(unittest.TestCase):
             )
 
         self.assertTrue(malformed["failed"])
-        self.assertIn("malformed", " ".join(malformed["warnings"]))
+        self.assertEqual(malformed["warnings"], ["Gemini provider request failed."])
 
     def test_unknown_start_index_triggers_one_retry_then_fails_safely(self):
         project_id = self._seed_project()
@@ -1283,9 +1333,48 @@ class ReviewAgentTests(unittest.TestCase):
         self.assertEqual(payload["manual_review_count"], 1)
         self.assertEqual(payload["failed_count"], 1)
         self.assertEqual(payload["success_count"], 1)
+        self.assertEqual(payload["applied_count"], 1)
+        self.assertEqual(payload["requires_attention_count"], 1)
+        self.assertEqual(
+            payload["summary_message"],
+            "Gemini review finished: 1 applied, 1 requires attention.",
+        )
         failed_review = [review for review in payload["reviews"] if review["failed"]][0]
         self.assertEqual(failed_review["decision"], "manual_review")
-        self.assertIn("Gemini API error", failed_review["failure_reason"])
+        self.assertEqual(failed_review["failure_reason"], "Gemini provider request failed.")
+
+    def test_all_failed_batch_summary_reports_attention_not_success(self):
+        project_id = self._seed_project()
+        os.environ["CLIP_REVIEW_MODE"] = "gemini"
+        os.environ["GEMINI_API_KEY"] = "test-key"
+
+        class IncompatibleGemini:
+            provider = "gemini"
+            model = "gemini-test"
+
+            def __init__(self, **_kwargs):
+                pass
+
+            def review(self, _context, **_kwargs):
+                raise ReviewProviderCompatibilityError(
+                    "Gemini provider compatibility error (HTTP 400)."
+                )
+
+        with patch("apps.review_agent.service.GeminiBoundaryReviewer", IncompatibleGemini):
+            with TestClient(app) as client:
+                response = client.post(f"/projects/{project_id}/review-clips")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["success_count"], 0)
+        self.assertEqual(payload["applied_count"], 0)
+        self.assertEqual(payload["failed_count"], 1)
+        self.assertEqual(payload["requires_attention_count"], 1)
+        self.assertEqual(
+            payload["summary_message"],
+            "Gemini review finished: 0 applied, 1 requires attention.",
+        )
+        self.assertNotIn("completed with Gemini", str(payload))
 
     def test_clip_response_exposes_frontend_review_contract(self):
         project_id = self._seed_project()

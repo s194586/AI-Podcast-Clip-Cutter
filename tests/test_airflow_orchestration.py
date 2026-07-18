@@ -274,6 +274,51 @@ class AirflowSettingsAndInfrastructureTests(unittest.TestCase):
         self.assertIn("data", ignored)
         self.assertIn("orchestration/airflow/.env.airflow", ignored)
 
+    def test_airflow_image_and_services_use_linux_ca_trust(self):
+        root = Path(__file__).resolve().parents[1]
+        compose = yaml.safe_load((root / "docker-compose.yml").read_text(encoding="utf-8"))
+        dockerfile = (root / "orchestration/airflow/Dockerfile").read_text(encoding="utf-8")
+        environment = compose["x-airflow-environment"]
+        expected_bundle = "/etc/ssl/certs/ca-certificates.crt"
+
+        self.assertIn("ca-certificates", dockerfile)
+        self.assertIn("update-ca-certificates", dockerfile)
+        self.assertIn("type=secret,id=custom_ca", dockerfile)
+        self.assertNotIn("--trusted-host", dockerfile)
+        for name in (
+            "SSL_CERT_FILE",
+            "REQUESTS_CA_BUNDLE",
+            "CURL_CA_BUNDLE",
+            "GRPC_DEFAULT_SSL_ROOTS_FILE_PATH",
+        ):
+            self.assertEqual(environment[name], expected_bundle)
+        self.assertNotIn("YTDLP_NO_CHECK_CERTIFICATES", environment)
+
+    def test_custom_ca_mount_is_fixed_read_only_and_not_project_controlled(self):
+        root = Path(__file__).resolve().parents[1]
+        compose = yaml.safe_load((root / "docker-compose.yml").read_text(encoding="utf-8"))
+        common_mounts = compose["x-airflow-common"]["volumes"]
+        custom_mount = next(
+            mount for mount in common_mounts
+            if isinstance(mount, dict) and mount.get("target") == "/opt/airflow/custom-ca"
+        )
+
+        self.assertEqual(custom_mount["source"], "./orchestration/airflow/secrets/custom-ca")
+        self.assertTrue(custom_mount["read_only"])
+        self.assertNotIn("${", custom_mount["source"])
+
+    def test_ca_bootstrap_rejects_unsafe_or_missing_required_certificate(self):
+        root = Path(__file__).resolve().parents[1]
+        script = (root / "orchestration/airflow/bootstrap_ca_certificates.sh").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('CUSTOM_CA_SOURCE="${CUSTOM_CA_DIR}/root-ca.pem"', script)
+        self.assertIn('[ ! -L "$CUSTOM_CA_SOURCE" ]', script)
+        self.assertIn("1048576", script)
+        self.assertIn("CUSTOM_CA_REQUIRED is enabled", script)
+        self.assertNotIn("cat $CUSTOM_CA_SOURCE", script)
+
 
 class FakeAirflowClient:
     def __init__(self) -> None:

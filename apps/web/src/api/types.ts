@@ -201,6 +201,9 @@ export interface ProjectReviewResult {
   clip_count?: number
   reviewed_count?: number
   failed_count?: number
+  applied_count?: number
+  requires_attention_count?: number
+  summary_message?: string
   [key: string]: unknown
 }
 

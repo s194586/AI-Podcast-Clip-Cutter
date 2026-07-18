@@ -27,6 +27,7 @@ from apps.review_agent.config import ReviewConfigError, load_review_config
 from apps.review_agent.providers import (
     GeminiBoundaryReviewer,
     ReviewProviderCancelledError,
+    ReviewProviderCompatibilityError,
     ReviewProviderError,
     ReviewProviderOutputError,
     ReviewProviderQuotaError,
@@ -66,46 +67,18 @@ class GeminiProviderTimeoutTests(unittest.TestCase):
     def test_sdk_request_timeout_and_retry_limit_are_configured(self):
         captured = {}
 
-        class FakeModels:
-            def generate_content(self, *, model, contents, config):
-                captured["config"] = config
-                captured["contents"] = contents
-                return SimpleNamespace(parsed=_aligned_decision({
-                    "current_aligned_start_option_index": 1,
-                    "current_aligned_end_option_index": 1,
-                }))
+        class FakeClient:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
 
-        reviewer = GeminiBoundaryReviewer(
-            api_key="offline-placeholder",
-            client_factory=lambda _api_key: SimpleNamespace(models=FakeModels()),
-        )
-        reviewer.review({})
+        with patch("google.genai.Client", FakeClient):
+            from apps.review_agent.providers import _create_genai_client
 
-        http_options = captured["config"].http_options
+            _create_genai_client("offline-placeholder", timeout_seconds=300)
+
+        http_options = captured["http_options"]
         self.assertEqual(http_options.timeout, 300000)
         self.assertEqual(http_options.retry_options.attempts, 1)
-        self.assertIs(captured["config"].response_schema, GeminiBoundaryDecision)
-        self.assertEqual(
-            set(reviewer.last_prompt_payload or {}),
-            {
-                "clip_id",
-                "candidate_start",
-                "candidate_end",
-                "context_seconds",
-                "earliest_allowed_start",
-                "latest_allowed_end",
-                "current_aligned_start_option_index",
-                "current_aligned_end_option_index",
-                "context_before",
-                "candidate_segments",
-                "context_after",
-                "start_boundary_options",
-                "end_boundary_options",
-                "allowed_boundary_pairs",
-            },
-        )
-        self.assertIn("ALLOWED START OPTIONS", captured["contents"])
-        self.assertIn("ALLOWED END OPTIONS", captured["contents"])
 
     def test_child_process_receives_default_request_deadline(self):
         decision = {
@@ -148,6 +121,15 @@ class GeminiProviderTimeoutTests(unittest.TestCase):
         self.assertIsInstance(controlled, ReviewProviderQuotaError)
         self.assertIn("Retry review later", str(controlled))
         self.assertNotIn("should-not-survive", str(controlled))
+
+    def test_http_400_schema_incompatibility_is_sanitized_and_non_output_failure(self):
+        error = RuntimeError(
+            "HTTP 400 invalid_request: legacy Interactions API schema; "
+            "prompt=private transcript; key=should-not-survive"
+        )
+        controlled = _provider_error_from_exception(error)
+        self.assertIsInstance(controlled, ReviewProviderCompatibilityError)
+        self.assertEqual(str(controlled), "Gemini provider compatibility error (HTTP 400).")
 
 
 class ReviewTimeoutFlowTests(unittest.TestCase):

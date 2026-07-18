@@ -15,7 +15,11 @@ from apps.api.db.models import ClipEvaluation, Project
 from apps.api.db.repositories import ClipRepository, ProjectRepository
 from apps.api.main import app
 from apps.api.services.clip_service import load_clips
-from apps.review_agent.providers import ReviewProviderQuotaError
+from apps.review_agent.providers import (
+    ReviewProviderCompatibilityError,
+    ReviewProviderExtractionError,
+    ReviewProviderQuotaError,
+)
 from apps.review_agent.schemas import GeminiBoundaryDecision
 from apps.review_agent.service import ClipReviewCancelledError, ReviewAgentService
 
@@ -262,8 +266,82 @@ class LangGraphReleaseSmokeTests(unittest.TestCase):
         self.assertEqual(calls, 1)
         self.assertFalse(result["retry_used"])
         self.assertTrue(result["failed"])
-        self.assertEqual(result["failure_category"], "provider")
+        self.assertEqual(result["failure_category"], "quota")
+        self.assertEqual(
+            result["reasoning_summary"],
+            "Gemini quota is temporarily unavailable. Retry this review later.",
+        )
         self.assertEqual(result["raw_result"]["review_workflow_route"], "provider_failure")
+        self.assertEqual((clip["edited_start"], clip["edited_end"]), (101.0, 139.0))
+
+    def test_provider_compatibility_failure_uses_one_call_and_preserves_boundaries(self):
+        project_id = self._seed_project()
+        calls = 0
+
+        class Provider:
+            provider = "gemini"
+            model = "mock-gemini"
+
+            def __init__(self, **_kwargs):
+                pass
+
+            def review(inner_self, _context, **_kwargs):
+                nonlocal calls
+                calls += 1
+                raise ReviewProviderCompatibilityError(
+                    "Gemini provider compatibility error (HTTP 400)."
+                )
+
+        with patch("apps.review_agent.service.GeminiBoundaryReviewer", Provider):
+            result = ReviewAgentService(project_root=self.root, mode="gemini").review_clip(
+                project_id=project_id,
+                clip_id="clip_001",
+            )
+
+        clip = load_clips(project_id=project_id, project_root=self.root)[0]
+        self.assertEqual(calls, 1)
+        self.assertFalse(result["retry_used"])
+        self.assertEqual(result["provider_attempt_count"], 1)
+        self.assertEqual(result["failure_category"], "provider_compatibility")
+        self.assertEqual(
+            result["reasoning_summary"],
+            "Gemini could not complete the review because the provider integration requires "
+            "attention. The existing clip boundaries were preserved.",
+        )
+        self.assertNotIn("legacy Interactions", str(result))
+        self.assertEqual((clip["edited_start"], clip["edited_end"]), (101.0, 139.0))
+        self.assertIsNone(clip["reviewed_start"])
+        self.assertIsNone(clip["reviewed_end"])
+
+    def test_missing_supported_model_output_does_not_trigger_corrective_retry(self):
+        project_id = self._seed_project()
+        calls = 0
+
+        class Provider:
+            provider = "gemini"
+            model = "mock-gemini"
+
+            def __init__(self, **_kwargs):
+                pass
+
+            def review(inner_self, _context, **_kwargs):
+                nonlocal calls
+                calls += 1
+                raise ReviewProviderExtractionError(
+                    "Gemini interaction did not contain supported model output."
+                )
+
+        with patch("apps.review_agent.service.GeminiBoundaryReviewer", Provider):
+            result = ReviewAgentService(project_root=self.root, mode="gemini").review_clip(
+                project_id=project_id,
+                clip_id="clip_001",
+            )
+
+        clip = load_clips(project_id=project_id, project_root=self.root)[0]
+        self.assertEqual(calls, 1)
+        self.assertFalse(result["retry_used"])
+        self.assertEqual(result["provider_attempt_count"], 1)
+        self.assertEqual(result["failure_category"], "provider_output")
         self.assertEqual((clip["edited_start"], clip["edited_end"]), (101.0, 139.0))
 
     def test_cancellation_after_provider_prevents_persistence(self):

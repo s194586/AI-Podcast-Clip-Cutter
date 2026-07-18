@@ -63,15 +63,23 @@ class ReviewCandidatesStage:
                 "Automatic boundary review failed technically for every clip."
             )
         provider = str(summary.get("provider") or "unknown")
+        applied_count = int(summary.get("applied_count") or 0)
+        requires_attention_count = int(summary.get("requires_attention_count") or 0)
         return PipelineStageResult(
             stage=self.stage,
             success=True,
-            message=f"Automatic boundary review completed with {provider}.",
+            message=(
+                f"{provider} review finished: {applied_count} applied, "
+                f"{requires_attention_count} "
+                f"{'requires' if requires_attention_count == 1 else 'require'} attention."
+            ),
             metadata={
                 "provider": provider,
                 "clip_count": clip_count,
                 "manual_review_count": int(summary.get("manual_review_count") or 0),
                 "failed_count": failed_count,
+                "applied_count": applied_count,
+                "requires_attention_count": requires_attention_count,
             },
             progress_percent=95.0,
         )

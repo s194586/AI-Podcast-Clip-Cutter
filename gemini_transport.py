@@ -49,8 +49,18 @@ RATE_LIMIT_MAX_RETRIES = 5
 
 
 def bootstrap_ssl_certificates(quiet: bool = False, allow_insecure_fallback: bool = False) -> Optional[str]:
-    cert_path = None
-    if certifi is None:
+    cert_path = next(
+        (
+            os.environ[name]
+            for name in SSL_CERT_ENV_VARS
+            if os.environ.get(name) and os.path.isfile(os.environ[name])
+        ),
+        None,
+    )
+    if cert_path is not None:
+        for env_name in SSL_CERT_ENV_VARS:
+            os.environ[env_name] = cert_path
+    elif certifi is None:
         if not quiet:
             print("  Warning: certifi is not installed. Run `uv add certifi` to install the CA bundle.")
     else:
