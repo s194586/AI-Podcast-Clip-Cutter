@@ -133,9 +133,10 @@ def download_content(url, input_dir, metadata_dir, prefer_1080=True):
         'concurrent_fragment_downloads': 4,
         'keepvideo': True,
         'continuedl': True,
-        'nocheckcertificate': str(
-            os.environ.get('YTDLP_NO_CHECK_CERTIFICATES') or ''
-        ).strip().lower() in {'1', 'true', 'yes', 'on'},
+        # yt-dlp otherwise prefers certifi and ignores the container's updated
+        # Linux trust store. This supported compatibility option keeps normal
+        # certificate verification while using OpenSSL's system CA bundle.
+        'compat_opts': {'no-certifi'},
     }
 
     print('Rozpoczynam pobieranie — to może chwilę potrwać dla długich plików...')

@@ -2,8 +2,7 @@ yt-dlp
 python-dotenv
 fastapi
 uvicorn
-google-generativeai
-google-genai
+google-genai==2.11.0
 langgraph==1.1.10
 tqdm
 mediapipe

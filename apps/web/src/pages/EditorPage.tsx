@@ -314,7 +314,12 @@ export function EditorPage() {
       const result = await reviewProjectClips(projectId)
       const response = await listProjectClips(projectId)
       setClips(response.clips)
-      setNotice(`Review completed with ${result.provider ? statusLabel(result.provider) : 'configured reviewer'}.`)
+      setNotice(
+        result.summary_message
+          || `${result.provider ? statusLabel(result.provider) : 'Configured reviewer'} review finished: `
+            + `${result.applied_count ?? 0} applied, `
+            + `${result.requires_attention_count ?? result.failed_count ?? 0} require attention.`,
+      )
     } catch (reviewError) {
       setActionError(getErrorMessage(reviewError, 'Could not review project clips.'))
     } finally {

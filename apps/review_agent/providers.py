@@ -25,6 +25,10 @@ class ReviewProviderOutputError(ReviewProviderError):
     pass
 
 
+class ReviewProviderExtractionError(ReviewProviderError):
+    """Raised when an interaction has no supported completed model output."""
+
+
 class ReviewProviderTimeoutError(ReviewProviderError):
     pass
 
@@ -39,6 +43,10 @@ class ReviewProviderRequestCancelledError(ReviewProviderError):
 
 class ReviewProviderQuotaError(ReviewProviderError):
     """Raised when Gemini rejects a request because quota or rate limits were reached."""
+
+
+class ReviewProviderCompatibilityError(ReviewProviderError):
+    """Raised when the installed provider contract is incompatible with the API."""
 
 
 class BoundaryReviewProvider(Protocol):
@@ -185,6 +193,9 @@ class GeminiBoundaryReviewer:
             )
         except Exception as exc:
             raise _provider_error_from_exception(exc) from exc
+        finally:
+            if client is not None and hasattr(client, "close"):
+                client.close()
 
 
 def _request_structured_response(
@@ -195,33 +206,20 @@ def _request_structured_response(
     timeout_seconds: float,
 ) -> Any:
     schema = _model_json_schema(GeminiBoundaryDecision)
-    if hasattr(client, "interactions"):
-        return client.interactions.create(
-            model=model,
-            input=prompt,
-            response_format={
-                "type": "text",
-                "mime_type": "application/json",
-                "schema": schema,
-            },
+    interactions = getattr(client, "interactions", None)
+    if interactions is None or not hasattr(interactions, "create"):
+        raise ReviewProviderCompatibilityError(
+            "Gemini provider compatibility error: google-genai does not expose Interactions."
         )
-
-    if hasattr(client, "models"):
-        from google.genai import types  # type: ignore
-
-        return client.models.generate_content(
-            model=model,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                response_schema=GeminiBoundaryDecision,
-                http_options=types.HttpOptions(
-                    timeout=_timeout_milliseconds(timeout_seconds),
-                    retry_options=types.HttpRetryOptions(attempts=1),
-                ),
-            ),
-        )
-    raise ReviewProviderError("google-genai client does not expose interactions or models APIs.")
+    return interactions.create(
+        model=model,
+        input=prompt,
+        response_format={
+            "type": "text",
+            "mime_type": "application/json",
+            "schema": schema,
+        },
+    )
 
 
 def build_gemini_prompt_payload(context: dict[str, Any]) -> dict[str, Any]:
@@ -348,6 +346,8 @@ def _run_gemini_request_in_process(
         "ReviewProviderTimeoutError": ReviewProviderTimeoutError,
         "ReviewProviderRequestCancelledError": ReviewProviderRequestCancelledError,
         "ReviewProviderQuotaError": ReviewProviderQuotaError,
+        "ReviewProviderCompatibilityError": ReviewProviderCompatibilityError,
+        "ReviewProviderExtractionError": ReviewProviderExtractionError,
         "ReviewProviderOutputError": ReviewProviderOutputError,
     }
     raise error_types.get(category, ReviewProviderError)(message)
@@ -485,7 +485,30 @@ def _provider_error_from_exception(exc: Exception) -> ReviewProviderError:
     class_name = exc.__class__.__name__.casefold()
     if isinstance(exc, TimeoutError) or "timeout" in class_name or "timed out" in message.casefold():
         return ReviewProviderTimeoutError("Gemini boundary review request timed out.")
-    return ReviewProviderError(f"Gemini boundary review failed: {message}")
+    if _is_provider_compatibility_error(status_values, message):
+        status = "HTTP 400" if 400 in status_values or re.search(r"\b400\b", message) else "unsupported API"
+        return ReviewProviderCompatibilityError(
+            f"Gemini provider compatibility error ({status})."
+        )
+    status = next((value for value in status_values if isinstance(value, int)), None)
+    status_suffix = f" (HTTP {status})" if status is not None else ""
+    return ReviewProviderError(f"Gemini provider request failed{status_suffix}.")
+
+
+def _is_provider_compatibility_error(status_values: list[Any], message: str) -> bool:
+    normalized = message.casefold()
+    compatibility_markers = (
+        "legacy interactions api schema",
+        "provider contract",
+        "unsupported api version",
+        "unsupported sdk schema",
+        "requires attention",
+        "upgrade your google-genai",
+    )
+    return bool(
+        (400 in status_values or re.search(r"\b400\b", normalized))
+        and ("invalid_request" in normalized or any(marker in normalized for marker in compatibility_markers))
+    )
 
 
 def _safe_provider_error_message(exc: Exception) -> str:
@@ -504,17 +527,7 @@ def _safe_provider_error_message(exc: Exception) -> str:
 
 
 def _parse_boundary_decision(response: Any) -> GeminiBoundaryDecision:
-    parsed = getattr(response, "parsed", None)
-    if isinstance(parsed, GeminiBoundaryDecision):
-        return parsed
-    if isinstance(parsed, dict):
-        return _validate_decision(parsed)
-
-    text = (
-        getattr(response, "output_text", None)
-        or getattr(response, "text", None)
-        or _first_candidate_text(response)
-    )
+    text = _interaction_structured_text(response)
     if not text:
         raise ReviewProviderError("Gemini response did not contain structured output text.")
     try:
@@ -522,24 +535,78 @@ def _parse_boundary_decision(response: Any) -> GeminiBoundaryDecision:
             return GeminiBoundaryDecision.model_validate_json(str(text))
         return GeminiBoundaryDecision.parse_raw(str(text))
     except ValidationError as exc:
-        raise ReviewProviderOutputError(f"Gemini response did not match the boundary decision schema: {exc}") from exc
+        raise ReviewProviderOutputError(
+            "Gemini response did not match the boundary decision schema."
+        ) from exc
     except Exception as exc:
-        raise ReviewProviderError(f"Gemini response could not be parsed as JSON: {exc}") from exc
+        raise ReviewProviderOutputError(
+            "Gemini response could not be parsed as structured JSON."
+        ) from exc
+
+
+def _interaction_structured_text(response: Any) -> str:
+    status = _normalized_discriminator(_object_field(response, "status"))
+    if status and status != "completed":
+        raise ReviewProviderExtractionError(
+            "Gemini interaction did not complete with supported model output."
+        )
+
+    output_text = _object_field(response, "output_text")
+    if isinstance(output_text, str) and output_text.strip():
+        return output_text.strip()
+
+    steps = _object_field(response, "steps")
+    if not isinstance(steps, (list, tuple)) or not steps:
+        if _object_field(response, "outputs") is not None:
+            raise ReviewProviderCompatibilityError(
+                "Gemini provider compatibility error: legacy outputs schema is unsupported."
+            )
+        raise ReviewProviderExtractionError(
+            "Gemini interaction did not contain supported model output."
+        )
+
+    model_output_text: list[str] = []
+    for step in steps:
+        step_type = _normalized_discriminator(_object_field(step, "type"))
+        if step_type != "model_output":
+            continue
+        if _object_field(step, "error") is not None:
+            continue
+        content_items = _object_field(step, "content")
+        if not isinstance(content_items, (list, tuple)):
+            continue
+        for content in content_items:
+            if _normalized_discriminator(_object_field(content, "type")) != "text":
+                continue
+            text = _object_field(content, "text")
+            if isinstance(text, str) and text:
+                model_output_text.append(text)
+
+    combined_text = "".join(model_output_text).strip()
+    if not combined_text:
+        raise ReviewProviderExtractionError(
+            "Gemini interaction did not contain supported model output."
+        )
+    return combined_text
+
+
+def _normalized_discriminator(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    enum_value = getattr(value, "value", None)
+    return enum_value if isinstance(enum_value, str) else ""
+
+
+def _object_field(value: Any, name: str) -> Any:
+    if isinstance(value, dict):
+        return value.get(name)
+    return getattr(value, name, None)
 
 
 def _validate_decision(value: dict[str, Any]) -> GeminiBoundaryDecision:
     if hasattr(GeminiBoundaryDecision, "model_validate"):
         return GeminiBoundaryDecision.model_validate(value)
     return GeminiBoundaryDecision.parse_obj(value)
-
-
-def _first_candidate_text(response: Any) -> str:
-    try:
-        candidates = getattr(response, "candidates", None) or []
-        parts = candidates[0].content.parts
-        return "".join(str(getattr(part, "text", "") or "") for part in parts)
-    except Exception:
-        return ""
 
 
 def _segments_for_prompt(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:

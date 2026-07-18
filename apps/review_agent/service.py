@@ -27,8 +27,12 @@ from .providers import (
     GeminiBoundaryReviewer,
     LocalStubBoundaryReviewer,
     ReviewProviderCancelledError,
+    ReviewProviderCompatibilityError,
     ReviewProviderError,
+    ReviewProviderExtractionError,
     ReviewProviderOutputError,
+    ReviewProviderQuotaError,
+    ReviewProviderTimeoutError,
 )
 from .schemas import GeminiBoundaryDecision, ReviewMode
 from .tools import get_latest_evaluation, save_evaluation
@@ -61,6 +65,16 @@ class BoundaryOptionSelectionError(ReviewProviderError):
 BOUNDARY_VALIDATION_FAILURE_MESSAGE = (
     "Gemini returned boundaries outside the permitted clip range. "
     "This clip requires manual review."
+)
+PROVIDER_COMPATIBILITY_FAILURE_MESSAGE = (
+    "Gemini could not complete the review because the provider integration requires attention. "
+    "The existing clip boundaries were preserved."
+)
+QUOTA_FAILURE_MESSAGE = (
+    "Gemini quota is temporarily unavailable. Retry this review later."
+)
+PROVIDER_FAILURE_MESSAGE = (
+    "Gemini could not complete the review. The existing clip boundaries were preserved."
 )
 
 
@@ -492,13 +506,10 @@ class ReviewAgentService:
         debug_metadata: dict[str, Any] | None = None,
         failure_category: str | None = None,
     ) -> dict[str, Any]:
-        warnings = [str(warning)]
+        safe_warning = _safe_failure_detail(failure_category)
+        warnings = [safe_warning]
         debug = _debug_metadata(debug_metadata)
-        reasoning_summary = (
-            BOUNDARY_VALIDATION_FAILURE_MESSAGE
-            if failure_category == "boundary_validation"
-            else "Boundary review could not be safely applied."
-        )
+        reasoning_summary = _failure_product_message(failure_category)
         return {
             "project_id": project_id,
             "clip_id": str(clip["id"]),
@@ -521,12 +532,12 @@ class ReviewAgentService:
             "needs_more_context": False,
             "reasons": [reasoning_summary],
             "warnings": warnings,
-            "failure_reason": str(warning),
+            "failure_reason": safe_warning,
             "failure_category": failure_category,
             "retry_used": bool(debug["retry_used"]),
             "provider_attempt_count": int(debug["provider_attempt_count"]),
             "first_attempt_validation_error": debug.get("first_attempt_validation_error"),
-            "final_validation_error": debug.get("final_validation_error") or str(warning),
+            "final_validation_error": safe_warning,
             "context_seconds": float(context.get("context_seconds") or 0.0),
             "apply_safe_suggestions": bool(apply_safe_suggestions),
             "raw_result": {
@@ -534,12 +545,12 @@ class ReviewAgentService:
                 "model": model,
                 "decision": "manual_review",
                 "failed": True,
-                "failure_reason": str(warning),
+                "failure_reason": safe_warning,
                 "failure_category": failure_category,
                 "retry_used": bool(debug["retry_used"]),
                 "provider_attempt_count": int(debug["provider_attempt_count"]),
                 "first_attempt_validation_error": debug.get("first_attempt_validation_error"),
-                "final_validation_error": debug.get("final_validation_error") or str(warning),
+                "final_validation_error": safe_warning,
                 "context_seconds": float(context.get("context_seconds") or 0.0),
                 "context_summary": _context_summary(context),
             },
@@ -547,17 +558,29 @@ class ReviewAgentService:
 
     def _batch_summary(self, *, project_id: int, results: list[dict[str, Any]]) -> dict[str, Any]:
         failed_count = sum(1 for result in results if bool(result.get("failed")))
+        render_ready_count = _count_decision(results, "render_ready")
+        adjust_boundaries_count = _count_decision(results, "adjust_boundaries")
+        manual_review_count = _count_decision(results, "manual_review")
+        applied_count = render_ready_count + adjust_boundaries_count
+        requires_attention_count = manual_review_count
         return {
             "project_id": int(project_id),
             "provider": self.provider_name,
             "model": self.model_name,
             "clip_count": len(results),
             "success_count": len(results) - failed_count,
-            "render_ready_count": _count_decision(results, "render_ready"),
-            "adjust_boundaries_count": _count_decision(results, "adjust_boundaries"),
+            "render_ready_count": render_ready_count,
+            "adjust_boundaries_count": adjust_boundaries_count,
             "reject_count": _count_decision(results, "reject"),
-            "manual_review_count": _count_decision(results, "manual_review"),
+            "manual_review_count": manual_review_count,
             "failed_count": failed_count,
+            "applied_count": applied_count,
+            "requires_attention_count": requires_attention_count,
+            "summary_message": (
+                f"Gemini review finished: {applied_count} applied, "
+                f"{requires_attention_count} "
+                f"{'requires' if requires_attention_count == 1 else 'require'} attention."
+            ),
             "reviews": results,
         }
 
@@ -790,9 +813,39 @@ def _concise_boundary_correction(error: Exception | str) -> str:
 def _failure_category(error: Exception) -> str:
     if isinstance(error, BoundaryOptionSelectionError):
         return "boundary_validation"
+    if isinstance(error, ReviewProviderExtractionError):
+        return "provider_output"
     if isinstance(error, ReviewProviderOutputError):
         return "structured_output"
+    if isinstance(error, ReviewProviderCompatibilityError):
+        return "provider_compatibility"
+    if isinstance(error, ReviewProviderQuotaError):
+        return "quota"
+    if isinstance(error, ReviewProviderTimeoutError):
+        return "provider_timeout"
     return "provider"
+
+
+def _failure_product_message(failure_category: str | None) -> str:
+    if failure_category == "boundary_validation":
+        return BOUNDARY_VALIDATION_FAILURE_MESSAGE
+    if failure_category == "provider_compatibility":
+        return PROVIDER_COMPATIBILITY_FAILURE_MESSAGE
+    if failure_category == "quota":
+        return QUOTA_FAILURE_MESSAGE
+    return PROVIDER_FAILURE_MESSAGE
+
+
+def _safe_failure_detail(failure_category: str | None) -> str:
+    details = {
+        "boundary_validation": "Boundary validation failed.",
+        "structured_output": "Structured provider output was invalid.",
+        "provider_output": "Provider response did not contain supported model output.",
+        "provider_compatibility": "Provider compatibility error (HTTP 400).",
+        "quota": "Provider quota error (HTTP 429).",
+        "provider_timeout": "Provider request timed out.",
+    }
+    return details.get(failure_category, "Gemini provider request failed.")
 
 
 def _delta(reviewed_value: Any, original_value: Any) -> float | None:

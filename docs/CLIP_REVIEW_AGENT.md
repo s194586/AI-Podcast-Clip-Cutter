@@ -44,11 +44,24 @@ $env:CLIP_REVIEW_CONTEXT_SECONDS = "20.0"
 
 `GEMINI_API_KEY` is required in `gemini` mode. The service returns a clear configuration error if it is missing and never silently falls back to `local_stub`.
 
-The implementation uses the official `google-genai` SDK with:
+The implementation uses the official `google-genai==2.11.0` SDK with:
 
 ```python
 from google import genai
 ```
+
+Review requests use `client.interactions.create` with the current polymorphic
+text/JSON `response_format`. The response adapter reads only the current
+`steps` schema, accepts the `model_output` text content, and rejects the removed
+legacy `outputs` schema. SDK response objects and complete provider bodies are
+not persisted.
+
+The upstream Airflow image includes the optional
+`apache-airflow-providers-google` bundle, whose `google-cloud-aiplatform`
+dependency requires `google-genai<2`. This application does not use that
+provider. The image build removes the unused provider bundle and
+`google-cloud-aiplatform`, installs the exact 2.11.0 SDK, and runs `pip check`;
+Airflow core remains pinned at 3.3.0.
 
 ## Structured Decision
 
@@ -106,6 +119,11 @@ For `render_ready` and `adjust_boundaries`, the backend saves reviewed boundarie
 
 For `reject`, the backend preserves edited boundaries and exposes rejection reasoning to the frontend. `manual_review` is an internal backend result only for technical or validation failure, such as API errors, malformed structured output, invalid segment IDs, reversed boundaries, or an invalid safe decision after one corrective retry.
 
+Provider compatibility HTTP 400 responses, quota errors, timeouts, and
+cancellation are non-retryable. Only structured/domain-invalid output may use
+the single corrective retry. Compatibility failures preserve existing
+boundaries and are presented separately from boundary-validation failures.
+
 If a user later moves a slider through `PATCH /clips/{clip_id}`, only edited boundaries change and `boundary_source` becomes `user`.
 
 ## API
@@ -139,11 +157,17 @@ Batch response shape:
   "reject_count": 1,
   "manual_review_count": 0,
   "failed_count": 0,
+  "applied_count": 4,
+  "requires_attention_count": 0,
+  "summary_message": "Gemini review finished: 4 applied, 0 require attention.",
   "reviews": []
 }
 ```
 
 `manual_review_count` represents backend/provider failures, not an editorial Gemini choice.
+The frontend uses `summary_message`, so an all-failed batch reports zero applied
+and the exact number requiring attention instead of claiming a successful
+Gemini review.
 
 ## Frontend
 
