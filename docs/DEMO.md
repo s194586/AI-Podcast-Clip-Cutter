@@ -12,14 +12,17 @@ not add placeholder image links to the README.
 
 | Time | View | Suggested narration |
 |---|---|---|
-| 0:00-0:20 | React dashboard | “AI Podcast Clip Cutter turns a long podcast into editable short-form candidates through a modular, observable pipeline.” |
-| 0:20-0:40 | New-project form | “A project records the source, review settings, and orchestrator selection. Local and Airflow modes share the same stage implementations.” |
-| 0:40-1:00 | Processing view | “The UI reads persisted job and stage progress from FastAPI; heavy work stays outside the web request.” |
-| 1:00-1:25 | Airflow DAG grid/graph | “Airflow schedules eight sequential pipeline tasks. The review task has zero Airflow retries to avoid provider retry storms.” |
-| 1:25-1:55 | Clip editor | “Deterministic scoring proposes candidates. Gemini selects semantically complete boundaries only from allowed transcript pairs, and the backend validates them.” |
-| 1:55-2:15 | Gemini suggestion and edited handles | “LangGraph routes valid, corrective, provider-failure, cancellation, and manual-review outcomes. User edits remain authoritative.” |
-| 2:15-2:35 | Manual-review state | “An unresolved review terminates safely for a person instead of holding an Airflow task open.” |
-| 2:35-2:55 | Exports view | “Rendering remains human-triggered. Show an export only if it is an existing, safe demo artifact.” |
+| 0:00-0:20 | Projects | “AI Podcast Clip Cutter turns long conversations into reviewable short-form projects and exposes the next valid action for each project state.” |
+| 0:20-0:40 | New Project | “A project records the source, review setting, and local or Airflow orchestrator choice. Both modes reuse the same pipeline services.” |
+| 0:40-1:00 | Processing | “The compact processing view polls persisted FastAPI state, shows the active stage, and changes its primary action when the project is ready.” |
+| 1:00-1:35 | Review/Edit in the Editor | “Deterministic local scoring proposes candidates. Gemini reviews only semantic start and end boundaries through LangGraph, while backend validation remains authoritative.” |
+| 1:35-2:00 | Boundary preview and state-aware action | “The user previews and edits exact boundaries, accepts or rejects the clip, and explicitly triggers rendering. AI review never rewrites the quoted transcript.” |
+| 2:00-2:25 | Prepared 1080x1920 render | “Stable detections use smoothed face tracking. If detection is unavailable, the dynamic renderer moves to the full source on a blurred background. Captions are formatted deterministically from transcript timestamps.” |
+| 2:25-2:55 | Exports | “The latest render is foregrounded, previous attempts stay collapsed as history, and Raw and With subtitles are grouped as variants of the same clip.” |
+
+If an Airflow proof is useful for the audience, show the eight-task DAG only as
+a brief optional cutaway. Do not interrupt the main product flow or start a new
+DagRun solely for the recording.
 
 ## Before recording
 
@@ -28,6 +31,8 @@ not add placeholder image links to the README.
 - Hide `.env`, `.env.airflow`, terminals containing credentials, and Airflow auth setup.
 - Use neutral project titles and remove personal paths from visible logs.
 - Confirm transcript excerpts and media are suitable for public display.
+- Confirm the prepared export shows the intended face-tracking fallback and readable subtitles before recording.
+- Confirm the Exports view selects the intended Raw or With subtitles variant and does not expose unsafe filenames.
 - Preload the exact pages needed; avoid waiting through a real transcription in the recording.
 - Do not make a real Gemini call solely for the demo if a safe, previously prepared result is available.
 - Never imply the project is cloud deployed or has browser E2E coverage.

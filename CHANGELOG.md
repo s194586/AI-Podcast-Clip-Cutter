@@ -2,6 +2,34 @@
 
 Release summaries are based on the verified Git history.
 
+## v1.1.0 — 2026-07-21
+
+### Added
+
+- Added a product-oriented Projects -> Processing -> Review/Edit -> Render -> Exports flow with clearer loading, empty, error, and completed states.
+- Added grouped exports that foreground the latest render, keep previous attempts as history, and distinguish raw and subtitled variants.
+- Added focused tracking-fallback, deterministic-subtitle, and React interaction tests.
+
+### Changed
+
+- Improved subtitle readability through deterministic cue balancing, conservative punctuation normalization, and bounded two-line layouts.
+- Made primary actions state-aware across project processing, clip review, rendering, and export states.
+- Added a bounded face-loss hold followed by a blurred full-frame safe layout instead of retaining a stale narrow crop.
+- Compacted the Processing and Editor views while preserving the existing product workflow and three-column editor layout.
+
+### Safety and design
+
+- Subtitle formatting may adjust spacing, capitalization, punctuation, and cue layout, but no LLM rewrites recognized or quoted speech.
+- Dynamic tracking uses the full-frame blurred layout before stable acquisition and after its bounded loss grace period, avoiding an indefinite empty center crop.
+- Gemini remains limited to semantic boundary review; backend validation and human editorial control remain authoritative.
+
+### Known limitations
+
+- Faster-Whisper can still produce lexical recognition errors.
+- The product has no built-in subtitle text editor.
+- The complete pipeline remains local-first.
+- Production hosting is not part of v1.1.0.
+
 ## v1.0.1 — 2026-07-18
 
 - Added secure optional custom CA trust for Docker and Airflow without disabling certificate verification.

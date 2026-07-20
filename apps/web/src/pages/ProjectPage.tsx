@@ -7,7 +7,7 @@ import { getErrorMessage } from '../api/errors'
 import { ErrorState, LoadingSkeleton } from '../components/StateBlocks'
 import { ProgressBar } from '../components/ProgressBar'
 import { StatusBadge } from '../components/StatusBadge'
-import { PROCESSING_STAGES, formatDate, projectTitle, sourceDomain, stageLabel, shouldPollStatus } from '../utils/format'
+import { PROCESSING_STAGES, formatDate, projectTitle, stageLabel, shouldPollStatus } from '../utils/format'
 
 const PROJECT_STATUS_POLL_MS = import.meta.env.MODE === 'test' ? 25 : 3000
 
@@ -76,14 +76,15 @@ export function ProjectPage() {
       return undefined
     }
     let active = true
+    let requestController: AbortController | null = null
     const tick = async () => {
       if (pollingInFlight.current || !active) {
         return
       }
       pollingInFlight.current = true
-      const controller = new AbortController()
+      requestController = new AbortController()
       try {
-        const nextStatus = await getProjectStatus(projectId, controller.signal)
+        const nextStatus = await getProjectStatus(projectId, requestController.signal)
         if (!active) {
           return
         }
@@ -95,11 +96,13 @@ export function ProjectPage() {
         }
       } finally {
         pollingInFlight.current = false
+        requestController = null
       }
     }
     const interval = window.setInterval(tick, PROJECT_STATUS_POLL_MS)
     return () => {
       active = false
+      requestController?.abort()
       window.clearInterval(interval)
     }
   }, [projectId, runStatus])
@@ -153,6 +156,22 @@ export function ProjectPage() {
   }
 
   const pageTitle = useMemo(() => (project ? projectTitle(project) : 'Project'), [project])
+  const stageCards = (
+    <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-4">
+      {PROCESSING_STAGES.map((stage, index) => {
+        const completed = runStatus === 'ready' || (currentStageIndex >= 0 && index < currentStageIndex)
+        const current = stage === currentStage && runStatus !== 'ready'
+        return (
+          <div key={stage} className={`rounded-md border px-3 py-2.5 ${completed ? 'border-app-accent/40 bg-app-accent/10' : current ? 'border-app-accent bg-app-accent/15' : 'border-app-border bg-app-panelAlt text-app-muted'}`}>
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-sm font-medium">{stageLabel(stage)}</p>
+              <span className="text-xs text-app-muted">{completed ? 'Done' : current ? 'Now' : 'Pending'}</span>
+            </div>
+          </div>
+        )
+      })}
+    </div>
+  )
 
   if (loading) {
     return <LoadingSkeleton rows={4} />
@@ -178,7 +197,7 @@ export function ProjectPage() {
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="min-w-0">
               <h1 className="truncate text-3xl font-semibold text-app-text">{pageTitle}</h1>
-              <p className="mt-2 text-sm text-app-muted">{sourceDomain(project.source_url)}</p>
+              <p className="mt-2 text-sm text-app-muted">YouTube source</p>
             </div>
             <StatusBadge value={runStatus} />
           </div>
@@ -205,53 +224,77 @@ export function ProjectPage() {
         </div>
 
         <div className="app-panel p-5">
-          <h2 className="app-section-title">Actions</h2>
+          <h2 className="app-section-title">{ready ? 'Ready to review' : processing ? 'Processing' : 'Next step'}</h2>
+          <p className="mt-2 text-sm leading-6 text-app-muted">
+            {ready
+              ? 'Candidate clips are ready. Review their boundaries, accept the strongest moments, and render your shorts.'
+              : processing
+                ? 'This page updates automatically while the project is running.'
+                : canRetry
+                  ? 'Processing stopped before completion. Review the error and retry when ready.'
+                  : 'Start processing to download, transcribe, and create candidate clips.'}
+          </p>
           <div className="mt-4 grid gap-2">
-            <button type="button" className="app-button app-button-primary" disabled={!canStart || Boolean(action)} onClick={() => void runAction('start')}>
-              {action === 'start' ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <Play className="h-4 w-4" aria-hidden="true" />}
-              Start Processing
-            </button>
-            <button type="button" className="app-button" disabled={!canRetry || Boolean(action)} onClick={() => void runAction('retry')}>
-              {action === 'retry' ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <RotateCcw className="h-4 w-4" aria-hidden="true" />}
-              Retry
-            </button>
-            <button type="button" className="app-button app-button-danger" disabled={!canCancel || Boolean(action)} onClick={() => void runAction('cancel')}>
-              {action === 'cancel' ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <Ban className="h-4 w-4" aria-hidden="true" />}
-              Cancel
-            </button>
-            <div className="grid gap-2 sm:grid-cols-2">
-              <Link to={`/projects/${project.id}/editor`} className={`app-button ${ready ? '' : 'opacity-70'}`}>
+            {canStart ? (
+              <button type="button" className="app-button app-button-primary" disabled={Boolean(action)} onClick={() => void runAction('start')}>
+                {action === 'start' ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <Play className="h-4 w-4" aria-hidden="true" />}
+                Start Processing
+              </button>
+            ) : null}
+            {canRetry ? (
+              <button type="button" className="app-button app-button-primary" disabled={Boolean(action)} onClick={() => void runAction('retry')}>
+                {action === 'retry' ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <RotateCcw className="h-4 w-4" aria-hidden="true" />}
+                Retry Processing
+              </button>
+            ) : null}
+            {canCancel ? (
+              <button type="button" className="app-button app-button-danger" disabled={Boolean(action)} onClick={() => void runAction('cancel')}>
+                {action === 'cancel' ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <Ban className="h-4 w-4" aria-hidden="true" />}
+                Cancel Processing
+              </button>
+            ) : null}
+            {ready ? (
+              <Link to={`/projects/${project.id}/editor`} className="app-button app-button-primary">
                 <ExternalLink className="h-4 w-4" aria-hidden="true" />
-                Open Editor
+                Review Clips
               </Link>
+            ) : null}
+            <div className="grid gap-2 sm:grid-cols-2">
+              {!processing ? (
+                <button type="button" className="app-button" onClick={() => void loadProject()} disabled={Boolean(action)}>
+                  <RefreshCcw className="h-4 w-4" aria-hidden="true" />
+                  Refresh Status
+                </button>
+              ) : (
+                <p className="flex min-h-10 items-center gap-2 px-1 text-sm text-app-muted" role="status">
+                  <RefreshCcw className="h-4 w-4 animate-spin" aria-hidden="true" />
+                  Updating automatically
+                </p>
+              )}
+              {ready ? (
               <Link to={`/projects/${project.id}/exports`} className="app-button">
                 <FileVideo2 className="h-4 w-4" aria-hidden="true" />
-                Open Exports
+                View Exports
               </Link>
+              ) : null}
             </div>
           </div>
-          {actionMessage ? <p className="mt-3 rounded-md border border-app-accent/50 bg-app-accent/10 p-3 text-sm text-green-100">{actionMessage}</p> : null}
-          {actionError ? <p className="mt-3 rounded-md border border-app-danger/50 bg-app-danger/10 p-3 text-sm text-red-100">{actionError}</p> : null}
+          {actionMessage ? <p className="mt-3 rounded-md border border-app-accent/50 bg-app-accent/10 p-3 text-sm text-green-100" role="status">{actionMessage}</p> : null}
+          {actionError ? <p className="mt-3 rounded-md border border-app-danger/50 bg-app-danger/10 p-3 text-sm text-red-100" role="alert">{actionError}</p> : null}
         </div>
       </section>
 
-      <section className="app-panel p-5">
-        <h2 className="app-section-title">Processing stages</h2>
-        <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-          {PROCESSING_STAGES.map((stage, index) => {
-            const completed = runStatus === 'ready' || (currentStageIndex >= 0 && index < currentStageIndex)
-            const current = stage === currentStage && runStatus !== 'ready'
-            return (
-              <div key={stage} className={`rounded-panel border p-4 ${completed ? 'border-app-accent/50 bg-app-accent/10' : current ? 'border-app-accent bg-app-accent/15' : 'border-app-border bg-app-panelAlt text-app-muted'}`}>
-                <div className="flex items-center justify-between gap-2">
-                  <p className="text-sm font-medium">{stageLabel(stage)}</p>
-                  <StatusBadge value={completed ? 'ready' : current ? runStatus : 'created'} tone={completed ? 'success' : current ? 'neutral' : 'neutral'} />
-                </div>
-              </div>
-            )
-          })}
-        </div>
-      </section>
+      {ready ? (
+        <details className="app-panel p-5">
+          <summary className="cursor-pointer text-sm font-semibold text-app-text">Completed processing stages</summary>
+          <div className="mt-4">{stageCards}</div>
+        </details>
+      ) : (
+        <section className="app-panel p-5">
+          <h2 className="app-section-title">Processing stages</h2>
+          <div className="mt-4">{stageCards}</div>
+        </section>
+      )}
 
       <details className="app-panel p-5" onToggle={(event) => { if ((event.currentTarget as HTMLDetailsElement).open && logs === null) void loadLogs() }}>
         <summary className="flex cursor-pointer items-center gap-2 text-sm font-semibold text-app-text">

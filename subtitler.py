@@ -5,15 +5,9 @@ import json
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Dict, List, Tuple
-
-from semantic_clip_director import (
-    SUBTITLE_CORRECTION_MODE_OFF,
-    VALID_SUBTITLE_CORRECTION_MODES,
-    build_subtitle_corrector,
-    normalize_subtitle_correction_mode,
-)
 
 SPEAKER_STYLE_PALETTE: List[Dict[str, str]] = [
     {"primary": "&H00FFFFFF", "outline": "&H0000FFFF"},
@@ -27,12 +21,13 @@ SPEAKER_STYLE_PALETTE: List[Dict[str, str]] = [
 ]
 DEFAULT_STYLE_NAME = "Default"
 CHAOS_EMPHASIS_STYLE = "ChaosEmphasis"
-DEFAULT_FONT = "Arial Black"
-BASE_FONT_SIZE = 24
-CHAOS_FONT_SIZE = int(BASE_FONT_SIZE * 1.65)
-OUTLINE_WIDTH = 3
-SHADOW_SIZE = 1
-MARGIN_V = 280
+DEFAULT_FONT = "DejaVu Sans"
+BASE_FONT_SIZE = 68
+CHAOS_FONT_SIZE = 72
+OUTLINE_WIDTH = 5
+SHADOW_SIZE = 2
+MARGIN_H = 90
+MARGIN_V = 360
 EMPHASIS_COLOR = "&H0000FF00"
 CHAOS_EMPHASIS_COLOR = "&H0000FF66"
 KEYWORD_PATTERNS = [
@@ -42,7 +37,37 @@ KEYWORD_PATTERNS = [
 ]
 KEYWORD_REGEX = re.compile("|".join(KEYWORD_PATTERNS), re.IGNORECASE | re.UNICODE)
 DEFAULT_SPEAKER_SMOOTHING_WINDOW = 1.25
+SUBTITLE_CORRECTION_MODE_OFF = "off"
 DEFAULT_SUBTITLE_CORRECTION_MODEL = "models/gemini-2.5-flash"
+MIN_WORDS_PER_CUE = 3
+TARGET_WORDS_PER_CUE = 5
+MAX_WORDS_PER_CUE = 7
+NATURAL_PAUSE_SECONDS = 0.55
+MAX_LINE_CHARACTERS = 24
+MAX_MERGED_CUE_CHARACTERS = (MAX_LINE_CHARACTERS * 2) + 1
+SHORT_CONNECTORS = {
+    "a",
+    "ale",
+    "and",
+    "bo",
+    "but",
+    "czy",
+    "do",
+    "i",
+    "lub",
+    "na",
+    "o",
+    "od",
+    "or",
+    "u",
+    "w",
+    "z",
+    "za",
+    "że",
+}
+STRONG_PUNCTUATION_RE = re.compile(r"[.!?…][\"'”’)]*$")
+SOFT_PUNCTUATION_RE = re.compile(r"[,;:][\"'”’)]*$")
+WORD_CHARACTER_RE = re.compile(r"[^\W\d_]", re.UNICODE)
 
 
 def parse_time(time_str: str) -> float:
@@ -352,6 +377,313 @@ def apply_emphasis(text: str, speaker_name: str) -> str:
     return KEYWORD_REGEX.sub(repl, text)
 
 
+def normalize_subtitle_text(text: str, *, capitalize: bool = False) -> str:
+    normalized = re.sub(r"\s+", " ", str(text or "")).strip()
+    if not normalized:
+        return ""
+    normalized = re.sub(r"(?<=\d)\s+-\s+(?=\d)", "\N{EN DASH}", normalized)
+    normalized = re.sub(r"\s+([,.;:!?%…])", r"\1", normalized)
+    normalized = re.sub(r"([(\[{„“])\s+", r"\1", normalized)
+    normalized = re.sub(r"\s+([)\]}”])", r"\1", normalized)
+    normalized = re.sub(r"([,;:!?])(?=[^\W\d_])", r"\1 ", normalized, flags=re.UNICODE)
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    if capitalize:
+        first_letter = WORD_CHARACTER_RE.search(normalized)
+        if first_letter is not None:
+            index = first_letter.start()
+            normalized = normalized[:index] + normalized[index].upper() + normalized[index + 1 :]
+    return normalized
+
+
+def _plain_token(value: object) -> str:
+    return normalize_subtitle_text(str(value or ""), capitalize=False)
+
+
+def _is_short_connector(value: str) -> bool:
+    normalized = value.strip(".,;:!?…\"'„“”’()[]{}").casefold()
+    return normalized in SHORT_CONNECTORS
+
+
+def wrap_subtitle_text(text: str) -> str:
+    normalized = normalize_subtitle_text(text)
+    words = normalized.split()
+    if len(words) <= 1 or len(normalized) <= MAX_LINE_CHARACTERS:
+        return normalized
+
+    candidates: list[tuple[int, int, str, str]] = []
+    for split_at in range(1, len(words)):
+        left_words = words[:split_at]
+        right_words = words[split_at:]
+        left = " ".join(left_words)
+        right = " ".join(right_words)
+        if (
+            (len(left_words) == 1 and _is_short_connector(left_words[0]))
+            or (len(right_words) == 1 and _is_short_connector(right_words[0]))
+        ):
+            continue
+        connector_penalty = 12 if _is_short_connector(left_words[-1]) else 0
+        overflow = max(0, len(left) - MAX_LINE_CHARACTERS) + max(0, len(right) - MAX_LINE_CHARACTERS)
+        balance = abs(len(left) - len(right))
+        candidates.append((overflow * 20 + connector_penalty + balance, split_at, left, right))
+
+    if not candidates:
+        return normalized
+
+    _score, _split_at, left, right = min(candidates, key=lambda item: (item[0], item[1]))
+    return f"{left}\n{right}"
+
+
+def _subtitle_text_fits_merge_limits(text: str) -> bool:
+    normalized = normalize_subtitle_text(text)
+    if not normalized or len(normalized.split()) > MAX_WORDS_PER_CUE:
+        return False
+    if len(normalized) > MAX_MERGED_CUE_CHARACTERS:
+        return False
+    lines = wrap_subtitle_text(normalized).splitlines()
+    return len(lines) <= 2 and all(len(line) <= MAX_LINE_CHARACTERS for line in lines)
+
+
+def escape_ass_text(text: str) -> str:
+    escaped = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
+    escaped = escaped.replace("\\", r"\\").replace("{", r"\{").replace("}", r"\}")
+    return escaped.replace("\n", r"\N")
+
+
+def _timed_words_from_word_timestamps(segment: Dict) -> list[dict[str, object]]:
+    raw_words = segment.get("words")
+    if not isinstance(raw_words, list):
+        return []
+
+    timed_words: list[dict[str, object]] = []
+    for item in raw_words:
+        if not isinstance(item, dict):
+            continue
+        text = _plain_token(item.get("text") or item.get("word"))
+        if not text:
+            continue
+        try:
+            start = parse_time(item.get("start"))
+            end = parse_time(item.get("end"))
+        except (TypeError, ValueError):
+            continue
+        if end <= start:
+            continue
+        if re.fullmatch(r"[,.;:!?%…]+", text) and timed_words:
+            timed_words[-1]["text"] = f"{timed_words[-1]['text']}{text}"
+            timed_words[-1]["end"] = max(float(timed_words[-1]["end"]), end)
+            continue
+        timed_words.append({"text": text, "start": start, "end": end})
+    return timed_words
+
+
+def _timed_words_from_segment_text(segment: Dict, start: float, end: float) -> list[dict[str, object]]:
+    text = normalize_subtitle_text(str(segment.get("text", "")))
+    words = text.split()
+    if not words or end <= start:
+        return []
+    word_duration = (end - start) / len(words)
+    return [
+        {
+            "text": word,
+            "start": start + (index * word_duration),
+            "end": start + ((index + 1) * word_duration),
+        }
+        for index, word in enumerate(words)
+    ]
+
+
+def _rebalance_short_cues(cues: list[list[dict[str, object]]]) -> list[list[dict[str, object]]]:
+    index = 0
+    while index < len(cues):
+        cue = cues[index]
+        if len(cue) == 1 and _is_short_connector(str(cue[0]["text"])):
+            if index + 1 < len(cues) and _timed_word_cues_can_merge(cue, cues[index + 1]):
+                cues[index + 1] = cue + cues[index + 1]
+                cues.pop(index)
+                continue
+            if index > 0 and _timed_word_cues_can_merge(cues[index - 1], cue):
+                cues[index - 1].extend(cue)
+                cues.pop(index)
+                continue
+        index += 1
+
+    for index in range(1, len(cues)):
+        current = cues[index]
+        previous = cues[index - 1]
+        if len(current) >= MIN_WORDS_PER_CUE or len(previous) <= MIN_WORDS_PER_CUE:
+            continue
+        gap = float(current[0]["start"]) - float(previous[-1]["end"])
+        if gap >= NATURAL_PAUSE_SECONDS or STRONG_PUNCTUATION_RE.search(str(previous[-1]["text"])):
+            continue
+        while len(current) < MIN_WORDS_PER_CUE and len(previous) > MIN_WORDS_PER_CUE:
+            current.insert(0, previous.pop())
+    return [cue for cue in cues if cue]
+
+
+def _timed_word_cues_can_merge(
+    left: list[dict[str, object]],
+    right: list[dict[str, object]],
+) -> bool:
+    if not left or not right:
+        return False
+    gap = float(right[0]["start"]) - float(left[-1]["end"])
+    if gap < 0 or gap >= NATURAL_PAUSE_SECONDS:
+        return False
+    if STRONG_PUNCTUATION_RE.search(str(left[-1]["text"])):
+        return False
+    combined_text = " ".join(str(word["text"]) for word in left + right)
+    return _subtitle_text_fits_merge_limits(combined_text)
+
+
+def _chunk_timed_words(words: list[dict[str, object]]) -> list[list[dict[str, object]]]:
+    cues: list[list[dict[str, object]]] = []
+    current: list[dict[str, object]] = []
+    for index, word in enumerate(words):
+        if current:
+            gap = float(word["start"]) - float(current[-1]["end"])
+            if gap >= NATURAL_PAUSE_SECONDS:
+                cues.append(current)
+                current = []
+
+        current.append(word)
+        token = str(word["text"])
+        next_word = words[index + 1] if index + 1 < len(words) else None
+        next_gap = (
+            float(next_word["start"]) - float(word["end"])
+            if next_word is not None
+            else 0.0
+        )
+        should_break = len(current) >= MAX_WORDS_PER_CUE
+        if len(current) >= MIN_WORDS_PER_CUE and STRONG_PUNCTUATION_RE.search(token):
+            should_break = True
+        elif len(current) >= TARGET_WORDS_PER_CUE and SOFT_PUNCTUATION_RE.search(token):
+            should_break = True
+        elif len(current) >= MIN_WORDS_PER_CUE and next_gap >= NATURAL_PAUSE_SECONDS:
+            should_break = True
+        if should_break:
+            cues.append(current)
+            current = []
+
+    if current:
+        cues.append(current)
+    return _rebalance_short_cues(cues)
+
+
+def _clip_timed_words(
+    words: list[dict[str, object]],
+    clip_start: float,
+    clip_end: float,
+) -> list[dict[str, object]]:
+    clipped: list[dict[str, object]] = []
+    for word in words:
+        start = max(float(word["start"]), clip_start)
+        end = min(float(word["end"]), clip_end)
+        if end <= start:
+            continue
+        clipped.append({**word, "start": start, "end": end})
+    return clipped
+
+
+def build_segment_subtitle_events(
+    segment: Dict,
+    clip_start: float,
+    clip_end: float,
+) -> tuple[list[dict[str, object]], bool]:
+    try:
+        segment_start = parse_time(segment.get("start", "00:00"))
+        segment_end = parse_time(segment.get("end", "00:00"))
+    except (TypeError, ValueError):
+        return [], False
+    if segment_end <= clip_start or segment_start >= clip_end or segment_end <= segment_start:
+        return [], False
+
+    timestamp_words = _timed_words_from_word_timestamps(segment)
+    used_word_timestamps = bool(timestamp_words)
+    timed_words = timestamp_words or _timed_words_from_segment_text(segment, segment_start, segment_end)
+    clipped_words = _clip_timed_words(timed_words, clip_start, clip_end)
+    if not clipped_words:
+        return [], used_word_timestamps
+
+    events: list[dict[str, object]] = []
+    capitalize_next = False
+    for cue_words in _chunk_timed_words(clipped_words):
+        text = normalize_subtitle_text(
+            " ".join(str(word["text"]) for word in cue_words),
+            capitalize=capitalize_next,
+        )
+        if not text:
+            continue
+        events.append(
+            {
+                "start": float(cue_words[0]["start"]),
+                "end": float(cue_words[-1]["end"]),
+                "text": wrap_subtitle_text(text),
+            }
+        )
+        capitalize_next = bool(STRONG_PUNCTUATION_RE.search(text))
+    return events, used_word_timestamps
+
+
+def ensure_non_overlapping_events(events: List[Dict], clip_duration: float) -> List[Dict]:
+    ordered = sorted(events, key=lambda event: (float(event["start"]), float(event["end"])))
+    normalized: List[Dict] = []
+    for event in ordered:
+        start = max(0.0, min(float(event["start"]), clip_duration))
+        end = max(0.0, min(float(event["end"]), clip_duration))
+        if normalized and start < float(normalized[-1]["end"]):
+            normalized[-1]["end"] = max(float(normalized[-1]["start"]), start)
+            if float(normalized[-1]["end"]) <= float(normalized[-1]["start"]):
+                normalized.pop()
+        if end <= start:
+            continue
+        normalized.append({**event, "start": start, "end": end})
+    return normalized
+
+
+def merge_orphaned_subtitle_events(events: List[Dict]) -> List[Dict]:
+    merged_events = [dict(event) for event in events]
+    index = 0
+    while index < len(merged_events) - 1:
+        left = merged_events[index]
+        right = merged_events[index + 1]
+        left_text = normalize_subtitle_text(str(left.get("text", "")).replace("\n", " "))
+        right_text = normalize_subtitle_text(str(right.get("text", "")).replace("\n", " "))
+        left_words = left_text.split()
+        right_words = right_text.split()
+        gap = float(right["start"]) - float(left["end"])
+        same_speaker = normalize_speaker(left) == normalize_speaker(right)
+        left_is_complete = bool(STRONG_PUNCTUATION_RE.search(left_text))
+        right_is_complete = bool(STRONG_PUNCTUATION_RE.search(right_text))
+        left_is_orphan = 0 < len(left_words) <= 2 and not left_is_complete
+        right_is_orphan = 0 < len(right_words) <= 2 and not right_is_complete
+        left_ends_with_comma = bool(re.search(r",[\s\"')\]}]*$", left_text))
+        combined_text = normalize_subtitle_text(f"{left_text} {right_text}")
+
+        can_merge = (
+            same_speaker
+            and 0 <= gap < NATURAL_PAUSE_SECONDS
+            and not left_is_complete
+            and (left_is_orphan or right_is_orphan or left_ends_with_comma)
+            and _subtitle_text_fits_merge_limits(combined_text)
+        )
+        if not can_merge:
+            index += 1
+            continue
+
+        merged_events[index : index + 2] = [
+            {
+                **left,
+                "end": float(right["end"]),
+                "text": wrap_subtitle_text(combined_text),
+                "importance": max(int(left.get("importance", 3)), int(right.get("importance", 3))),
+                "chaos": bool(left.get("chaos", False) or right.get("chaos", False)),
+            }
+        ]
+        index = max(0, index - 1)
+
+    return merged_events
+
+
 def calculate_words_per_second(text: str, duration: float) -> float:
     if duration <= 0 or not text.strip():
         return 0.0
@@ -359,14 +691,8 @@ def calculate_words_per_second(text: str, duration: float) -> float:
 
 
 def should_display_subtitle(segment: Dict, duration: float) -> bool:
-    chaos = bool(segment.get("chaos", False))
-    importance = int(segment.get("importance", 3))
-    text = str(segment.get("text", "")).strip()
-    if chaos and importance < 5:
-        return False
-    if calculate_words_per_second(text, duration) > 4.0 and importance < 4:
-        return False
-    return True
+    text = normalize_subtitle_text(str(segment.get("text", "")))
+    return duration > 0 and bool(text)
 
 
 def build_subtitle_events(
@@ -413,9 +739,13 @@ def build_subtitle_events_with_metadata(
     api_key: str | None = None,
     request_timeout: float = 45.0,
 ) -> Tuple[List[Dict], Dict[str, object]]:
+    # Retain legacy call compatibility, but never send transcript text to an external corrector.
+    _ = semantic_model, api_key, request_timeout
     normalized_content_type = str(content_type_hint or "").strip().lower()
     raw_events: List[Dict] = []
     segment_end = segment_start + segment_duration
+    word_timestamp_segments = 0
+    segment_timestamp_fallbacks = 0
     transcript_for_events, smoothing_metadata = smooth_speaker_labels(
         transcript,
         max_flip_duration=speaker_smoothing_window,
@@ -423,35 +753,47 @@ def build_subtitle_events_with_metadata(
     )
 
     for item in transcript_for_events:
-        seg_start = parse_time(item.get("start", "00:00"))
-        seg_end = parse_time(item.get("end", "00:00"))
-        text = str(item.get("text", "")).strip()
         importance = int(item.get("importance", 3))
         chaos = bool(item.get("chaos", False))
         speaker = normalize_speaker(item)
-
-        if not text or seg_end <= segment_start or seg_start >= segment_end:
-            continue
-
-        overlap_start = max(seg_start, segment_start)
-        overlap_end = min(seg_end, segment_end)
-        rel_start = overlap_start - segment_start
-        rel_end = overlap_end - segment_start
-        if rel_end <= rel_start:
-            continue
-        if not should_display_subtitle(item, rel_end - rel_start):
-            continue
-
-        raw_events.append(
-            {
-                "start": rel_start,
-                "end": rel_end,
-                "text": text,
-                "speaker": speaker,
-                "importance": importance,
-                "chaos": chaos,
-            }
+        segment_events, used_word_timestamps = build_segment_subtitle_events(
+            item,
+            segment_start,
+            segment_end,
         )
+        if not segment_events:
+            continue
+        if used_word_timestamps:
+            word_timestamp_segments += 1
+        else:
+            segment_timestamp_fallbacks += 1
+        for event in segment_events:
+            rel_start = float(event["start"]) - segment_start
+            rel_end = float(event["end"]) - segment_start
+            if not should_display_subtitle({"text": event["text"]}, rel_end - rel_start):
+                continue
+            raw_events.append(
+                {
+                    **event,
+                    "start": rel_start,
+                    "end": rel_end,
+                    "speaker": speaker,
+                    "importance": importance,
+                    "chaos": chaos,
+                }
+            )
+
+    raw_events = ensure_non_overlapping_events(raw_events, segment_duration)
+    raw_events = merge_orphaned_subtitle_events(raw_events)
+    raw_events = ensure_non_overlapping_events(raw_events, segment_duration)
+    capitalize_next = True
+    for event in raw_events:
+        text = normalize_subtitle_text(
+            str(event.get("text", "")).replace("\n", " "),
+            capitalize=capitalize_next,
+        )
+        event["text"] = wrap_subtitle_text(text)
+        capitalize_next = bool(STRONG_PUNCTUATION_RE.search(text))
 
     stabilized_events, speaker_stability_metadata = stabilize_speaker_events(
         raw_events,
@@ -459,27 +801,19 @@ def build_subtitle_events_with_metadata(
         expected_speaker_mode=expected_speaker_mode,
         max_effective_speakers=max_effective_speakers,
     )
-    correction_mode = normalize_subtitle_correction_mode(subtitle_correction_mode)
-    if correction_mode == SUBTITLE_CORRECTION_MODE_OFF:
-        corrected_events = [dict(event) for event in stabilized_events]
-        correction_metadata = {
-            "subtitles_corrected": False,
-            "subtitle_corrector_used": "off",
-            "corrected_segments_count": 0,
-            "correction_fallback_reason": "",
-        }
-    else:
-        corrector = build_subtitle_corrector(
-            mode=correction_mode,
-            model_name=semantic_model,
-            request_timeout=request_timeout,
-            api_key=api_key,
-        )
-        corrected_events, correction_metadata = corrector.correct_subtitle_text(
-            stabilized_events,
-            mode=correction_mode,
-            content_type_hint=content_type_hint,
-        )
+    requested_correction_mode = str(subtitle_correction_mode or SUBTITLE_CORRECTION_MODE_OFF).strip().lower()
+    corrected_events = [dict(event) for event in stabilized_events]
+    correction_metadata = {
+        "subtitles_corrected": False,
+        "subtitle_corrector_used": "off",
+        "corrected_segments_count": 0,
+        "correction_fallback_reason": (
+            ""
+            if requested_correction_mode == SUBTITLE_CORRECTION_MODE_OFF
+            else "external_subtitle_correction_disabled"
+        ),
+        "subtitle_correction_requested": requested_correction_mode,
+    }
 
     color_policy = resolve_speaker_color_policy(
         corrected_events,
@@ -504,27 +838,31 @@ def build_subtitle_events_with_metadata(
     events: List[Dict] = []
     for event in corrected_events:
         detected_speaker = str(event.get("speaker") or DEFAULT_STYLE_NAME)
+        normalized_text = wrap_subtitle_text(normalize_subtitle_text(str(event.get("text", ""))))
         display_speaker = (
             normalize_speaker({"speaker": detected_speaker})
             if use_per_speaker and normalize_speaker({"speaker": detected_speaker}) in stable_speakers
             else DEFAULT_STYLE_NAME
         )
         if normalized_content_type == "podcast":
-            display_text = str(event["text"])
+            display_text = normalized_text
             render_style = DEFAULT_STYLE_NAME
+            ass_markup = False
         else:
-            display_text = event["text"] if int(event.get("importance", 3)) >= 5 else (
-                apply_emphasis(str(event["text"]), display_speaker)
+            display_text = normalized_text if int(event.get("importance", 3)) >= 5 else (
+                apply_emphasis(normalized_text, display_speaker)
                 if int(event.get("importance", 3)) >= 4
-                else event["text"]
+                else normalized_text
             )
             render_style = display_speaker
+            ass_markup = display_text != normalized_text
         events.append({
             **event,
             "speaker": display_speaker,
             "detected_speaker": detected_speaker,
             "render_style": render_style,
             "text": display_text,
+            "ass_markup": ass_markup,
         })
 
     speaker_names = collect_speaker_styles(events)
@@ -536,6 +874,9 @@ def build_subtitle_events_with_metadata(
         "speaker_color_map": speaker_color_map(speaker_names),
         "speaker_smoothing_enabled": bool(smoothing_metadata.get("speaker_smoothing_enabled", False)),
         "speaker_smoothing_window": float(smoothing_metadata.get("speaker_smoothing_window", speaker_smoothing_window)),
+        "word_timestamp_segments": word_timestamp_segments,
+        "segment_timestamp_fallbacks": segment_timestamp_fallbacks,
+        "subtitle_cue_count": len(events),
     }
     return events, metadata
 
@@ -557,12 +898,13 @@ def create_style_line(
     font_size: int,
     *,
     outline_color: str = "&H00000000",
-    bold: int = 0,
+    bold: int = -1,
     alignment: int = 2,
 ) -> str:
     return (
         f"Style: {name},{DEFAULT_FONT},{font_size},{color},&H00000000,{outline_color},&H00000000,"
-        f"{bold},0,0,0,100,100,0,0,1,{OUTLINE_WIDTH},{SHADOW_SIZE},{alignment},70,70,{MARGIN_V},1"
+        f"{bold},0,0,0,100,100,0,0,1,{OUTLINE_WIDTH},{SHADOW_SIZE},{alignment},"
+        f"{MARGIN_H},{MARGIN_H},{MARGIN_V},1"
     )
 
 
@@ -574,8 +916,8 @@ def create_ass_file(events: List[Dict]) -> str:
         "WrapStyle: 2",
         "ScaledBorderAndShadow: yes",
         "Collisions: Normal",
-        "PlayResX: 1920",
-        "PlayResY: 1080",
+        "PlayResX: 1080",
+        "PlayResY: 1920",
         "",
         "[V4+ Styles]",
         "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
@@ -604,7 +946,11 @@ def create_ass_file(events: List[Dict]) -> str:
         style = str(event.get("render_style") or event.get("speaker") or DEFAULT_STYLE_NAME)
         if style != DEFAULT_STYLE_NAME and event.get("importance", 3) >= 5:
             style = CHAOS_EMPHASIS_STYLE
-        text = str(event["text"]).replace("\n", r"\N")
+        text = (
+            str(event["text"]).replace("\n", r"\N")
+            if event.get("ass_markup")
+            else escape_ass_text(str(event["text"]))
+        )
         lines.append(f"Dialogue: 0,{start_time},{end_time},{style},,0,0,0,,{text}")
 
     return "\n".join(lines)
@@ -623,21 +969,52 @@ def extract_segment_time_from_filename(filename: str) -> Tuple[float, float]:
     return start_minutes * 60 + start_secs, end_minutes * 60 + end_secs
 
 
+def _escape_ffmpeg_filter_path(path: Path) -> str:
+    return str(path).replace("\\", "\\\\").replace(":", "\\:").replace("'", r"\'")
+
+
+def subtitle_fonts_dir() -> Path | None:
+    python_version = f"python{sys.version_info.major}.{sys.version_info.minor}"
+    candidates = (
+        Path(sys.prefix) / "Lib" / "site-packages" / "matplotlib" / "mpl-data" / "fonts" / "ttf",
+        Path(sys.prefix) / "lib" / python_version / "site-packages" / "matplotlib" / "mpl-data" / "fonts" / "ttf",
+    )
+    for candidate in candidates:
+        if (candidate / "DejaVuSans.ttf").is_file():
+            return candidate
+    return None
+
+
 def add_subtitles_to_video(input_video: Path, output_video: Path, ass_file: Path) -> None:
     output_video.parent.mkdir(parents=True, exist_ok=True)
-    escaped_path = str(ass_file).replace("\\", "\\\\").replace(":", "\\:")
+    escaped_path = _escape_ffmpeg_filter_path(ass_file)
     filter_str = f"ass='{escaped_path}'"
+    fonts_dir = subtitle_fonts_dir()
+    if fonts_dir is not None:
+        filter_str += f":fontsdir='{_escape_ffmpeg_filter_path(fonts_dir)}'"
     cmd = [
         "ffmpeg",
         "-y",
         "-i",
         str(input_video),
+        "-map",
+        "0:v:0",
+        "-map",
+        "0:a:0?",
         "-vf",
         filter_str,
+        "-c:v",
+        "libx264",
+        "-preset",
+        "fast",
+        "-crf",
+        "20",
+        "-pix_fmt",
+        "yuv420p",
         "-c:a",
-        "aac",
-        "-b:a",
-        "192k",
+        "copy",
+        "-movflags",
+        "+faststart",
         str(output_video),
     ]
     print(f"  Adding subtitles: {output_video.name}")
@@ -725,11 +1102,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--subtitle-correction-mode",
         default="off",
-        choices=VALID_SUBTITLE_CORRECTION_MODES,
-        help="Experimental subtitle correction prototype. Disabled by default and not part of the recommended production flow.",
+        choices=(SUBTITLE_CORRECTION_MODE_OFF,),
+        help="Subtitle text correction is disabled; deterministic formatting is always used.",
     )
-    parser.add_argument("--semantic-model", default=DEFAULT_SUBTITLE_CORRECTION_MODEL, help="Experimental Gemini model for the prototype subtitle corrector")
-    parser.add_argument("--request-timeout", type=float, default=45.0, help="Timeout in seconds for optional subtitle correction")
+    parser.add_argument("--semantic-model", default=DEFAULT_SUBTITLE_CORRECTION_MODEL, help=argparse.SUPPRESS)
+    parser.add_argument("--request-timeout", type=float, default=45.0, help=argparse.SUPPRESS)
     return parser.parse_args()
 
 

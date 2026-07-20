@@ -17,8 +17,12 @@ SQLite, and optionally reviews clip boundaries through Gemini. Gemini chooses
 numbered transcript-segment pairs rather than arbitrary timestamps. LangGraph
 routes the existing review through validation, one possible corrective attempt,
 and controlled terminal outcomes. Local subprocess and Airflow modes reuse the
-same `PipelineStageExecutor`; React exposes processing, editing, review,
-rendering, and exports without receiving secrets or internal paths.
+same `PipelineStageExecutor`; the state-aware React flow moves from Projects and
+Processing through Review/Edit, human-triggered Render, and grouped Exports
+without receiving secrets or internal paths. The renderer produces 1080x1920
+outputs, combines stable face tracking with a blurred full-frame fallback, and
+builds deterministic subtitle cues from word timestamps when available without
+using an LLM to rewrite recognized speech.
 
 ## Main engineering challenges
 
@@ -29,6 +33,8 @@ rendering, and exports without receiving secrets or internal paths.
 - Preventing nested provider and scheduler retries from creating retry storms.
 - Keeping prompts, transcripts, credentials, and paths out of durable orchestration metadata.
 - Maintaining useful project progress across process and container boundaries.
+- Keeping a speaker visible when face detection is temporarily or persistently unavailable.
+- Producing readable subtitle cues without changing the words recognized by Faster-Whisper.
 
 ## Decisions and trade-offs
 
@@ -36,6 +42,8 @@ rendering, and exports without receiving secrets or internal paths.
 - Local orchestration remains the default; Airflow adds visibility and scheduling at greater operational cost.
 - LangGraph runs once per clip without a checkpointer, favoring isolation and data minimization.
 - The model selects only from allowed pairs, reducing flexibility in exchange for authoritative safety.
+- Subtitle formatting may adjust spacing, capitalization, punctuation, and cue layout, but not recognized words or meaning.
+- Dynamic tracking holds the last stable crop only briefly before switching to a blurred full-frame composition.
 - Rendering stays human-triggered, preserving editorial control.
 
 See [Engineering Decisions](ENGINEERING_DECISIONS.md) for the ADR-style rationale.
@@ -47,7 +55,8 @@ See [Engineering Decisions](ENGINEERING_DECISIONS.md) for the ADR-style rational
 - Shared domain services across CLI, local product flow, API, and Airflow.
 - Controlled cancellation, timeout, provider-failure, and manual-review paths.
 - Dockerized Airflow 3.3.0 integration with parse and real-smoke evidence.
-- Recruiter-visible React product flow backed by typed FastAPI contracts.
+- Recruiter-visible, state-aware React product flow backed by typed FastAPI contracts.
+- Human-controlled 1080x1920 rendering with safe crop fallback, deterministic captions, and grouped export history.
 
 ## Implementation scope
 
@@ -72,7 +81,7 @@ For AI Engineer, ML Engineer, and backend-oriented roles, the project demonstrat
 
 - Built a FastAPI/React podcast clipping MVP with deterministic candidate scoring, SQLite project state, and human-controlled rendering.
 - Integrated Gemini semantic boundary selection through a typed LangGraph workflow with authoritative validation, one bounded corrective retry, and offline provider-mocked tests.
-- Implemented reusable pipeline stages shared by local subprocess and Apache Airflow 3.3.0 orchestration, validated through 274 Python tests, 40 React tests, Docker/DAG checks, and controlled smoke tests.
+- Implemented reusable pipeline stages shared by local subprocess and Apache Airflow 3.3.0 orchestration, validated through a 305-test Python suite (1 optional skip), 52 React tests, Docker/DAG checks, and controlled smoke tests.
 
 ## Interview talking points
 
@@ -115,7 +124,9 @@ clip identity, and cancellation state before persistence.
 Likely work includes production serving, authentication/authorization, an
 application database suited to horizontal scaling, object storage, formal
 monitoring, deployment automation, browser E2E coverage, and an explicit quota
-policy. None of those are claimed as implemented in v1.0.1.
+policy. Faster-Whisper lexical errors may remain, and the product has no built-in
+subtitle text editor. None of those production extensions are claimed as
+implemented in v1.1.0.
 
 ## Responsibility boundaries
 
@@ -126,4 +137,6 @@ policy. None of those are claimed as implemented in v1.0.1.
 | LangGraph | Per-clip workflow routing and bounded corrective attempt |
 | Airflow | Pipeline-stage scheduling and operational visibility |
 | Backend validation | Final authority before reviewed state is persisted |
+| Subtitle formatter | Deterministic cue layout and punctuation without rewriting recognized words |
+| Renderer | Stable face tracking, bounded loss handling, and safe 1080x1920 composition |
 | Human editor | Final edits, acceptance/rejection, and render trigger |

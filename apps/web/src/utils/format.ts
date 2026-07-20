@@ -151,5 +151,5 @@ export function isTerminalStatus(status: string | null | undefined): boolean {
 }
 
 export function shouldPollStatus(status: string | null | undefined): boolean {
-  return status === 'created' || status === 'queued' || status === 'running'
+  return status === 'queued' || status === 'running'
 }

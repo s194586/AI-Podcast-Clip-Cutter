@@ -1,5 +1,6 @@
 import argparse
 import json
+import math
 import re
 import subprocess
 import tempfile
@@ -15,6 +16,11 @@ OUTPUT_WIDTH = 1080
 OUTPUT_HEIGHT = 1920
 FACE_SAMPLE_STRIDE = 5
 SMOOTHING_WINDOW = 15
+FACE_TRACKING_CONFIRM_SAMPLES = 2
+FACE_LOSS_GRACE_SECONDS = 0.8
+TRACKING_MODE_SAFE = "safe_full_frame"
+TRACKING_MODE_HOLD = "hold_last_crop"
+TRACKING_MODE_ACTIVE = "tracking"
 REACTION_SILENCE_SECONDS = 3.0
 PUNCH_IN_ZOOM = 1.15
 REACTION_ZOOM = 1.08
@@ -823,12 +829,115 @@ def smooth_state(history):
     }
 
 
+def initial_tracking_fallback_state():
+    return {
+        "mode": TRACKING_MODE_SAFE,
+        "consecutive_detections": 0,
+        "samples_since_confirmed": 0,
+    }
+
+
+def tracking_grace_samples(fps, analyze_every=FACE_SAMPLE_STRIDE, grace_seconds=FACE_LOSS_GRACE_SECONDS):
+    safe_fps = max(float(fps), 1.0)
+    safe_analyze_every = max(int(analyze_every), 1)
+    return max(1, int(math.ceil(max(float(grace_seconds), 0.0) * safe_fps / safe_analyze_every)))
+
+
+def update_tracking_fallback_state(
+    state,
+    face_detected,
+    *,
+    fps,
+    analyze_every=FACE_SAMPLE_STRIDE,
+    grace_seconds=FACE_LOSS_GRACE_SECONDS,
+    confirmation_samples=FACE_TRACKING_CONFIRM_SAMPLES,
+):
+    mode = str(state.get("mode") or TRACKING_MODE_SAFE)
+    consecutive_detections = max(0, int(state.get("consecutive_detections") or 0))
+    samples_since_confirmed = max(0, int(state.get("samples_since_confirmed") or 0))
+    required_detections = max(1, int(confirmation_samples))
+    grace_limit = tracking_grace_samples(fps, analyze_every, grace_seconds)
+
+    if mode == TRACKING_MODE_ACTIVE:
+        if face_detected:
+            return {
+                "mode": TRACKING_MODE_ACTIVE,
+                "consecutive_detections": required_detections,
+                "samples_since_confirmed": 0,
+            }
+        samples_since_confirmed = 1
+        return {
+            "mode": TRACKING_MODE_SAFE if samples_since_confirmed >= grace_limit else TRACKING_MODE_HOLD,
+            "consecutive_detections": 0,
+            "samples_since_confirmed": samples_since_confirmed,
+        }
+
+    if mode == TRACKING_MODE_HOLD:
+        samples_since_confirmed += 1
+        consecutive_detections = consecutive_detections + 1 if face_detected else 0
+        if consecutive_detections >= required_detections:
+            return {
+                "mode": TRACKING_MODE_ACTIVE,
+                "consecutive_detections": required_detections,
+                "samples_since_confirmed": 0,
+            }
+        return {
+            "mode": TRACKING_MODE_SAFE if samples_since_confirmed >= grace_limit else TRACKING_MODE_HOLD,
+            "consecutive_detections": consecutive_detections,
+            "samples_since_confirmed": min(samples_since_confirmed, grace_limit),
+        }
+
+    consecutive_detections = consecutive_detections + 1 if face_detected else 0
+    return {
+        "mode": TRACKING_MODE_ACTIVE if consecutive_detections >= required_detections else TRACKING_MODE_SAFE,
+        "consecutive_detections": min(consecutive_detections, required_detections),
+        "samples_since_confirmed": 0,
+    }
+
+
 def _std_dev(values):
     if not values:
         return 0.0
     mean = sum(values) / len(values)
     variance = sum((value - mean) ** 2 for value in values) / len(values)
     return variance ** 0.5
+
+
+def compose_full_frame_blur_background(frame):
+    height, width = frame.shape[:2]
+    if height <= 0 or width <= 0:
+        raise ValueError("Cannot frame an empty image.")
+
+    background_width = max(1, OUTPUT_WIDTH // 4)
+    background_height = max(1, OUTPUT_HEIGHT // 4)
+    background_scale = max(background_width / width, background_height / height)
+    scaled_background_width = max(background_width, int(round(width * background_scale)))
+    scaled_background_height = max(background_height, int(round(height * background_scale)))
+    background = cv2.resize(
+        frame,
+        (scaled_background_width, scaled_background_height),
+        interpolation=cv2.INTER_LINEAR,
+    )
+    background_x = max(0, (scaled_background_width - background_width) // 2)
+    background_y = max(0, (scaled_background_height - background_height) // 2)
+    background = background[
+        background_y : background_y + background_height,
+        background_x : background_x + background_width,
+    ]
+    background = cv2.GaussianBlur(background, (0, 0), sigmaX=12, sigmaY=12)
+    composed = cv2.resize(background, (OUTPUT_WIDTH, OUTPUT_HEIGHT), interpolation=cv2.INTER_LINEAR)
+
+    foreground_scale = min(OUTPUT_WIDTH / width, OUTPUT_HEIGHT / height)
+    foreground_width = max(1, min(OUTPUT_WIDTH, int(round(width * foreground_scale))))
+    foreground_height = max(1, min(OUTPUT_HEIGHT, int(round(height * foreground_scale))))
+    foreground = cv2.resize(frame, (foreground_width, foreground_height), interpolation=cv2.INTER_LINEAR)
+    foreground_x = (OUTPUT_WIDTH - foreground_width) // 2
+    foreground_y = (OUTPUT_HEIGHT - foreground_height) // 2
+    composed[
+        foreground_y : foreground_y + foreground_height,
+        foreground_x : foreground_x + foreground_width,
+    ] = foreground
+    return composed
 
 
 def crop_and_resize(frame, state):
@@ -855,6 +964,14 @@ def crop_and_resize(frame, state):
     if cropped.size == 0:
         cropped = frame
     return cv2.resize(cropped, (OUTPUT_WIDTH, OUTPUT_HEIGHT), interpolation=cv2.INTER_LINEAR)
+
+
+def render_frame_for_tracking_mode(frame, mode, tracking_state):
+    if mode == TRACKING_MODE_SAFE:
+        return compose_full_frame_blur_background(frame)
+    if tracking_state is None:
+        raise ValueError("A tracking state is required outside the safe layout.")
+    return crop_and_resize(frame, tracking_state)
 
 
 def render_dynamic_segment(video_path, frames_dir, start, duration, clip_segments, window, render_hints):
@@ -885,8 +1002,12 @@ def render_dynamic_segment(video_path, frames_dir, start, duration, clip_segment
         "center_y": frame_height / 2.0,
         "zoom": 1.0,
     }
+    fallback_state = initial_tracking_fallback_state()
+    last_valid_smoothed_state = None
     previous_center_x = None
     detected_frames = 0
+    tracked_output_frames = 0
+    safe_output_frames = 0
     fallback_frames = 0
     reaction_frames = 0
     zoom_frames = 0
@@ -916,30 +1037,59 @@ def render_dynamic_segment(video_path, frames_dir, start, duration, clip_segment
                     render_hints,
                 )
                 ignored_faces_count += ignored_faces
+                previous_mode = fallback_state["mode"]
+                fallback_state = update_tracking_fallback_state(
+                    fallback_state,
+                    target_face is not None,
+                    fps=fps,
+                    analyze_every=FACE_SAMPLE_STRIDE,
+                )
                 if target_face:
-                    current_state = update_tracking_state(
-                        current_state,
-                        target_face,
-                        frame_width,
-                        frame_height,
-                        active_segment,
-                        reaction_mode,
-                        render_hints,
-                    )
                     previous_center_x = target_face["center_x"]
                     detected_frames += 1
-                    if reaction_mode:
-                        reaction_frames += 1
-                    if current_state["zoom"] > 1.0:
-                        zoom_frames += 1
+                    if fallback_state["mode"] == TRACKING_MODE_ACTIVE:
+                        if previous_mode != TRACKING_MODE_ACTIVE:
+                            current_state = {
+                                "center_x": target_face["center_x"],
+                                "center_y": target_face["center_y"],
+                                "zoom": determine_zoom(active_segment, reaction_mode),
+                            }
+                            history.clear()
+                        else:
+                            current_state = update_tracking_state(
+                                current_state,
+                                target_face,
+                                frame_width,
+                                frame_height,
+                                active_segment,
+                                reaction_mode,
+                                render_hints,
+                            )
+                        if reaction_mode:
+                            reaction_frames += 1
+                        if current_state["zoom"] > 1.0:
+                            zoom_frames += 1
                 else:
                     fallback_frames += 1
 
-            history.append(dict(current_state))
-            smoothed = smooth_state(history) or current_state
-            center_x_samples.append(smoothed["center_x"] / max(frame_width, 1))
-            center_y_samples.append(smoothed["center_y"] / max(frame_height, 1))
-            framed = crop_and_resize(frame, smoothed)
+                if fallback_state["mode"] == TRACKING_MODE_SAFE:
+                    history.clear()
+                    if previous_mode != TRACKING_MODE_SAFE or target_face is None:
+                        previous_center_x = None
+
+            if fallback_state["mode"] == TRACKING_MODE_ACTIVE:
+                history.append(dict(current_state))
+                last_valid_smoothed_state = smooth_state(history) or current_state
+                tracked_output_frames += 1
+            elif fallback_state["mode"] == TRACKING_MODE_SAFE:
+                last_valid_smoothed_state = None
+                safe_output_frames += 1
+
+            display_state = last_valid_smoothed_state
+            if display_state is not None:
+                center_x_samples.append(display_state["center_x"] / max(frame_width, 1))
+                center_y_samples.append(display_state["center_y"] / max(frame_height, 1))
+            framed = render_frame_for_tracking_mode(frame, fallback_state["mode"], display_state)
             frame_path = frames_dir / f"frame_{frame_index + 1:06d}.jpg"
             cv2.imwrite(str(frame_path), framed, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
     finally:
@@ -947,12 +1097,12 @@ def render_dynamic_segment(video_path, frames_dir, start, duration, clip_segment
         analyzer.close()
         del capture
 
-    face_tracking_used = detected_frames > 0
+    face_tracking_used = tracked_output_frames > 0
     fallback_reason = ""
     layout_mode_used = str(render_hints.get("layout_mode") or "")
     if not face_tracking_used:
-        fallback_reason = "no_faces_detected_center_crop"
-        layout_mode_used = "safe_center_crop"
+        fallback_reason = "no_stable_faces_detected_full_frame_fallback"
+        layout_mode_used = "full_frame_blur_background"
 
     return {
         "fps": fps,
@@ -974,10 +1124,16 @@ def render_dynamic_segment(video_path, frames_dir, start, duration, clip_segment
         "face_tracking_allowed": bool(render_hints.get("allow_face_tracking")),
         "face_tracking_used": face_tracking_used,
         "preserve_full_frame": bool(render_hints.get("preserve_full_frame")),
-        "full_frame_preserved": False,
+        "full_frame_preserved": safe_output_frames > 0,
         "blur_background": bool(render_hints.get("blur_background")),
         "safe_center_crop": bool(render_hints.get("safe_center_crop")),
-        "tracking_mode": "dynamic_face_tracking" if face_tracking_used else "center_fallback_no_faces",
+        "tracking_mode": (
+            "dynamic_face_tracking_with_safe_fallback"
+            if face_tracking_used and safe_output_frames > 0
+            else "dynamic_face_tracking"
+            if face_tracking_used
+            else "full_frame_fallback_no_stable_face"
+        ),
         "crop_stabilized": bool(SMOOTHING_WINDOW > 1 and float(render_hints.get("smoothing_strength") or 0.0) > 0.0),
         "fallback_reason": fallback_reason,
         "center_x_mean_norm": round(sum(center_x_samples) / len(center_x_samples), 4) if center_x_samples else 0.5,

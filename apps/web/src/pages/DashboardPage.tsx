@@ -1,4 +1,4 @@
-import { ArrowDownWideNarrow, ExternalLink, Plus, RefreshCcw } from 'lucide-react'
+import { ArrowRight, Plus, RefreshCcw } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { listProjects } from '../api/projects'
@@ -6,13 +6,43 @@ import type { Project } from '../api/types'
 import { ErrorState, EmptyState, LoadingSkeleton } from '../components/StateBlocks'
 import { ProgressBar } from '../components/ProgressBar'
 import { StatusBadge } from '../components/StatusBadge'
-import { formatDate, projectTitle, sourceDomain, stageLabel } from '../utils/format'
+import { formatDate, projectTitle, stageLabel } from '../utils/format'
 
-const FILTERS = ['all', 'created', 'queued', 'running', 'ready', 'failed', 'cancelled'] as const
+const FILTERS = [
+  { value: 'all', label: 'All projects' },
+  { value: 'active', label: 'In progress' },
+  { value: 'ready', label: 'Ready to review' },
+  { value: 'attention', label: 'Needs attention' },
+] as const
+
+type ProjectFilter = (typeof FILTERS)[number]['value']
+
+function matchesFilter(project: Project, filter: ProjectFilter): boolean {
+  if (filter === 'active') {
+    return project.status === 'created' || project.status === 'queued' || project.status === 'running'
+  }
+  if (filter === 'attention') {
+    return project.status === 'failed' || project.status === 'cancelled'
+  }
+  return filter === 'all' || project.status === filter
+}
+
+function projectAction(project: Project): { label: string; to: string } {
+  if (project.status === 'ready') {
+    return { label: 'Review clips', to: `/projects/${project.id}/editor` }
+  }
+  if (project.status === 'queued' || project.status === 'running') {
+    return { label: 'View progress', to: `/projects/${project.id}` }
+  }
+  if (project.status === 'created') {
+    return { label: 'Start processing', to: `/projects/${project.id}` }
+  }
+  return { label: 'Review status', to: `/projects/${project.id}` }
+}
 
 export function DashboardPage() {
   const [projects, setProjects] = useState<Project[]>([])
-  const [filter, setFilter] = useState<(typeof FILTERS)[number]>('all')
+  const [filter, setFilter] = useState<ProjectFilter>('all')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [refreshKey, setRefreshKey] = useState(0)
@@ -48,9 +78,12 @@ export function DashboardPage() {
   }, [refreshKey])
 
   const visibleProjects = useMemo(
-    () => projects.filter((project) => filter === 'all' || project.status === filter),
+    () => projects.filter((project) => matchesFilter(project, filter)),
     [filter, projects],
   )
+
+  const activeCount = projects.filter((project) => project.status === 'queued' || project.status === 'running').length
+  const attentionCount = projects.filter((project) => project.status === 'failed' || project.status === 'cancelled').length
 
   return (
     <div className="space-y-6">
@@ -58,7 +91,7 @@ export function DashboardPage() {
         <div>
           <h1 className="text-3xl font-semibold text-app-text">Projects</h1>
           <p className="mt-2 max-w-3xl text-sm leading-6 text-app-muted">
-            Create a podcast project, track deterministic processing, review candidate shorts, and render final exports from one workspace.
+            Turn a podcast into reviewable short clips, then render and export the strongest moments.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -83,30 +116,28 @@ export function DashboardPage() {
           <p className="mt-1 text-2xl font-semibold">{projects.filter((project) => project.status === 'ready').length}</p>
         </div>
         <div className="app-panel-muted p-3">
-          <p className="app-label">Running</p>
-          <p className="mt-1 text-2xl font-semibold">{projects.filter((project) => project.status === 'running' || project.status === 'queued').length}</p>
+          <p className="app-label">In progress</p>
+          <p className="mt-1 text-2xl font-semibold">{activeCount}</p>
         </div>
         <div className="app-panel-muted p-3">
-          <p className="app-label">Accepted clips</p>
-          <p className="mt-1 text-2xl font-semibold">{projects.reduce((total, project) => total + (project.accepted_clip_count ?? 0), 0)}</p>
+          <p className="app-label">Needs attention</p>
+          <p className="mt-1 text-2xl font-semibold">{attentionCount}</p>
         </div>
       </section>
 
       <section className="app-panel p-4">
         <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-          <div className="flex items-center gap-2 text-sm font-medium text-app-muted">
-            <ArrowDownWideNarrow className="h-4 w-4" aria-hidden="true" />
-            Sorted by updated time
-          </div>
+          <p className="text-sm text-app-muted">Most recently updated first</p>
           <div className="flex flex-wrap gap-2" aria-label="Filter projects by status">
-            {FILTERS.map((value) => (
+            {FILTERS.map((option) => (
               <button
-                key={value}
+                key={option.value}
                 type="button"
-                className={`rounded-md border px-3 py-2 text-sm transition ${filter === value ? 'border-app-accent bg-app-accent/15 text-app-text' : 'border-app-border bg-app-panelAlt text-app-muted hover:text-app-text'}`}
-                onClick={() => setFilter(value)}
+                className={`rounded-md border px-3 py-2 text-sm transition ${filter === option.value ? 'border-app-accent bg-app-accent/15 text-app-text' : 'border-app-border bg-app-panelAlt text-app-muted hover:text-app-text'}`}
+                aria-pressed={filter === option.value}
+                onClick={() => setFilter(option.value)}
               >
-                {value === 'all' ? 'All' : value.replaceAll('_', ' ')}
+                {option.label}
               </button>
             ))}
           </div>
@@ -127,6 +158,7 @@ export function DashboardPage() {
           <div className="grid gap-3">
             {visibleProjects.map((project) => {
               const failed = project.status === 'failed'
+              const action = projectAction(project)
               const progressValue = failed ? Math.min(project.progress_percent ?? 0, 95) : project.progress_percent
               const stageText = failed && project.error_message
                 ? `${stageLabel(project.current_stage ?? project.stage)}: ${project.error_message}`
@@ -139,8 +171,7 @@ export function DashboardPage() {
                       <h2 className="truncate text-lg font-semibold text-app-text">{projectTitle(project)}</h2>
                       <StatusBadge value={project.status} />
                     </div>
-                    <p className="truncate text-sm text-app-muted">{sourceDomain(project.source_url)}</p>
-                    <p className="mt-1 text-sm text-app-faint">Updated {formatDate(project.updated_at)}</p>
+                    <p className="text-sm text-app-muted">YouTube source · Updated {formatDate(project.updated_at)}</p>
                   </div>
                   <div className="space-y-2">
                     <ProgressBar value={progressValue} label={stageText} tone={failed ? 'danger' : 'success'} />
@@ -150,12 +181,12 @@ export function DashboardPage() {
                     </div>
                   </div>
                   <Link
-                    to={`/projects/${project.id}`}
-                    className="app-button justify-center"
+                    to={action.to}
+                    className={`app-button justify-center ${project.status === 'ready' ? 'app-button-primary' : ''}`}
                     onClick={() => localStorage.setItem('lastProjectId', String(project.id))}
                   >
-                    <ExternalLink className="h-4 w-4" aria-hidden="true" />
-                    Open Project
+                    {action.label}
+                    <ArrowRight className="h-4 w-4" aria-hidden="true" />
                   </Link>
                 </div>
               </article>

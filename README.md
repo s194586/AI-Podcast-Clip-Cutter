@@ -14,12 +14,16 @@ Airflow orchestration, FastAPI, React, and Docker.
 
 ## Current status
 
-The core portfolio MVP is complete. The current release is `v1.0.1`:
+The portfolio-ready MVP is complete. The current release is `v1.1.0`:
 
-- local and Airflow orchestration modes are implemented;
-- the React project dashboard, processing view, clip editor, and exports view are implemented;
+- the product flow is Projects -> Processing -> Review/Edit -> Render -> Exports;
+- the React UI presents state-aware primary actions and explicit loading, error, empty, and completed states;
+- local and Airflow orchestration modes reuse the same pipeline services;
 - LangGraph routes each semantic boundary review through validated terminal outcomes;
-- final rendering remains an intentional human-triggered action;
+- human-triggered rendering creates 1080x1920 raw and subtitled export variants;
+- dynamic face tracking uses a bounded last-crop hold and a blurred full-frame fallback when stable detection is unavailable;
+- subtitles are formatted deterministically from Faster-Whisper timestamps without LLM-based transcript rewriting;
+- GitHub Actions validates the backend, frontend, and Docker Compose configuration on pushes to `main`;
 - deployment, browser E2E tests, and automatic HTTP 429 `Retry-After` handling are optional extensions;
 - Content Packaging and publishing-metadata generation are not planned.
 
@@ -57,7 +61,11 @@ model to own the entire pipeline.
 - Authoritative backend validation before any reviewed boundary is persisted.
 - LangGraph routing for success, one corrective retry, manual review, provider failure, and cancellation.
 - Local subprocess orchestration or Apache Airflow 3.3.0 with LocalExecutor.
-- React editor for project state, clip preview, boundary edits, accept/reject, review, rendering, and exports.
+- State-aware React flow for Projects, Processing, Review/Edit, Render, and Exports.
+- Human-controlled boundary preview, editing, acceptance/rejection, and rendering.
+- Face-aware 1080x1920 rendering with smoothing, a bounded face-loss grace period, and a blurred full-frame safe layout.
+- Deterministic subtitle cues built from word timestamps when available, with a segment-timestamp fallback for compatible older transcripts.
+- Grouped raw and subtitled exports with the latest render foregrounded and previous attempts retained as history.
 - Human-in-the-loop fallback: unresolved automatic review terminates instead of holding an Airflow task open.
 
 ## Architecture overview
@@ -103,11 +111,16 @@ create project
 -> mark project ready
 -> human reviews/edits
 -> human triggers rendering
+-> create 1080x1920 raw and subtitled variants
+-> present the latest files and render history in Exports
 ```
 
 Candidate generation is deterministic and local. Gemini does not rank the full
 source or invent arbitrary timestamps; it chooses the best semantic pair from
-an allowlist generated from real transcript segments.
+an allowlist generated from real transcript segments. Gemini is not used to
+rewrite quoted speech. Subtitle formatting may adjust spacing, capitalization,
+punctuation, and cue layout, but it preserves the words recognized by
+Faster-Whisper.
 
 ## Airflow orchestration
 
@@ -294,20 +307,23 @@ before resetting anything.
 | `TRANSCRIPTION_DEVICE` | `auto`, `cuda`, or `cpu` | `auto` | No |
 | `TRANSCRIPTION_COMPUTE_TYPE` | Faster-Whisper compute type | `auto` | No |
 | `APP_DATA_HOST_PATH` | Compose application data mount | `./data` | No |
-| `subtitle_checker_mode` | Per-project subtitle-check setting | `local_only` recommended offline | No |
+| `subtitle_checker_mode` | Legacy per-project compatibility field; external/LLM subtitle correction is disabled | `local_only` retained for older data | No |
 
 Use `.env.example` and `orchestration/airflow/airflow.env.example` as templates.
 Never commit `.env` or `.env.airflow`.
 
 ## Testing and validation
 
-Previously verified release results:
+Verified `v1.1.0` release results:
 
-- 274 Python tests passed.
-- 40 React tests passed.
+- Python `unittest` suite: 305 tests completed successfully, with 1 optional FFmpeg smoke skipped.
+- React/Vitest suite: 52 of 52 tests passed.
 - Airflow DAG parsed with 8 tasks, zero import errors, and zero retries on `review_boundaries`.
 - Mocked LangGraph smoke covered valid-first response, corrective retry, two invalid responses, HTTP 429, cancellation, and a three-clip batch.
 - A real isolated Airflow smoke created one project, one job, one DagRun, executed eight sequential tasks, imported five clips, and ended with the project ready. It used `auto_review=false`, so no Gemini call occurred.
+
+The GitHub Actions workflow runs separate backend, frontend, and Compose
+validation jobs for each push to `main` and can also be started manually.
 
 These are release-validation results, not a live CI badge. There is currently no
 browser E2E suite.
@@ -350,6 +366,9 @@ The rationale and consequences are documented in
 - Frontend orchestration metadata is sanitized.
 - Provider failures remain distinct from product review decisions.
 - Invalid/cancelled reviews do not overwrite AI boundaries, user edits, or prior valid reviewed boundaries.
+- Gemini is limited to semantic boundary review and does not rewrite quoted transcript text.
+- Subtitle formatting preserves recognized words and uses no external correction service.
+- Before stable face acquisition and after the bounded face-loss hold, dynamic tracking switches to a blurred full-frame layout instead of retaining a stale narrow crop.
 - Rendering is never triggered automatically by semantic review.
 
 These controls are engineering safeguards, not a formal security certification.
@@ -360,13 +379,15 @@ These controls are engineering safeguards, not a formal security certification.
 - The application business database is SQLite and targets a local, single-project-at-a-time deployment.
 - Airflow is validated as local Docker infrastructure, not a production cloud deployment.
 - There is no browser E2E suite or automatic moderation/compliance pipeline.
-- Candidate quality depends on source audio and transcription quality.
+- Candidate and subtitle text quality depend on source audio and Faster-Whisper; lexical ASR errors may remain.
+- There is no built-in subtitle text editor.
 - The Airflow image intentionally excludes legacy `google-generativeai`; current provider integration uses `google-genai`.
-- Final rendering remains user-triggered.
+- The complete pipeline remains local-first, and production hosting is not part of this release.
+- Final rendering remains user-triggered and editorially controlled.
 
 ## Roadmap and completion status
 
-The portfolio MVP is complete at `v1.0.1`. Optional extensions are limited to:
+The portfolio MVP is complete at `v1.1.0`. Optional extensions are limited to:
 
 - final README/demo assets after safe screenshots are captured;
 - browser E2E tests;

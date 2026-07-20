@@ -31,20 +31,18 @@ import {
   formatSeconds,
   projectTitle,
   reviewerLabel,
-  sourceDomain,
   statusLabel,
 } from '../utils/format'
 
-type ClipFilter = 'all' | 'adjusted' | 'ready' | 'manual_review' | 'rejected' | 'accepted' | 'rendered'
+type ClipFilter = 'all' | 'review' | 'accepted' | 'rendered' | 'rejected'
+type ReviewScope = 'selected' | 'all'
 
 const CLIP_FILTERS: { id: ClipFilter; label: string }[] = [
   { id: 'all', label: 'All' },
-  { id: 'adjusted', label: 'Adjusted' },
-  { id: 'ready', label: 'Ready' },
-  { id: 'manual_review', label: 'Manual review' },
-  { id: 'rejected', label: 'Rejected' },
+  { id: 'review', label: 'Needs review' },
   { id: 'accepted', label: 'Accepted' },
   { id: 'rendered', label: 'Rendered' },
+  { id: 'rejected', label: 'Rejected' },
 ]
 
 function useNumericProjectId(): number | null {
@@ -57,19 +55,33 @@ function clipMatchesFilter(clip: Clip, filter: ClipFilter): boolean {
   if (filter === 'all') {
     return true
   }
-  if (filter === 'adjusted') {
-    return clip.boundary_source === 'user' || clip.boundary_source === 'ai_review' || Boolean(clip.latest_review_changed_boundaries)
-  }
-  if (filter === 'ready') {
-    return clip.status !== 'rejected' && (clip.latest_review_decision === 'render_ready' || clip.latest_review_decision === 'adjust_boundaries')
-  }
-  if (filter === 'manual_review') {
-    return clip.latest_review_decision === 'manual_review'
-  }
   if (filter === 'rendered') {
     return clip.render_status === 'completed' || clip.render_status === 'completed_with_warnings'
   }
+  if (filter === 'review') {
+    return clip.status !== 'accepted' && clip.status !== 'rejected'
+  }
   return clip.status === filter
+}
+
+function clipWorkflowState(clip: Clip): string {
+  if (clip.render_status === 'completed' || clip.render_status === 'completed_with_warnings') {
+    return clip.render_status
+  }
+  if (clip.status === 'accepted' || clip.status === 'rejected') {
+    return clip.status
+  }
+  if (clip.latest_review_decision === 'manual_review') {
+    return 'manual_review'
+  }
+  if (
+    clip.boundary_source === 'user'
+    || clip.boundary_source === 'ai_review'
+    || clip.latest_review_decision === 'adjust_boundaries'
+  ) {
+    return 'adjust_boundaries'
+  }
+  return 'draft'
 }
 
 function transcriptExcerpt(clip: Clip): string {
@@ -127,7 +139,9 @@ export function EditorPage() {
   const [currentTime, setCurrentTime] = useState(0)
   const [loopClip, setLoopClip] = useState(false)
   const [videoMissing, setVideoMissing] = useState(false)
+  const [pendingReview, setPendingReview] = useState<ReviewScope | null>(null)
   const videoRef = useRef<HTMLVideoElement | null>(null)
+  const confirmReviewRef = useRef<HTMLButtonElement | null>(null)
   const hydratedClipIdRef = useRef<string | null>(null)
   const pendingSeekTargetRef = useRef<number | null>(null)
 
@@ -179,7 +193,7 @@ export function EditorPage() {
   }, [projectId])
 
   const filteredClips = useMemo(() => clips.filter((clip) => clipMatchesFilter(clip, filter)), [clips, filter])
-  const selectedClip = clips.find((clip) => clip.id === selectedClipId) ?? filteredClips[0] ?? clips[0] ?? null
+  const selectedClip = filteredClips.find((clip) => clip.id === selectedClipId) ?? filteredClips[0] ?? clips[0] ?? null
 
   useEffect(() => {
     if (!selectedClip) {
@@ -199,10 +213,28 @@ export function EditorPage() {
   }, [selectedClip])
 
   useEffect(() => {
-    if (!selectedClipId && filteredClips[0]) {
+    if (filteredClips[0] && !filteredClips.some((clip) => clip.id === selectedClipId)) {
       setSelectedClipId(filteredClips[0].id)
     }
   }, [filteredClips, selectedClipId])
+
+  useEffect(() => {
+    if (!pendingReview) {
+      return undefined
+    }
+    const previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    confirmReviewRef.current?.focus()
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setPendingReview(null)
+      }
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('keydown', onKeyDown)
+      previouslyFocused?.focus()
+    }
+  }, [pendingReview])
 
   function updateSelectedClip(nextClip: Clip) {
     setClips((current) => replaceClip(current, nextClip))
@@ -327,6 +359,16 @@ export function EditorPage() {
     }
   }
 
+  async function confirmReview() {
+    const scope = pendingReview
+    setPendingReview(null)
+    if (scope === 'selected') {
+      await reviewSelectedClip()
+    } else if (scope === 'all') {
+      await reviewAllClips()
+    }
+  }
+
   async function renderClip() {
     if (!selectedClip || projectId === null) {
       return
@@ -374,7 +416,16 @@ export function EditorPage() {
     }
   }
 
-  const renderDisabled = selectedClip?.status === 'rejected' || action === 'render'
+  const isRendered = selectedClip?.render_status === 'completed' || selectedClip?.render_status === 'completed_with_warnings'
+  const isAccepted = selectedClip?.status === 'accepted'
+  const actionBusy = action !== null
+  const hasSavedReview = Boolean(
+    selectedClip
+      && (
+        selectedClip.latest_review_provider
+        || (selectedClip.reviewed_start !== null && selectedClip.reviewed_end !== null)
+      ),
+  )
 
   if (loading) {
     return <LoadingSkeleton rows={5} />
@@ -397,7 +448,7 @@ export function EditorPage() {
             Back to processing
           </Link>
           <h1 className="mt-3 text-3xl font-semibold text-app-text">{projectTitle(project)}</h1>
-          <p className="mt-2 text-sm text-app-muted">{sourceDomain(project.source_url)}</p>
+          <p className="mt-2 text-sm text-app-muted">Review clip boundaries, choose a decision, then render the final short.</p>
         </div>
         <div className="flex flex-wrap gap-2">
           <button type="button" className="app-button" onClick={() => void loadEditor()}>
@@ -411,12 +462,22 @@ export function EditorPage() {
         </div>
       </div>
 
+      <nav className="app-panel-muted overflow-x-auto p-3" aria-label="Clip production steps">
+        <ol className="flex min-w-max items-center gap-2 text-sm">
+          {['1. Preview', '2. Edit boundaries', '3. Accept', '4. Render', '5. Export'].map((step, index) => (
+            <li key={step} className={`rounded-md px-3 py-2 ${index === 0 || (index <= 2 && isAccepted) || (index <= 4 && isRendered) ? 'bg-app-accent/10 text-app-text' : 'text-app-muted'}`}>
+              {step}
+            </li>
+          ))}
+        </ol>
+      </nav>
+
       {clips.length === 0 ? (
         <EmptyState title="No clips in this project">When processing finishes, candidate clips imported for this project will appear here.</EmptyState>
       ) : null}
 
       {clips.length > 0 && selectedClip ? (
-        <section className="grid min-w-0 gap-4 xl:grid-cols-[minmax(260px,330px)_minmax(0,1fr)_minmax(280px,360px)]">
+        <section className="grid min-w-0 gap-4 xl:grid-cols-[minmax(240px,300px)_minmax(420px,1fr)_minmax(260px,320px)]">
           <aside className="app-panel min-w-0 overflow-hidden">
             <div className="border-b border-app-border p-4">
               <h2 className="app-section-title">Clip list</h2>
@@ -426,6 +487,7 @@ export function EditorPage() {
                     key={item.id}
                     type="button"
                     className={`rounded-md border px-2.5 py-1.5 text-xs transition ${filter === item.id ? 'border-app-accent bg-app-accent/15 text-app-text' : 'border-app-border bg-app-panelAlt text-app-muted hover:text-app-text'}`}
+                    aria-pressed={filter === item.id}
                     onClick={() => setFilter(item.id)}
                   >
                     {item.label}
@@ -433,7 +495,7 @@ export function EditorPage() {
                 ))}
               </div>
             </div>
-            <div className="max-h-[720px] overflow-auto p-2">
+            <div className="max-h-[420px] overflow-auto p-2 xl:max-h-[calc(100vh-19rem)]">
               {filteredClips.length === 0 ? (
                 <p className="p-4 text-sm text-app-muted">No clips match this filter.</p>
               ) : (
@@ -449,21 +511,9 @@ export function EditorPage() {
                       <span className="text-xs text-app-muted">{formatSeconds(clip.duration)}</span>
                     </div>
                     <p className="line-clamp-3 text-sm leading-5 text-app-muted">{transcriptExcerpt(clip) || 'No transcript excerpt.'}</p>
-                    <div className="mt-3 flex flex-wrap gap-1.5">
-                      <StatusBadge value={clip.status} />
-                      <StatusBadge value={clip.latest_review_decision ?? 'draft'} />
-                      <StatusBadge value={clip.render_status} />
+                    <div className="mt-3">
+                      <StatusBadge value={clipWorkflowState(clip)} />
                     </div>
-                    <dl className="mt-3 grid grid-cols-2 gap-2 text-xs text-app-faint">
-                      <div>
-                        <dt>Provider</dt>
-                        <dd className="text-app-muted">{clip.latest_review_provider ? statusLabel(clip.latest_review_provider) : 'None'}</dd>
-                      </div>
-                      <div>
-                        <dt>Boundary</dt>
-                        <dd className="text-app-muted">{statusLabel(clip.boundary_source)}</dd>
-                      </div>
-                    </dl>
                   </button>
                 ))
               )}
@@ -480,13 +530,13 @@ export function EditorPage() {
                 <StatusBadge value={selectedClip.status} />
               </div>
               {videoMissing ? (
-                <div className="flex aspect-video items-center justify-center rounded-panel border border-app-border bg-black/40 text-sm text-app-muted">
+                <div className="flex aspect-video w-full items-center justify-center rounded-panel border border-app-border bg-black/40 text-sm text-app-muted 2xl:max-h-[46vh]">
                   Missing source video for this project.
                 </div>
               ) : (
                 <video
                   ref={videoRef}
-                  className="aspect-video w-full rounded-panel border border-app-border bg-black"
+                  className="aspect-video w-full rounded-panel border border-app-border bg-black object-contain 2xl:max-h-[46vh]"
                   src={apiUrl(`/projects/${project.id}/source-video`)}
                   controls
                   preload="metadata"
@@ -496,51 +546,49 @@ export function EditorPage() {
                   onTimeUpdate={onVideoTimeUpdate}
                 />
               )}
-              <div className="mt-4 grid gap-3 md:grid-cols-[1fr_auto] md:items-center">
-                <div className="grid gap-2 sm:grid-cols-4">
-                  <div className="app-panel-muted p-3">
-                    <p className="app-label">Current time</p>
-                    <p className="mt-1 font-semibold">{formatSeconds(currentTime)}</p>
+              <div className="mt-3 border-t border-app-border pt-3">
+                <div className="flex flex-wrap items-end justify-between gap-3">
+                  <div>
+                    <h3 className="app-section-title">Selection boundaries</h3>
+                    <p className="mt-1 text-sm text-app-muted">Adjust the exact start and end used for preview and render.</p>
                   </div>
-                  <div className="app-panel-muted p-3">
-                    <p className="app-label">Start time</p>
-                    <p className="mt-1 font-semibold">{formatSeconds(editStart)}</p>
-                  </div>
-                  <div className="app-panel-muted p-3">
-                    <p className="app-label">End time</p>
-                    <p className="mt-1 font-semibold">{formatSeconds(editEnd)}</p>
-                  </div>
-                  <div className="app-panel-muted p-3">
-                    <p className="app-label">Duration</p>
-                    <p className="mt-1 font-semibold">{formatSeconds(editEnd - editStart)}</p>
-                  </div>
+                  <p className="text-sm text-app-muted">
+                    <span className="app-label mr-2">Current time</span>
+                    <span className="font-semibold text-app-text">{formatSeconds(currentTime)}</span>
+                  </p>
                 </div>
-                <div className="flex flex-wrap gap-2">
-                  <button type="button" className="app-button" onClick={() => void togglePlayback()}>
-                    <Play className="h-4 w-4" aria-hidden="true" />
-                    <Pause className="h-4 w-4" aria-hidden="true" />
-                    Play/Pause
-                  </button>
-                  <button type="button" className="app-button" onClick={jumpToStart}>
-                    <SkipBack className="h-4 w-4" aria-hidden="true" />
-                    Jump to Start
-                  </button>
-                  <button type="button" className={`app-button ${loopClip ? 'border-app-accent text-app-text' : ''}`} onClick={() => setLoopClip((value) => !value)}>
-                    <RotateCcw className="h-4 w-4" aria-hidden="true" />
-                    Loop Clip Preview
-                  </button>
-                </div>
-              </div>
-            </section>
 
-            <section className="app-panel p-4">
-              <h2 className="app-section-title">Boundary editor</h2>
-              <div className="mt-4 grid gap-3 md:grid-cols-3">
-                <BoundaryGroup title="Original selection" start={selectedClip.ai_start} end={selectedClip.ai_end} />
-                <BoundaryGroup title="Gemini suggestion" start={selectedClip.reviewed_start} end={selectedClip.reviewed_end} emptyLabel="Not reviewed yet" />
-                <BoundaryGroup title="Current edit" start={editStart} end={editEnd} />
-              </div>
-              <div className="mt-5 grid gap-4">
+                <div className="mt-3 grid items-end gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
+                  <label className="min-w-0 space-y-2">
+                    <span className="app-label">Numeric start input</span>
+                    <input type="number" className="app-input" step="0.1" value={editStart} onChange={(event) => setEditStart(Number(event.target.value))} />
+                  </label>
+                  <label className="min-w-0 space-y-2">
+                    <span className="app-label">Numeric end input</span>
+                    <input type="number" className="app-input" step="0.1" value={editEnd} onChange={(event) => setEditEnd(Number(event.target.value))} />
+                  </label>
+                  <button type="button" className="app-button app-button-primary" onClick={jumpToStart}>
+                    <SkipBack className="h-4 w-4" aria-hidden="true" />
+                    Preview selection
+                  </button>
+                </div>
+
+                <dl className="mt-4 grid grid-cols-3 gap-2">
+                  <div className="app-panel-muted p-3">
+                    <dt className="app-label">Start time</dt>
+                    <dd className="mt-1 font-semibold">{formatSeconds(editStart)}</dd>
+                  </div>
+                  <div className="app-panel-muted p-3">
+                    <dt className="app-label">End time</dt>
+                    <dd className="mt-1 font-semibold">{formatSeconds(editEnd)}</dd>
+                  </div>
+                  <div className="app-panel-muted p-3">
+                    <dt className="app-label">Duration</dt>
+                    <dd className="mt-1 font-semibold">{formatSeconds(editEnd - editStart)}</dd>
+                  </div>
+                </dl>
+
+                <div className="mt-4 grid gap-4">
                 <label className="space-y-2">
                   <span className="app-label">Start range control</span>
                   <input
@@ -565,17 +613,29 @@ export function EditorPage() {
                     className="w-full accent-green-500"
                   />
                 </label>
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <label className="space-y-2">
-                    <span className="app-label">Numeric start input</span>
-                    <input type="number" className="app-input" step="0.1" value={editStart} onChange={(event) => setEditStart(Number(event.target.value))} />
-                  </label>
-                  <label className="space-y-2">
-                    <span className="app-label">Numeric end input</span>
-                    <input type="number" className="app-input" step="0.1" value={editEnd} onChange={(event) => setEditEnd(Number(event.target.value))} />
-                  </label>
-                </div>
                 <div className="flex flex-wrap gap-2">
+                  <button type="button" className="app-button" onClick={() => void togglePlayback()}>
+                    <Play className="h-4 w-4" aria-hidden="true" />
+                    <Pause className="h-4 w-4" aria-hidden="true" />
+                    Play/Pause
+                  </button>
+                  <button type="button" className={`app-button ${loopClip ? 'border-app-accent text-app-text' : ''}`} aria-pressed={loopClip} onClick={() => setLoopClip((value) => !value)}>
+                    <RotateCcw className="h-4 w-4" aria-hidden="true" />
+                    Loop Preview
+                  </button>
+                  <button type="button" className="app-button" onClick={() => requestSeek(selectedClip.ai_start)}>
+                    <Play className="h-4 w-4" aria-hidden="true" />
+                    Preview original
+                  </button>
+                  <button
+                    type="button"
+                    className="app-button"
+                    disabled={selectedClip.reviewed_start === null}
+                    onClick={() => requestSeek(selectedClip.reviewed_start ?? selectedClip.ai_start)}
+                  >
+                    <Sparkles className="h-4 w-4" aria-hidden="true" />
+                    Preview Gemini
+                  </button>
                   <button type="button" className="app-button" disabled={selectedClip.reviewed_start === null || selectedClip.reviewed_end === null} onClick={() => {
                     const nextStart = selectedClip.reviewed_start ?? selectedClip.ai_start
                     const nextEnd = selectedClip.reviewed_end ?? selectedClip.ai_end
@@ -594,10 +654,17 @@ export function EditorPage() {
                     <Scissors className="h-4 w-4" aria-hidden="true" />
                     Reset to original selection
                   </button>
-                  <button type="button" className="app-button app-button-primary" disabled={action === 'save'} onClick={() => void saveBoundaries()}>
+                  <button type="button" className="app-button app-button-primary" disabled={actionBusy || editStart >= editEnd} onClick={() => void saveBoundaries()}>
                     {action === 'save' ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <Save className="h-4 w-4" aria-hidden="true" />}
                     Save Boundaries
                   </button>
+                </div>
+
+                <div className="grid gap-3 border-t border-app-border pt-4 md:grid-cols-3">
+                  <BoundaryGroup title="Original selection" start={selectedClip.ai_start} end={selectedClip.ai_end} />
+                  <BoundaryGroup title="Gemini suggestion" start={selectedClip.reviewed_start} end={selectedClip.reviewed_end} emptyLabel="Not reviewed yet" />
+                  <BoundaryGroup title="Current edit" start={editStart} end={editEnd} />
+                </div>
                 </div>
               </div>
             </section>
@@ -605,46 +672,80 @@ export function EditorPage() {
 
           <aside className="min-w-0 space-y-4">
             <section className="app-panel p-4">
-              <h2 className="app-section-title">Actions</h2>
+              <h2 className="app-section-title">Next action</h2>
+              <p className="mt-2 text-sm leading-6 text-app-muted">
+                {isRendered
+                  ? 'This clip has a completed export. Open it or create a new render attempt.'
+                  : isAccepted
+                    ? 'This clip is accepted and ready to render.'
+                    : selectedClip.status === 'rejected'
+                      ? 'This clip is rejected. Accept it again before rendering.'
+                      : 'Preview the boundaries, save any edits, then accept or reject the clip.'}
+              </p>
               <div className="mt-4 grid gap-2">
-                <button type="button" className="app-button app-button-primary" disabled={action === 'accepted'} onClick={() => void setClipStatus('accepted')}>
-                  {action === 'accepted' ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <Check className="h-4 w-4" aria-hidden="true" />}
-                  Accept
-                </button>
-                <button type="button" className="app-button app-button-danger" disabled={action === 'rejected'} onClick={() => void setClipStatus('rejected')}>
-                  {action === 'rejected' ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <X className="h-4 w-4" aria-hidden="true" />}
-                  Reject
-                </button>
-                <button type="button" className="app-button" disabled={renderDisabled} onClick={() => void renderClip()}>
-                  {action === 'render' ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <FileVideo2 className="h-4 w-4" aria-hidden="true" />}
-                  Render Short
-                </button>
-                <button type="button" className="app-button" disabled={action === 'review-selected'} onClick={() => void reviewSelectedClip()}>
-                  {action === 'review-selected' ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <Sparkles className="h-4 w-4" aria-hidden="true" />}
-                  Review selected clip
-                </button>
-                <button type="button" className="app-button" disabled={action === 'review-all'} onClick={() => void reviewAllClips()}>
-                  {action === 'review-all' ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <Sparkles className="h-4 w-4" aria-hidden="true" />}
-                  {health?.clip_review_provider === 'gemini' ? 'Review all clips with Gemini' : 'Review all clips with configured reviewer'}
-                </button>
+                {isRendered ? (
+                  <>
+                    <Link to={`/projects/${project.id}/exports`} className="app-button app-button-primary">
+                      <FileVideo2 className="h-4 w-4" aria-hidden="true" />
+                      View Export
+                    </Link>
+                    <button type="button" className="app-button" disabled={actionBusy} onClick={() => void renderClip()}>
+                      {action === 'render' ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <RotateCcw className="h-4 w-4" aria-hidden="true" />}
+                      {action === 'render' ? 'Rendering...' : 'Re-render Short'}
+                    </button>
+                  </>
+                ) : isAccepted ? (
+                  <>
+                    <button type="button" className="app-button app-button-primary" disabled={actionBusy} onClick={() => void renderClip()}>
+                      {action === 'render' ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <FileVideo2 className="h-4 w-4" aria-hidden="true" />}
+                      {action === 'render' ? 'Rendering...' : 'Render Short'}
+                    </button>
+                    <button type="button" className="app-button app-button-danger" disabled={actionBusy} onClick={() => void setClipStatus('rejected')}>
+                      {action === 'rejected' ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <X className="h-4 w-4" aria-hidden="true" />}
+                      Reject Clip
+                    </button>
+                  </>
+                ) : selectedClip.status === 'rejected' ? (
+                  <button type="button" className="app-button app-button-primary" disabled={actionBusy} onClick={() => void setClipStatus('accepted')}>
+                    {action === 'accepted' ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <Check className="h-4 w-4" aria-hidden="true" />}
+                    Accept Clip
+                  </button>
+                ) : (
+                  <>
+                    <button type="button" className="app-button app-button-primary" disabled={actionBusy} onClick={() => void setClipStatus('accepted')}>
+                      {action === 'accepted' ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <Check className="h-4 w-4" aria-hidden="true" />}
+                      Accept Clip
+                    </button>
+                    <button type="button" className="app-button app-button-danger" disabled={actionBusy} onClick={() => void setClipStatus('rejected')}>
+                      {action === 'rejected' ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <X className="h-4 w-4" aria-hidden="true" />}
+                      Reject Clip
+                    </button>
+                  </>
+                )}
               </div>
-              {selectedClip.status === 'rejected' ? <p className="mt-3 text-sm leading-6 text-app-muted">Change the clip decision before rendering this rejected clip.</p> : null}
-              {notice ? <p className="mt-3 rounded-md border border-app-accent/50 bg-app-accent/10 p-3 text-sm text-green-100">{notice}</p> : null}
-              {actionError ? <p className="mt-3 rounded-md border border-app-danger/50 bg-app-danger/10 p-3 text-sm text-red-100">{actionError}</p> : null}
+              {action === 'render' ? (
+                <p className="mt-3 rounded-md border border-app-accent/50 bg-app-accent/10 p-3 text-sm text-green-100" role="status">
+                  Rendering your short. This may take a moment.
+                </p>
+              ) : null}
+              {notice ? <p className="mt-3 rounded-md border border-app-accent/50 bg-app-accent/10 p-3 text-sm text-green-100" role="status">{notice}</p> : null}
+              {actionError ? <p className="mt-3 rounded-md border border-app-danger/50 bg-app-danger/10 p-3 text-sm text-red-100" role="alert">{actionError}</p> : null}
             </section>
 
             <section className="app-panel p-4">
               <h2 className="app-section-title">AI review panel</h2>
-              <dl className="mt-4 space-y-3 text-sm">
-                <InfoRow label="Configured reviewer" value={healthError ? 'Backend unavailable' : reviewerLabel(health)} />
-                <InfoRow label="Latest saved provider" value={selectedClip.latest_review_provider ? statusLabel(selectedClip.latest_review_provider) : 'No saved review'} />
-                <InfoRow label="Review decision" value={<StatusBadge value={selectedClip.latest_review_decision ?? 'draft'} />} />
-                <InfoRow label="Boundaries changed" value={selectedClip.latest_review_changed_boundaries ? 'Yes' : 'No'} />
-                <InfoRow label="Manual-review state" value={selectedClip.latest_review_decision === 'manual_review' ? 'Needs manual review' : 'Not flagged'} />
-                <InfoRow label="Technical failure state" value={selectedClip.latest_review_failed ? 'Requires attention' : 'None'} />
-              </dl>
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <StatusBadge value={selectedClip.latest_review_decision ?? 'draft'} />
+                <span className="text-sm text-app-muted">
+                  {selectedClip.latest_review_decision === 'manual_review'
+                    ? 'Needs manual review'
+                    : selectedClip.latest_review_changed_boundaries
+                      ? 'Suggested different boundaries'
+                      : 'No boundary change suggested'}
+                </span>
+              </div>
               {selectedClip.latest_review_failed ? (
-                <div className="mt-4 rounded-md border border-app-danger/50 bg-app-danger/10 p-3 text-sm text-red-100">
+                <div className="mt-4 rounded-md border border-app-danger/50 bg-app-danger/10 p-3 text-sm text-red-100" role="alert">
                   <p>
                     {selectedClip.latest_review_failure_category === 'boundary_validation'
                       ? BOUNDARY_VALIDATION_FAILURE_MESSAGE
@@ -658,13 +759,63 @@ export function EditorPage() {
                   ) : null}
                 </div>
               ) : null}
-              <div className="mt-4 rounded-panel border border-app-border bg-app-panelAlt p-3">
-                <p className="app-label">Concise rationale</p>
-                <p className="mt-2 text-sm leading-6 text-app-muted">{selectedClip.latest_review_reasoning_summary || 'No saved rationale yet.'}</p>
+              <div className="mt-4 grid gap-2 border-t border-app-border pt-4">
+                <button type="button" className="app-button" disabled={actionBusy} onClick={() => setPendingReview('selected')}>
+                  {action === 'review-selected' ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <Sparkles className="h-4 w-4" aria-hidden="true" />}
+                  {hasSavedReview ? 'Re-run AI Review for This Clip' : 'Run AI Review for This Clip'}
+                </button>
+                <button type="button" className="app-button" disabled={actionBusy} onClick={() => setPendingReview('all')}>
+                  {action === 'review-all' ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <Sparkles className="h-4 w-4" aria-hidden="true" />}
+                  {health?.clip_review_provider === 'gemini' ? 'Re-review All Clips with Gemini' : 'Re-review All Clips'}
+                </button>
               </div>
+              <details className="mt-4 border-t border-app-border pt-4">
+                <summary className="cursor-pointer text-sm font-medium text-app-text">Review rationale and details</summary>
+                <div className="mt-4 rounded-panel border border-app-border bg-app-panelAlt p-3">
+                  <p className="app-label">Review rationale</p>
+                  <p className="mt-2 text-sm leading-6 text-app-muted">{selectedClip.latest_review_reasoning_summary || 'No saved rationale yet.'}</p>
+                </div>
+                <dl className="mt-4 space-y-3 text-sm">
+                  <InfoRow label="Configured reviewer" value={healthError ? 'Backend unavailable' : reviewerLabel(health)} />
+                  <InfoRow label="Latest provider" value={selectedClip.latest_review_provider ? statusLabel(selectedClip.latest_review_provider) : 'No saved review'} />
+                  <InfoRow label="Boundary source" value={statusLabel(selectedClip.boundary_source)} />
+                  <InfoRow label="Manual review" value={selectedClip.latest_review_decision === 'manual_review' ? 'Required' : 'Not flagged'} />
+                  <InfoRow label="Failure state" value={selectedClip.latest_review_failed ? 'Requires attention' : 'None'} />
+                </dl>
+              </details>
             </section>
           </aside>
         </section>
+      ) : null}
+
+      {pendingReview ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4" role="presentation">
+          <section
+            className="app-panel w-full max-w-lg p-5"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="review-confirmation-title"
+            aria-describedby="review-confirmation-description"
+          >
+            <h2 id="review-confirmation-title" className="text-xl font-semibold text-app-text">
+              {pendingReview === 'all' ? 'Re-review all clips?' : hasSavedReview ? 'Replace the saved AI review?' : 'Run AI boundary review?'}
+            </h2>
+            <p id="review-confirmation-description" className="mt-3 text-sm leading-6 text-app-muted">
+              {pendingReview === 'all'
+                ? 'This runs the configured reviewer for every clip and replaces saved suggestions. Gemini usage may incur API cost.'
+                : 'This runs the configured reviewer for the selected clip and replaces its saved suggestion. Gemini usage may incur API cost.'}
+            </p>
+            <div className="mt-5 flex flex-wrap justify-end gap-2">
+              <button type="button" className="app-button" onClick={() => setPendingReview(null)}>
+                Cancel
+              </button>
+              <button ref={confirmReviewRef} type="button" className="app-button app-button-primary" onClick={() => void confirmReview()}>
+                <Sparkles className="h-4 w-4" aria-hidden="true" />
+                Run Review
+              </button>
+            </div>
+          </section>
+        </div>
       ) : null}
     </div>
   )
