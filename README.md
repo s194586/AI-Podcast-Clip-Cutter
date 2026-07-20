@@ -14,7 +14,7 @@ Airflow orchestration, FastAPI, React, and Docker.
 
 ## Current status
 
-The core portfolio MVP is complete. `v1.0.0` is the portfolio-ready release:
+The core portfolio MVP is complete. The current release is `v1.0.1`:
 
 - local and Airflow orchestration modes are implemented;
 - the React project dashboard, processing view, clip editor, and exports view are implemented;
@@ -303,7 +303,7 @@ Never commit `.env` or `.env.airflow`.
 
 Previously verified release results:
 
-- 257 Python tests passed.
+- 274 Python tests passed.
 - 40 React tests passed.
 - Airflow DAG parsed with 8 tasks, zero import errors, and zero retries on `review_boundaries`.
 - Mocked LangGraph smoke covered valid-first response, corrective retry, two invalid responses, HTTP 429, cancellation, and a three-clip batch.
@@ -366,7 +366,7 @@ These controls are engineering safeguards, not a formal security certification.
 
 ## Roadmap and completion status
 
-The portfolio MVP is complete at `v1.0.0`. Optional extensions are limited to:
+The portfolio MVP is complete at `v1.0.1`. Optional extensions are limited to:
 
 - final README/demo assets after safe screenshots are captured;
 - browser E2E tests;

@@ -72,7 +72,7 @@ For AI Engineer, ML Engineer, and backend-oriented roles, the project demonstrat
 
 - Built a FastAPI/React podcast clipping MVP with deterministic candidate scoring, SQLite project state, and human-controlled rendering.
 - Integrated Gemini semantic boundary selection through a typed LangGraph workflow with authoritative validation, one bounded corrective retry, and offline provider-mocked tests.
-- Implemented reusable pipeline stages shared by local subprocess and Apache Airflow 3.3.0 orchestration, validated through 257 Python tests, 40 React tests, Docker/DAG checks, and controlled smoke tests.
+- Implemented reusable pipeline stages shared by local subprocess and Apache Airflow 3.3.0 orchestration, validated through 274 Python tests, 40 React tests, Docker/DAG checks, and controlled smoke tests.
 
 ## Interview talking points
 
@@ -115,7 +115,7 @@ clip identity, and cancellation state before persistence.
 Likely work includes production serving, authentication/authorization, an
 application database suited to horizontal scaling, object storage, formal
 monitoring, deployment automation, browser E2E coverage, and an explicit quota
-policy. None of those are claimed as implemented in v1.0.0.
+policy. None of those are claimed as implemented in v1.0.1.
 
 ## Responsibility boundaries
 
