@@ -1,0 +1,100 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backend-tests:
+    name: Backend tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8
+        with:
+          enable-cache: true
+
+      - name: Install locked dependencies
+        run: uv sync --locked
+
+      - name: Compile checked Python modules
+        run: >-
+          uv run python -m py_compile
+          apps/review_agent/*.py
+          apps/api/main.py
+          orchestration/airflow/pipeline_tasks.py
+          orchestration/airflow/dags/podcast_pipeline_dag.py
+
+      - name: Run backend tests
+        run: uv run python -m unittest discover -s tests
+
+      - name: Check installed dependencies
+        run: uv pip check
+
+  frontend-tests:
+    name: Frontend tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: apps/web
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Run frontend tests
+        run: npm run test -- --run
+
+      - name: Lint frontend
+        run: npm run lint
+
+      - name: Build frontend
+        run: npm run build
+
+  compose-validation:
+    name: Docker Compose validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Prepare non-secret validation inputs
+        run: |
+          cp orchestration/airflow/airflow.env.example orchestration/airflow/.env.airflow
+          mkdir -p orchestration/airflow/secrets/custom-ca
+          touch orchestration/airflow/secrets/custom-ca/root-ca.pem
+
+      - name: Validate Docker Compose configuration
+        run: >-
+          docker compose
+          --env-file ./orchestration/airflow/.env.airflow
+          -f ./orchestration/airflow/docker-compose.yml
+          config --quiet
