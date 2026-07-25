@@ -73,16 +73,7 @@ def build_youtube_heatmap(
     *,
     extractor_version: str,
 ) -> dict[str, Any]:
-    if not isinstance(info, dict):
-        raise HeatmapUnavailableError("yt-dlp returned invalid video metadata.")
-    video_id = info.get("id")
-    if not isinstance(video_id, str) or not video_id.strip():
-        raise HeatmapUnavailableError("yt-dlp metadata does not contain a video_id.")
-    if info.get("extractor") != "youtube":
-        raise HeatmapUnavailableError(
-            "YouTube Most Replayed data requires the youtube extractor."
-        )
-
+    video_id = validate_youtube_metadata_identity(info)
     duration = _finite_number(info.get("duration"), "duration_seconds")
     points = validate_points(info.get("heatmap"), duration)
     return {
@@ -95,6 +86,19 @@ def build_youtube_heatmap(
         "duration_seconds": duration,
         "points": points,
     }
+
+
+def validate_youtube_metadata_identity(info: Any) -> str:
+    if not isinstance(info, dict):
+        raise HeatmapUnavailableError("yt-dlp returned invalid video metadata.")
+    video_id = info.get("id")
+    if not isinstance(video_id, str) or not video_id.strip():
+        raise HeatmapUnavailableError("yt-dlp metadata does not contain a video_id.")
+    if info.get("extractor") != "youtube":
+        raise HeatmapUnavailableError(
+            "YouTube Most Replayed data requires the youtube extractor."
+        )
+    return video_id
 
 
 def validate_heatmap_document(payload: Any) -> dict[str, Any]:
@@ -125,7 +129,7 @@ def validate_heatmap_document(payload: Any) -> dict[str, Any]:
     return result
 
 
-def load_heatmap_points(path: str | Path) -> list[dict[str, float]]:
+def load_heatmap_document(path: str | Path) -> dict[str, Any]:
     try:
         with open(path, "r", encoding="utf-8") as file_handle:
             payload = json.load(file_handle)
@@ -133,7 +137,11 @@ def load_heatmap_points(path: str | Path) -> list[dict[str, float]]:
         raise HeatmapUnavailableError(
             "Heatmap file is missing, unreadable, or contains invalid JSON."
         ) from exc
-    return validate_heatmap_document(payload)["points"]
+    return validate_heatmap_document(payload)
+
+
+def load_heatmap_points(path: str | Path) -> list[dict[str, float]]:
+    return load_heatmap_document(path)["points"]
 
 
 def atomic_write_json(path: str | Path, payload: Any) -> None:
