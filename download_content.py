@@ -1,17 +1,21 @@
 #!/usr/bin/env python3
-"""Pobiera wideo (mp4, do 1080p jeśli dostępne) i audio (mp3), zapisuje do /input,
-oraz kopiuje metadane (.info.json) do /metadata i wyciąga pole `heatmap` jeśli istnieje.
+"""Pobiera wideo (mp4, do 1080p jeśli dostępne) i audio (mp3), zapisuje do /input
+oraz publikuje zweryfikowaną heatmapę z bieżącego wyniku yt-dlp.
 
 Zachowuje oryginalne pliki wideo i audio oraz pokazuje postęp pobierania (przydatne dla długich plików).
 """
 import os
 import sys
 import argparse
-import json
-import shutil
-import random
 import subprocess
 from yt_dlp import YoutubeDL
+from yt_dlp.version import __version__ as YT_DLP_VERSION
+
+from heatmap_contract import (
+    HeatmapUnavailableError,
+    atomic_write_json,
+    build_youtube_heatmap,
+)
 
 
 def ensure_dirs(input_dir, metadata_dir):
@@ -58,42 +62,6 @@ def find_latest_file(folder, ext):
         return None
     candidates.sort(key=lambda p: os.path.getmtime(p), reverse=True)
     return candidates[0]
-
-
-def recursive_find_key(obj, key):
-    if isinstance(obj, dict):
-        if key in obj:
-            return obj[key]
-        for v in obj.values():
-            r = recursive_find_key(v, key)
-            if r is not None:
-                return r
-    elif isinstance(obj, list):
-        for it in obj:
-            r = recursive_find_key(it, key)
-            if r is not None:
-                return r
-    return None
-
-
-def create_placeholder_heatmap(duration_seconds, interval=0.19):
-    """Tworzy placeholder heatmapę na podstawie długości wideo."""
-    heatmap = []
-    time = 0.0
-    random.seed(42)
-    
-    while time < duration_seconds:
-        # Wartości losowe z rozkładem Gaussa (średnio 0.5, odchylenie 0.25)
-        value = max(0.1, min(1.0, random.gauss(0.5, 0.25)))
-        heatmap.append({
-            "start_time": time,
-            "end_time": time + interval,
-            "value": round(value, 4)
-        })
-        time += interval
-    
-    return heatmap
-
 
 
 def progress_hook(d):
@@ -146,7 +114,6 @@ def download_content(url, input_dir, metadata_dir, prefer_1080=True):
     # Zlokalizuj pobrane pliki w katalogu input
     latest_mp4 = find_latest_file(input_dir, '.mp4')
     latest_mp3 = find_latest_file(input_dir, '.mp3')
-    latest_info = find_latest_file(input_dir, '.info.json')
 
     merged_mp4 = None
     if latest_mp4:
@@ -179,46 +146,27 @@ def download_content(url, input_dir, metadata_dir, prefer_1080=True):
     else:
         print('Finalny plik MP4 z audio nie jest dostępny. Sprawdź dane wejściowe.')
 
-    if latest_info:
-        # skopiuj info.json do metadata
-        base = os.path.splitext(os.path.basename(latest_info))[0]
-        dest_info = os.path.join(metadata_dir, os.path.basename(latest_info))
-        shutil.copy2(latest_info, dest_info)
-        print(f'Metadane skopiowano do: {dest_info}')
-
-        # spróbuj wyciągnąć pole heatmap
+    heatmap_path = os.path.join(metadata_dir, "heatmap.json")
+    try:
+        heatmap_document = build_youtube_heatmap(
+            info,
+            extractor_version=YT_DLP_VERSION,
+        )
+    except HeatmapUnavailableError:
         try:
-            with open(latest_info, 'r', encoding='utf-8') as f:
-                info_json = json.load(f)
-            heatmap = recursive_find_key(info_json, 'heatmap')
-            
-            # Jeśli YouTube nie dostarczył heatmapy, stwórz placeholder
-            if heatmap is None:
-                duration = info_json.get('duration', 0)
-                print(f'YouTube nie zawiera heatmapy dla tego wideo (duration: {duration}s). Tworzę placeholder heatmapę...')
-                heatmap = create_placeholder_heatmap(duration)
-            
-            if heatmap:
-                # zapisz heatmapę — zarówno pod nazwą powiązaną z plikiem, jak i jako heatmap.json (najnowsza)
-                heatmap_name = f"{base}.heatmap.json"
-                heatmap_path = os.path.join(metadata_dir, heatmap_name)
-                with open(heatmap_path, 'w', encoding='utf-8') as hf:
-                    json.dump(heatmap, hf, ensure_ascii=False, indent=2)
-                # zapis ogólny
-                general_path = os.path.join(metadata_dir, 'heatmap.json')
-                with open(general_path, 'w', encoding='utf-8') as gf:
-                    json.dump(heatmap, gf, ensure_ascii=False, indent=2)
-                print(f'Heatmapa zapisana: {heatmap_path} ({len(heatmap)} segmentów)')
-            else:
-                print('Nie udało się wygenerować heatmapy.')
-        except Exception as e:
-            print('Błąd przy przetwarzaniu metadanych (.info.json):', e)
-    else:
-        print('Nie znaleziono pliku .info.json — opcja writeinfojson mogła się nie powieść.')
+            os.unlink(heatmap_path)
+        except FileNotFoundError:
+            pass
+        raise
+    atomic_write_json(heatmap_path, heatmap_document)
+    print(
+        f'Heatmapa YouTube Most Replayed zapisana: {heatmap_path} '
+        f'({len(heatmap_document["points"])} segmentów)'
+    )
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Pobierz wideo i audio oraz zapisz metadane i heatmapę (jeśli dostępna).')
+    parser = argparse.ArgumentParser(description='Pobierz wideo i audio oraz zapisz prawdziwą heatmapę YouTube.')
     parser.add_argument('url', help='Link do wideo (YouTube, itp.)')
     parser.add_argument('--input', '-i', default=os.path.join(os.path.dirname(__file__), 'input'), help='Folder docelowy dla mp4/mp3')
     parser.add_argument('--metadata', '-m', default=os.path.join(os.path.dirname(__file__), 'metadata'), help='Folder docelowy dla metadanych')

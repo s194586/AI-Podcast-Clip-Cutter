@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from download_content import download_content
+from download_content import HeatmapUnavailableError, download_content
+from heatmap_contract import load_heatmap_points
 
 from ..context import PipelineContext
 from ..exceptions import DownloadStageError
@@ -15,11 +16,15 @@ class DownloadMediaStage:
         locator = MediaLocator(context)
         existing_video = locator.latest_video()
         if existing_video is not None:
+            load_heatmap_points(context.heatmap_file)
             return PipelineStageResult(
                 stage=self.stage,
                 success=True,
                 message="Existing source media reused.",
-                produced_artifacts=(context.safe_artifact(existing_video),),
+                produced_artifacts=(
+                    context.safe_artifact(existing_video),
+                    context.safe_artifact(context.heatmap_file),
+                ),
                 metadata={"reused": True},
             )
         if not context.source_url:
@@ -34,6 +39,8 @@ class DownloadMediaStage:
                 str(context.metadata_dir),
                 prefer_1080=True,
             )
+        except HeatmapUnavailableError:
+            raise
         except Exception as exc:
             raise DownloadStageError(f"Source media download failed: {exc}") from exc
 

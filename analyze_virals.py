@@ -21,6 +21,7 @@ from content_classifier import (
     save_content_profile,
 )
 from gemini_transport import generate_text_with_transport
+from heatmap_contract import load_heatmap_points
 from layout import VALID_LAYOUT_MODES, get_layout_profile, normalize_layout_mode
 from local_scoring import score_candidates
 from pipeline_modes import (
@@ -376,8 +377,7 @@ def load_transcript(file_path):
 
 
 def load_heatmap(file_path):
-    with open(file_path, "r", encoding="utf-8") as file_handle:
-        return json.load(file_handle)
+    return load_heatmap_points(file_path)
 
 
 def split_sentences(text):

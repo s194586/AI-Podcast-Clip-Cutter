@@ -11,6 +11,8 @@ import statistics
 from typing import Any
 import unicodedata
 
+from heatmap_contract import load_heatmap_points
+
 
 VALID_CONTENT_TYPES = ("podcast",)
 VALID_CONTENT_TYPE_MODES = ("auto",) + VALID_CONTENT_TYPES
@@ -173,8 +175,7 @@ def load_heatmap(path_or_data: str | Path | list[dict[str, Any]]) -> list[dict[s
     if isinstance(path_or_data, list):
         data = path_or_data
     else:
-        with open(path_or_data, "r", encoding="utf-8") as file_handle:
-            data = json.load(file_handle)
+        data = load_heatmap_points(path_or_data)
     if not isinstance(data, list):
         return []
 
