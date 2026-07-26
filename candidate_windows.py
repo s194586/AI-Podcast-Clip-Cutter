@@ -3,16 +3,22 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from decimal import Decimal, ROUND_HALF_UP
+import hashlib
+import json
 import math
 from typing import Any
 
 
-CANDIDATE_SCHEMA_VERSION = 1
+CANDIDATE_SCHEMA_VERSION = 2
 PEAK_SCHEMA_VERSION = 1
 SOURCE = "youtube_most_replayed"
 GENERATOR = "peak_centered_candidate_windows"
 GENERATOR_VERSION = 1
+CANDIDATE_ID_SCHEME = "sha256_video_generator_window"
+CANDIDATE_ID_VERSION = 1
 _WINDOW_TOLERANCE_SECONDS = 1e-6
+_MICROSECOND = Decimal("0.000001")
 
 
 def _finite_number(value: Any, field: str) -> float:
@@ -28,6 +34,46 @@ def _positive_integer(value: Any, field: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         raise ValueError(f"{field} must be a positive integer.")
     return value
+
+
+def _microseconds(value: Any, field: str) -> int:
+    _finite_number(value, field)
+    return int(
+        (Decimal(str(value)).quantize(_MICROSECOND, rounding=ROUND_HALF_UP) * 1_000_000)
+    )
+
+
+def build_candidate_id(
+    *,
+    video_id: str,
+    generator: str,
+    generator_version: int,
+    start_time: float,
+    end_time: float,
+) -> str:
+    """Return the stable identity for a technical candidate window."""
+    if not isinstance(video_id, str) or not video_id.strip():
+        raise ValueError("video_id must be a non-empty string.")
+    if not isinstance(generator, str) or not generator.strip():
+        raise ValueError("generator must be a non-empty string.")
+    _positive_integer(generator_version, "generator_version")
+    start = _finite_number(start_time, "start_time")
+    end = _finite_number(end_time, "end_time")
+    if start < 0.0:
+        raise ValueError("start_time must not be negative.")
+    if end <= start:
+        raise ValueError("end_time must exceed start_time.")
+
+    payload = {
+        "candidate_id_version": CANDIDATE_ID_VERSION,
+        "video_id": video_id,
+        "generator": generator,
+        "generator_version": generator_version,
+        "start_microseconds": _microseconds(start_time, "start_time"),
+        "end_microseconds": _microseconds(end_time, "end_time"),
+    }
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return f"cand_v{CANDIDATE_ID_VERSION}_{hashlib.sha256(canonical.encode('utf-8')).hexdigest()}"
 
 
 @dataclass(frozen=True)
@@ -175,6 +221,8 @@ def generate_candidate_windows(
         "source": SOURCE,
         "generator": GENERATOR,
         "generator_version": GENERATOR_VERSION,
+        "candidate_id_scheme": CANDIDATE_ID_SCHEME,
+        "candidate_id_version": CANDIDATE_ID_VERSION,
         "video_id": document["video_id"],
         "duration_seconds": document["duration_seconds"],
         "parameters": asdict(config),
@@ -222,6 +270,18 @@ def generate_candidate_windows(
             accepted.append(candidate)
             if len(accepted) == config.max_candidates:
                 break
+
+    for candidate in accepted:
+        candidate["candidate_id"] = build_candidate_id(
+            video_id=document["video_id"],
+            generator=GENERATOR,
+            generator_version=GENERATOR_VERSION,
+            start_time=candidate["start_time"],
+            end_time=candidate["end_time"],
+        )
+    candidate_ids = [candidate["candidate_id"] for candidate in accepted]
+    if len(candidate_ids) != len(set(candidate_ids)):
+        raise ValueError("candidate_id values must be unique within a candidate document.")
 
     result["candidates"] = [
         {"rank": rank, **candidate} for rank, candidate in enumerate(accepted, start=1)

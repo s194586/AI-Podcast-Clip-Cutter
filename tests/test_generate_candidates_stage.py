@@ -87,6 +87,10 @@ class GenerateCandidatesStageTests(unittest.TestCase):
         )
         self.assertEqual(result.metadata["candidate_count"], 1)
         self.assertEqual(adapter["canonical_artifact"], "metadata/candidate_windows.json")
+        self.assertEqual(canonical["schema_version"], 2)
+        self.assertEqual(adapter["schema_version"], 2)
+        self.assertEqual(adapter["candidate_id_scheme"], canonical["candidate_id_scheme"])
+        self.assertEqual(adapter["candidate_id_version"], canonical["candidate_id_version"])
         window = adapter["top_windows"][0]
         candidate = canonical["candidates"][0]
         self.assertEqual(window["start"], candidate["start_time"])
@@ -95,10 +99,11 @@ class GenerateCandidatesStageTests(unittest.TestCase):
         self.assertEqual(window["source_peak_rank"], candidate["source_peak_rank"])
         self.assertEqual(window["peak_time"], candidate["peak_time"])
         self.assertEqual(window["replay_interest"], candidate["replay_interest"])
+        self.assertEqual(window["id"], candidate["candidate_id"])
+        self.assertEqual(window["candidate_id"], candidate["candidate_id"])
         forbidden = {
             "local_score", "local_rank", "local_features", "selection_reasons", "reason",
             "summary", "text", "title", "viral_score", "semantic_score", "confidence",
-            "candidate_id", "id",
         }
         self.assertTrue(forbidden.isdisjoint(window))
 
@@ -142,6 +147,19 @@ class GenerateCandidatesStageTests(unittest.TestCase):
         with self.assertRaises(CandidateGenerationError) as raised:
             GenerateCandidatesStage().run(self.context)
         self.assertIsInstance(raised.exception.__cause__, ValueError)
+
+    def test_duplicate_candidate_ids_do_not_publish_artifacts(self) -> None:
+        template = peak_document()["peaks"][0]
+        self.write_peaks(peak_document(peaks=[
+            {**template, "rank": 1, "peak_time": 30.0, "start_time": 29.0, "end_time": 31.0},
+            {**template, "rank": 2, "peak_time": 150.0, "start_time": 149.0, "end_time": 151.0},
+        ]))
+        with patch("candidate_windows.build_candidate_id", return_value="cand_v1_" + "0" * 64):
+            with self.assertRaises(CandidateGenerationError) as raised:
+                GenerateCandidatesStage().run(self.context)
+        self.assertIsInstance(raised.exception.__cause__, ValueError)
+        self.assertFalse(self.context.candidate_windows_file.exists())
+        self.assertFalse(self.context.candidate_file.exists())
 
     def test_write_failures_preserve_existing_artifacts(self) -> None:
         self.write_peaks()

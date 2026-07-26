@@ -268,6 +268,7 @@ class PipelineServiceDatabaseTests(unittest.TestCase):
                     "top_windows": [
                         {
                             "id": "clip_001",
+                            "candidate_id": "clip_001",
                             "start": 12.0,
                             "end": 42.0,
                             "summary": "Offline candidate",
@@ -379,6 +380,24 @@ class PipelineServiceDatabaseTests(unittest.TestCase):
         with session_scope() as session:
             self.assertEqual(len(list(session.scalars(select(Project)).all())), 1)
             self.assertEqual(len(list(session.scalars(select(Clip)).all())), 1)
+
+    def test_candidate_import_uses_stable_candidate_id_for_both_database_ids(self):
+        candidate_id = "cand_v1_" + "a" * 64
+        (self.workspace / "top_windows.json").write_text(
+            json.dumps({"top_windows": [{"id": candidate_id, "candidate_id": candidate_id, "start": 12.0, "end": 42.0}]}),
+            encoding="utf-8",
+        )
+        stage = ImportCandidatesStage()
+        stage.run(self.context())
+        with session_scope() as session:
+            clip = session.scalars(select(Clip)).one()
+            clip_database_id = clip.id
+        stage.run(self.context())
+        with session_scope() as session:
+            clip = session.scalars(select(Clip)).one()
+        self.assertEqual(clip.id, clip_database_id)
+        self.assertEqual(clip.external_id, candidate_id)
+        self.assertEqual(clip.candidate_id, candidate_id)
 
     def test_candidate_import_retry_preserves_reviewed_boundaries(self):
         stage = ImportCandidatesStage()

@@ -2,9 +2,17 @@ from __future__ import annotations
 
 import copy
 import math
+import re
 import unittest
+from unittest.mock import patch
 
-from candidate_windows import CandidateWindowConfig, generate_candidate_windows
+from candidate_windows import (
+    CANDIDATE_ID_SCHEME,
+    CANDIDATE_ID_VERSION,
+    CandidateWindowConfig,
+    build_candidate_id,
+    generate_candidate_windows,
+)
 
 
 def peak(
@@ -63,6 +71,42 @@ class CandidateWindowTests(unittest.TestCase):
     def test_empty_peaks_produces_empty_candidates(self) -> None:
         self.assertEqual(self.generate()["candidates"], [])
 
+    def test_build_candidate_id_is_stable_and_has_the_required_format(self) -> None:
+        candidate_id = build_candidate_id(
+            video_id="video-123", generator="generator", generator_version=1,
+            start_time=95.0, end_time=155.0,
+        )
+        self.assertEqual(candidate_id, build_candidate_id(
+            video_id="video-123", generator="generator", generator_version=1,
+            start_time=95.0, end_time=155.0,
+        ))
+        self.assertRegex(candidate_id, r"^cand_v1_[0-9a-f]{64}$")
+        self.assertEqual(len(candidate_id), 72)
+        self.assertEqual(candidate_id, candidate_id.lower())
+
+    def test_candidate_id_identity_fields_and_microsecond_quantization(self) -> None:
+        common = dict(video_id="video-123", generator="generator", generator_version=1, start_time=95.0, end_time=155.0)
+        candidate_id = build_candidate_id(**common)
+        self.assertEqual(candidate_id, build_candidate_id(**{**common, "start_time": 95.0000004}))
+        self.assertNotEqual(candidate_id, build_candidate_id(**{**common, "video_id": "other-video"}))
+        self.assertNotEqual(candidate_id, build_candidate_id(**{**common, "start_time": 95.000001}))
+        self.assertNotEqual(candidate_id, build_candidate_id(**{**common, "end_time": 155.000001}))
+        self.assertNotEqual(candidate_id, build_candidate_id(**{**common, "generator_version": 2}))
+
+    def test_build_candidate_id_rejects_invalid_input(self) -> None:
+        valid = dict(video_id="video-123", generator="generator", generator_version=1, start_time=95.0, end_time=155.0)
+        invalid = (
+            {**valid, "video_id": ""}, {**valid, "generator": ""},
+            {**valid, "generator_version": True}, {**valid, "generator_version": 0},
+            {**valid, "start_time": True}, {**valid, "end_time": False},
+            {**valid, "start_time": math.nan}, {**valid, "end_time": math.inf},
+            {**valid, "start_time": -0.1}, {**valid, "end_time": 95.0},
+        )
+        for kwargs in invalid:
+            with self.subTest(kwargs=kwargs):
+                with self.assertRaises(ValueError):
+                    build_candidate_id(**kwargs)
+
     def test_identical_windows_are_deduplicated(self) -> None:
         candidates = self.generate(peaks=[peak(1, 10.0), peak(2, 20.0)])["candidates"]
         self.assertEqual(len(candidates), 1)
@@ -101,6 +145,29 @@ class CandidateWindowTests(unittest.TestCase):
         self.assertEqual(payload, original)
         self.assertEqual(first, second)
         self.assertEqual(first, generate_candidate_windows(payload))
+
+    def test_canonical_document_includes_unique_stable_candidate_ids(self) -> None:
+        generated = self.generate(duration=300.0, peaks=[peak(1, 30.0), peak(2, 150.0), peak(3, 250.0)])
+        self.assertEqual(generated["schema_version"], 2)
+        self.assertEqual(generated["candidate_id_scheme"], CANDIDATE_ID_SCHEME)
+        self.assertEqual(generated["candidate_id_version"], CANDIDATE_ID_VERSION)
+        candidate_ids = [candidate["candidate_id"] for candidate in generated["candidates"]]
+        self.assertEqual(len(candidate_ids), len(set(candidate_ids)))
+        self.assertTrue(all(re.fullmatch(r"cand_v1_[0-9a-f]{64}", item) for item in candidate_ids))
+
+    def test_candidate_id_does_not_depend_on_peak_metadata_or_final_rank(self) -> None:
+        baseline = self.generate(duration=300.0, peaks=[peak(1, 150.0)])["candidates"][0]["candidate_id"]
+        changed = self.generate(
+            duration=300.0,
+            peaks=[peak(8, 150.0, raw_value=0.1, smoothed_value=0.2, prominence=0.3)],
+            max_candidates=1,
+        )["candidates"][0]["candidate_id"]
+        self.assertEqual(baseline, changed)
+
+    def test_duplicate_candidate_ids_are_rejected(self) -> None:
+        with patch("candidate_windows.build_candidate_id", return_value="cand_v1_" + "0" * 64):
+            with self.assertRaisesRegex(ValueError, "candidate_id values must be unique"):
+                self.generate(duration=300.0, peaks=[peak(1, 30.0), peak(2, 150.0)])
 
     def test_invalid_configuration_is_rejected(self) -> None:
         invalid = (

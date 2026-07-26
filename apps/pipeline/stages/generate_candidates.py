@@ -65,11 +65,15 @@ class GenerateCandidatesStage:
 def _compatibility_adapter(candidate_document: dict) -> dict:
     """Build the minimal legacy ``top_windows.json`` adapter from canonical candidates."""
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "source": "candidate_windows_compatibility_adapter",
         "canonical_artifact": "metadata/candidate_windows.json",
+        "candidate_id_scheme": candidate_document["candidate_id_scheme"],
+        "candidate_id_version": candidate_document["candidate_id_version"],
         "top_windows": [
             {
+                "id": candidate["candidate_id"],
+                "candidate_id": candidate["candidate_id"],
                 "rank": candidate["rank"],
                 "source_peak_rank": candidate["source_peak_rank"],
                 "peak_time": candidate["peak_time"],
