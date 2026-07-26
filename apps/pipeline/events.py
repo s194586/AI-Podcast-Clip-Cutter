@@ -66,6 +66,7 @@ class PipelineEvent:
     produced_artifacts: tuple[str, ...] = ()
     metadata: dict[str, Any] = field(default_factory=dict)
     error_category: str | None = None
+    error_code: str | None = None
     timestamp: str = field(
         default_factory=lambda: datetime.now(timezone.utc).replace(microsecond=0).isoformat()
     )
@@ -99,6 +100,8 @@ class PipelineEvent:
             payload["metadata"] = sanitize_metadata(self.metadata)
         if self.error_category:
             payload["error_category"] = str(self.error_category)
+        if self.error_code:
+            payload["error_code"] = str(self.error_code)
         return payload
 
     def to_marker(self) -> str:
@@ -123,6 +126,7 @@ class PipelineEvent:
                 if payload.get("error_category") is not None
                 else None
             ),
+            error_code=(str(payload["error_code"]) if payload.get("error_code") is not None else None),
             timestamp=str(payload.get("timestamp") or datetime.now(timezone.utc).isoformat()),
         )
 

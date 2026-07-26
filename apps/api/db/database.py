@@ -170,6 +170,7 @@ def _ensure_sqlite_job_flow_columns(engine: Engine) -> None:
         "started_at": "ALTER TABLE jobs ADD COLUMN started_at DATETIME",
         "finished_at": "ALTER TABLE jobs ADD COLUMN finished_at DATETIME",
         "exit_code": "ALTER TABLE jobs ADD COLUMN exit_code INTEGER",
+        "error_code": "ALTER TABLE jobs ADD COLUMN error_code VARCHAR(128)",
         "orchestrator_type": "ALTER TABLE jobs ADD COLUMN orchestrator_type VARCHAR(32) DEFAULT 'local'",
         "airflow_dag_id": "ALTER TABLE jobs ADD COLUMN airflow_dag_id VARCHAR(256)",
         "airflow_dag_run_id": "ALTER TABLE jobs ADD COLUMN airflow_dag_run_id VARCHAR(512)",

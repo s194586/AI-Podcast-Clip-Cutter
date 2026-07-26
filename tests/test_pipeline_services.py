@@ -13,17 +13,20 @@ from sqlalchemy import select
 import manager
 from apps.api.db.database import configure_database, init_database, session_scope
 from apps.api.db.models import Clip, Project
+from apps.api.db.repositories import JobRepository
+from apps.api.orchestration.local import LocalPipelineOrchestrator
 from apps.api.services import project_service
 from apps.pipeline.config import PipelineConfig
 from apps.pipeline.context import PipelineContext
 from apps.pipeline.entrypoint import run_project_pipeline
 from apps.pipeline.events import PipelineEvent, parse_pipeline_event, progress_for_stage
-from apps.pipeline.exceptions import ReviewStageError, TranscriptionStageError
+from apps.pipeline.exceptions import DownloadStageError, ReviewStageError, TranscriptionStageError
 from apps.pipeline.profiles import legacy_cli_stages, project_pipeline_stages
 from apps.pipeline.results import PipelineStageResult
 from apps.pipeline.runner import PipelineRunner
 from apps.pipeline.stages.import_candidates import ImportCandidatesStage
 from apps.pipeline.stages.review_candidates import ReviewCandidatesStage
+from heatmap_contract import HeatmapUnavailableError
 
 
 class RecordingStage:
@@ -99,6 +102,48 @@ class PipelineRunnerTests(unittest.TestCase):
         self.assertFalse(result.success)
         self.assertEqual(result.failed_stage, "transcribing")
         self.assertEqual(calls, ["downloading", "transcribing"])
+
+    def test_heatmap_unavailable_has_safe_machine_readable_failure(self):
+        calls = []
+        events = []
+        result = PipelineRunner(
+            [
+                RecordingStage(
+                    "downloading",
+                    calls,
+                    failure=HeatmapUnavailableError(
+                        "C:\\workspace\\metadata\\heatmap.json token=secret"
+                    ),
+                ),
+                RecordingStage("generating_candidates", calls),
+            ],
+            event_sinks=(events.append,),
+        ).run(self.context)
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.error_code, "heatmap_unavailable")
+        self.assertEqual(result.stage_results[-1].error_code, "heatmap_unavailable")
+        self.assertEqual(
+            result.message,
+            "YouTube Most Replayed data is unavailable for this video.",
+        )
+        self.assertEqual(calls, ["downloading"])
+        self.assertEqual(events[-1].error_code, "heatmap_unavailable")
+        self.assertEqual(
+            parse_pipeline_event(events[-1].to_marker()).error_code,
+            "heatmap_unavailable",
+        )
+        self.assertNotIn("workspace", result.message)
+        self.assertNotIn("secret", result.message)
+
+    def test_non_heatmap_failures_do_not_receive_heatmap_error_code(self):
+        for failure in (DownloadStageError("download failed"), TimeoutError("timed out")):
+            with self.subTest(failure=failure.__class__.__name__):
+                result = PipelineRunner(
+                    [RecordingStage("downloading", [], failure=failure)]
+                ).run(self.context)
+                self.assertFalse(result.success)
+                self.assertIsNone(result.error_code)
 
     def test_structured_events_are_emitted_in_lifecycle_order(self):
         events = []
@@ -262,6 +307,28 @@ class PipelineServiceDatabaseTests(unittest.TestCase):
         self.assertEqual(clip.ai_start, 12.0)
         self.assertEqual(clip.edited_start, 12.0)
         self.assertIsNone(clip.reviewed_start)
+
+    def test_local_status_serializes_persisted_heatmap_error_code(self):
+        with session_scope() as session:
+            job = JobRepository(session).create(
+                project_id=self.project_id,
+                job_type="local_pipeline",
+                status="running",
+                current_stage="downloading",
+            )
+            job_id = job.id
+
+        orchestrator = LocalPipelineOrchestrator(project_root=self.root)
+        orchestrator._mark_failed(
+            self.project_id,
+            job_id,
+            "YouTube Most Replayed data is unavailable for this video.",
+            error_code="heatmap_unavailable",
+        )
+
+        status = orchestrator.get_status(self.project_id).to_dict()
+        self.assertEqual(status["status"], "failed")
+        self.assertEqual(status["error_code"], "heatmap_unavailable")
 
     def test_candidate_import_retry_is_idempotent(self):
         stage = ImportCandidatesStage()

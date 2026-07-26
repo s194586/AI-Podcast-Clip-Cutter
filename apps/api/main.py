@@ -161,6 +161,7 @@ def _orchestrated_project_status(project_id: int, *, project_root: Path) -> dict
         "retry_attempt",
         "retry_max_attempts",
         "error_message",
+        "error_code",
     }
     status_payload = orchestrator_status.to_dict()
     payload.update({key: status_payload.get(key) for key in safe_fields})

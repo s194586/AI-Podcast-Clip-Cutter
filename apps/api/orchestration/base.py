@@ -30,6 +30,7 @@ class JobResult:
     progress_percent: float
     message: str
     error_message: str | None = None
+    error_code: str | None = None
     orchestrator_type: str = "local"
     airflow_dag_id: str | None = None
     airflow_dag_run_id: str | None = None
@@ -46,6 +47,7 @@ class JobResult:
             "progress_percent": self.progress_percent,
             "message": self.message,
             "error_message": self.error_message,
+            "error_code": self.error_code,
             "orchestrator_type": self.orchestrator_type,
             "airflow_dag_id": self.airflow_dag_id,
             "airflow_dag_run_id": self.airflow_dag_run_id,
@@ -62,6 +64,7 @@ class PipelineStatus:
     progress_percent: float
     message: str
     error_message: str | None = None
+    error_code: str | None = None
     started_at: str | None = None
     updated_at: str | None = None
     completed_at: str | None = None
@@ -85,6 +88,7 @@ class PipelineStatus:
             "progress_percent": self.progress_percent,
             "message": self.message,
             "error_message": self.error_message,
+            "error_code": self.error_code,
             "started_at": self.started_at,
             "updated_at": self.updated_at,
             "completed_at": self.completed_at,

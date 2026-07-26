@@ -272,6 +272,7 @@ class JobRepository:
         finished_at: Any = _UNSET,
         exit_code: Any = _UNSET,
         error_message: Any = _UNSET,
+        error_code: Any = _UNSET,
         orchestrator_type: Any = _UNSET,
         airflow_dag_id: Any = _UNSET,
         airflow_dag_run_id: Any = _UNSET,
@@ -300,6 +301,8 @@ class JobRepository:
             job.exit_code = exit_code
         if error_message is not _UNSET:
             job.error_message = error_message
+        if error_code is not _UNSET:
+            job.error_code = error_code
         if orchestrator_type is not _UNSET:
             job.orchestrator_type = orchestrator_type
         if airflow_dag_id is not _UNSET:

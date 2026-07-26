@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
+from heatmap_contract import HeatmapUnavailableError
+
 from .context import PipelineContext
 from .events import PipelineEvent, message_for_stage, progress_for_stage, redact_text
 from .executor import EventSink, PipelineStage, PipelineStageExecutor
@@ -70,15 +72,22 @@ class PipelineRunner:
         exc: Exception,
         exit_code: int,
     ) -> PipelineRunResult:
-        if not isinstance(exc, PipelineError):
-            exc = PipelineError(f"{stage} failed: {exc}")
-        category = exc.__class__.__name__
-        message = redact_text(str(exc).strip() or category)
+        error_code = None
+        if isinstance(exc, HeatmapUnavailableError):
+            category = exc.__class__.__name__
+            message = "YouTube Most Replayed data is unavailable for this video."
+            error_code = "heatmap_unavailable"
+        else:
+            if not isinstance(exc, PipelineError):
+                exc = PipelineError(f"{stage} failed: {exc}")
+            category = exc.__class__.__name__
+            message = redact_text(str(exc).strip() or category)
         failed_stage_result = PipelineStageResult(
             stage=stage,
             success=False,
             message=message,
             error_category=category,
+            error_code=error_code,
         )
         results.append(failed_stage_result)
         self._emit(
@@ -89,6 +98,7 @@ class PipelineRunner:
                 progress_percent=progress_for_stage(stage),
                 success=False,
                 error_category=category,
+                error_code=error_code,
             )
         )
         self._emit(
@@ -99,6 +109,7 @@ class PipelineRunner:
                 progress_percent=progress_for_stage(stage),
                 success=False,
                 error_category=category,
+                error_code=error_code,
             )
         )
         return PipelineRunResult(
@@ -107,6 +118,7 @@ class PipelineRunner:
             message=message,
             failed_stage=stage,
             error_category=category,
+            error_code=error_code,
             exit_code=exit_code,
         )
 

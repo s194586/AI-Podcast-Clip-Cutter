@@ -12,6 +12,7 @@ class PipelineStageResult:
     produced_artifacts: tuple[str, ...] = ()
     metadata: dict[str, Any] = field(default_factory=dict)
     error_category: str | None = None
+    error_code: str | None = None
     progress_percent: float | None = None
 
 
@@ -22,6 +23,7 @@ class PipelineRunResult:
     message: str
     failed_stage: str | None = None
     error_category: str | None = None
+    error_code: str | None = None
     exit_code: int = 0
 
     @property

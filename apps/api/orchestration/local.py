@@ -145,6 +145,7 @@ class LocalPipelineOrchestrator:
             progress_percent=float(status["progress_percent"]),
             message=str(status["message"]),
             error_message=status.get("error_message"),
+            error_code=status.get("error_code"),
             started_at=status.get("started_at"),
             updated_at=status.get("updated_at"),
             completed_at=status.get("completed_at"),
@@ -286,6 +287,7 @@ class LocalPipelineOrchestrator:
         structured_event_seen = False
         pipeline_completed = False
         failure_message: str | None = None
+        failure_error_code: str | None = None
         assert process.stdout is not None
         try:
             for raw_line in process.stdout:
@@ -296,6 +298,7 @@ class LocalPipelineOrchestrator:
                     structured_event_seen = True
                     if event.event == "stage_failed":
                         failure_message = event.message
+                        failure_error_code = event.error_code
                     if event.event == "pipeline_completed" and event.success:
                         pipeline_completed = True
                     self._apply_pipeline_event(project_id, job_id, event)
@@ -316,6 +319,7 @@ class LocalPipelineOrchestrator:
                 job_id,
                 failure_message or f"Project pipeline exited with code {exit_code}.",
                 exit_code=exit_code,
+                error_code=failure_error_code,
             )
             return
         if structured_event_seen and not pipeline_completed:
@@ -476,10 +480,10 @@ class LocalPipelineOrchestrator:
             self._mark_cancelled(project_id, job_id)
             return
         if event.event == "stage_failed":
-            self._mark_failed(project_id, job_id, event.message)
+            self._mark_failed(project_id, job_id, event.message, error_code=event.error_code)
             return
         if event.event == "pipeline_completed" and event.success is False:
-            self._mark_failed(project_id, job_id, event.message)
+            self._mark_failed(project_id, job_id, event.message, error_code=event.error_code)
 
     def _mark_ready(self, project_id: int, job_id: int, *, exit_code: int | None = None) -> None:
         now = utc_now()
@@ -511,7 +515,15 @@ class LocalPipelineOrchestrator:
                 completed_at=now,
             )
 
-    def _mark_failed(self, project_id: int, job_id: int, message: str, *, exit_code: int | None = None) -> None:
+    def _mark_failed(
+        self,
+        project_id: int,
+        job_id: int,
+        message: str,
+        *,
+        exit_code: int | None = None,
+        error_code: str | None = None,
+    ) -> None:
         now = utc_now()
         with session_scope() as session:
             project_repo = ProjectRepository(session)
@@ -533,6 +545,7 @@ class LocalPipelineOrchestrator:
                     exit_code=exit_code,
                     process_id=None,
                     error_message=message,
+                    error_code=error_code,
                 )
             if project is not None:
                 failed_progress = float(project.progress_percent or 0.0)

@@ -158,6 +158,7 @@ class Job(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     exit_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
     orchestrator_type: Mapped[str] = mapped_column(String(32), default="local", index=True)
     airflow_dag_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
     airflow_dag_run_id: Mapped[str | None] = mapped_column(String(512), nullable=True, unique=True)
