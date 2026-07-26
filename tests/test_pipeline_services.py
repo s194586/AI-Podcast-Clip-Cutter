@@ -308,6 +308,48 @@ class PipelineServiceDatabaseTests(unittest.TestCase):
         self.assertEqual(clip.edited_start, 12.0)
         self.assertIsNone(clip.reviewed_start)
 
+    def test_candidate_import_accepts_neutral_compatibility_adapter(self):
+        (self.workspace / "top_windows.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "source": "candidate_windows_compatibility_adapter",
+                    "canonical_artifact": "metadata/candidate_windows.json",
+                    "top_windows": [
+                        {
+                            "rank": 1,
+                            "source_peak_rank": 1,
+                            "peak_time": 125.0,
+                            "start": 95.0,
+                            "end": 155.0,
+                            "duration": 60.0,
+                            "boundary_source": "replay_interest_peak",
+                            "selection_source": "youtube_most_replayed",
+                            "replay_interest": {
+                                "raw_value": 0.88,
+                                "smoothed_value": 0.81,
+                                "prominence": 0.22,
+                            },
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        ImportCandidatesStage().run(self.context())
+
+        with session_scope() as session:
+            clip = session.scalars(select(Clip)).one()
+        self.assertEqual((clip.ai_start, clip.ai_end), (95.0, 155.0))
+        self.assertEqual(clip.boundary_source, "replay_interest_peak")
+        self.assertEqual(clip.selection_source, "youtube_most_replayed")
+        self.assertEqual(clip.summary, "")
+        self.assertEqual(clip.text, "")
+        self.assertIsNone(clip.local_score)
+        self.assertIsNone(clip.local_rank)
+        self.assertEqual(clip.local_features, {})
+
     def test_local_status_serializes_persisted_heatmap_error_code(self):
         with session_scope() as session:
             job = JobRepository(session).create(

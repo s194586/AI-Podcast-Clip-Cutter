@@ -116,6 +116,10 @@ class PipelineContext:
     def candidate_file(self) -> Path:
         return self.workspace_path / "top_windows.json"
 
+    @property
+    def candidate_windows_file(self) -> Path:
+        return self.metadata_dir / "candidate_windows.json"
+
     def safe_artifact(self, path: Path) -> str:
         candidate = Path(path).resolve()
         try:

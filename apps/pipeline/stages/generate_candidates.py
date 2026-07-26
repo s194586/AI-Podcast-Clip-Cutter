@@ -2,111 +2,84 @@ from __future__ import annotations
 
 import json
 
-from content_classifier import classify_content, save_content_profile
+from candidate_windows import CandidateWindowConfig, generate_candidate_windows
+from heatmap_contract import atomic_write_json
 
 from ..context import PipelineContext
 from ..exceptions import CandidateGenerationError
 from ..results import PipelineStageResult
-from .common import MediaLocator, python_script, run_stage_command
 
 
 class GenerateCandidatesStage:
     stage = "generating_candidates"
 
     def run(self, context: PipelineContext) -> PipelineStageResult:
-        if not context.transcript_file.exists():
-            raise CandidateGenerationError("Candidate generation requires final_transcript.json.")
-        if not context.heatmap_file.exists():
-            raise CandidateGenerationError("Candidate generation requires metadata/heatmap.json.")
-
-        if _can_reuse_candidates(context):
-            return PipelineStageResult(
-                stage=self.stage,
-                success=True,
-                message="Existing deterministic clip candidates reused.",
-                produced_artifacts=(
-                    context.safe_artifact(context.candidate_file),
-                    context.safe_artifact(context.content_profile_file),
-                    context.safe_artifact(context.cutting_log_file),
-                ),
-                metadata={"selection_mode": context.config.ai_mode, "reused": True},
+        if not context.heatmap_peaks_file.exists():
+            raise CandidateGenerationError(
+                "Candidate generation requires metadata/heatmap_peaks.json."
             )
-
-        video_path = MediaLocator(context).latest_video()
         try:
-            profile = classify_content(
-                context.transcript_file,
-                context.heatmap_file,
-                video_path=video_path,
-                forced_content_type=context.config.content_type,
+            with context.heatmap_peaks_file.open(encoding="utf-8") as file_handle:
+                peak_document = json.load(file_handle)
+            candidate_document = generate_candidate_windows(
+                peak_document, CandidateWindowConfig()
             )
-            save_content_profile(profile, context.content_profile_file)
         except Exception as exc:
-            raise CandidateGenerationError(f"Podcast content profiling failed: {exc}") from exc
+            raise CandidateGenerationError(
+                f"Candidate windows could not be generated: {exc}"
+            ) from exc
 
-        command = python_script(context, "analyze_virals.py") + [
-            "--transcript",
-            str(context.transcript_file),
-            "--heatmap",
-            str(context.heatmap_file),
-            "--save-json",
-            str(context.candidate_file),
-            "--cutting-log",
-            str(context.cutting_log_file),
-            "--ai-mode",
-            context.config.ai_mode,
-            "--content-profile",
-            str(context.content_profile_file),
-            "--content-type",
-            context.config.content_type,
-            "--layout-mode",
-            context.config.layout_mode,
-        ]
-        if video_path is not None:
-            command.extend(["--video", str(video_path)])
-        if context.config.skip_smart_context:
-            command.append("--skip-smart-context")
+        try:
+            atomic_write_json(context.candidate_windows_file, candidate_document)
+        except OSError as exc:
+            raise CandidateGenerationError(
+                f"Canonical candidate windows could not be written: {exc}"
+            ) from exc
 
-        run_stage_command(
-            context,
-            command,
-            description="Podcast candidate generation",
-            error_type=CandidateGenerationError,
-        )
-        if not context.candidate_file.exists():
-            raise CandidateGenerationError("Candidate generation did not produce top_windows.json.")
-        artifacts = [
-            context.safe_artifact(context.candidate_file),
-            context.safe_artifact(context.content_profile_file),
-        ]
-        if context.cutting_log_file.exists():
-            artifacts.append(context.safe_artifact(context.cutting_log_file))
+        adapter = _compatibility_adapter(candidate_document)
+        try:
+            atomic_write_json(context.candidate_file, adapter)
+        except OSError as exc:
+            raise CandidateGenerationError(
+                f"Candidate compatibility adapter could not be written: {exc}"
+            ) from exc
+
         return PipelineStageResult(
             stage=self.stage,
             success=True,
-            message="Deterministic clip candidates generated.",
-            produced_artifacts=tuple(artifacts),
-            metadata={"selection_mode": context.config.ai_mode},
+            message="Generated replay-interest candidate windows.",
+            produced_artifacts=(
+                context.safe_artifact(context.candidate_windows_file),
+                context.safe_artifact(context.candidate_file),
+            ),
+            metadata={
+                "candidate_count": len(candidate_document["candidates"]),
+                "generator": candidate_document["generator"],
+                "generator_version": candidate_document["generator_version"],
+                "canonical_artifact": context.safe_artifact(context.candidate_windows_file),
+                "compatibility_adapter": context.safe_artifact(context.candidate_file),
+            },
         )
 
 
-def _can_reuse_candidates(context: PipelineContext) -> bool:
-    required = (
-        context.candidate_file,
-        context.content_profile_file,
-        context.cutting_log_file,
-    )
-    if not all(path.is_file() for path in required):
-        return False
-    source_mtime = max(context.transcript_file.stat().st_mtime, context.heatmap_file.stat().st_mtime)
-    if context.candidate_file.stat().st_mtime < source_mtime:
-        return False
-    try:
-        payload = json.loads(context.candidate_file.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return False
-    if isinstance(payload, list):
-        return bool(payload)
-    if isinstance(payload, dict):
-        return bool(payload.get("top_windows") or payload.get("windows"))
-    return False
+def _compatibility_adapter(candidate_document: dict) -> dict:
+    """Build the minimal legacy ``top_windows.json`` adapter from canonical candidates."""
+    return {
+        "schema_version": 1,
+        "source": "candidate_windows_compatibility_adapter",
+        "canonical_artifact": "metadata/candidate_windows.json",
+        "top_windows": [
+            {
+                "rank": candidate["rank"],
+                "source_peak_rank": candidate["source_peak_rank"],
+                "peak_time": candidate["peak_time"],
+                "start": candidate["start_time"],
+                "end": candidate["end_time"],
+                "duration": candidate["duration_seconds"],
+                "boundary_source": "replay_interest_peak",
+                "selection_source": "youtube_most_replayed",
+                "replay_interest": candidate["replay_interest"],
+            }
+            for candidate in candidate_document["candidates"]
+        ],
+    }

@@ -576,18 +576,21 @@ class ReviewTimeoutFlowTests(unittest.TestCase):
         self.assertEqual(project.status, "cancelled")
         self.assertEqual(project.progress_percent, 89.0)
 
-    def test_cancelled_project_retry_preserves_and_reuses_completed_artifacts(self):
+    def test_cancelled_project_retry_regenerates_candidates_from_peaks(self):
         context = self.context()
-        context.heatmap_file.write_text(json.dumps([{"start_time": 0, "value": 1}]), encoding="utf-8")
         context.subtitle_report_file.write_text(json.dumps({"summary": {"status": "pass"}}), encoding="utf-8")
-        context.content_profile_file.write_text(json.dumps({"content_type": "podcast"}), encoding="utf-8")
-        context.cutting_log_file.write_text(json.dumps({"ai_mode": "local_only"}), encoding="utf-8")
-        context.candidate_file.write_text(
-            json.dumps([{"id": "clip_001", "start": 20, "end": 50}]),
+        context.heatmap_peaks_file.write_text(
+            json.dumps({
+                "schema_version": 1,
+                "source": "youtube_most_replayed",
+                "algorithm": "offline_peak_detector",
+                "algorithm_version": 1,
+                "video_id": "offline-video",
+                "duration_seconds": 120.0,
+                "peaks": [],
+            }),
             encoding="utf-8",
         )
-        future = time.time() + 1
-        os.utime(context.candidate_file, (future, future))
 
         with patch("apps.pipeline.stages.prepare.shutil.which", return_value="offline-tool"):
             PrepareWorkspaceStage().run(context)
@@ -595,7 +598,8 @@ class ReviewTimeoutFlowTests(unittest.TestCase):
 
         self.assertTrue(context.subtitle_report_file.exists())
         self.assertTrue(context.candidate_file.exists())
-        self.assertTrue(result.metadata["reused"])
+        self.assertTrue(context.candidate_windows_file.exists())
+        self.assertEqual(result.metadata["candidate_count"], 0)
 
     def test_retry_skips_completed_reviews_and_preserves_user_boundaries(self):
         service = ReviewAgentService(project_root=self.root, mode="local_stub")
