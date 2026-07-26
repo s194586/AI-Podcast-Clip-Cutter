@@ -25,6 +25,7 @@ EVENT_TYPES = {
 STAGE_PROGRESS = {
     "waiting": 0.0,
     "downloading": 10.0,
+    "detecting_heatmap_peaks": 20.0,
     "transcribing": 30.0,
     "validating_transcript": 45.0,
     "generating_candidates": 60.0,
@@ -36,6 +37,7 @@ STAGE_PROGRESS = {
 STAGE_MESSAGES = {
     "waiting": "Waiting to start",
     "downloading": "Downloading source media",
+    "detecting_heatmap_peaks": "Detecting replay-interest peaks",
     "transcribing": "Transcribing podcast",
     "validating_transcript": "Validating transcript",
     "generating_candidates": "Generating candidate clips",

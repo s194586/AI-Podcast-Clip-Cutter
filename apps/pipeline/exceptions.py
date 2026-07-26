@@ -13,6 +13,10 @@ class DownloadStageError(PipelineError):
     pass
 
 
+class HeatmapPeakDetectionError(PipelineError):
+    pass
+
+
 class TranscriptionStageError(PipelineError):
     pass
 

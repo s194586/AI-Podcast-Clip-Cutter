@@ -105,6 +105,10 @@ class PipelineContext:
         return self.metadata_dir / "heatmap.json"
 
     @property
+    def heatmap_peaks_file(self) -> Path:
+        return self.metadata_dir / "heatmap_peaks.json"
+
+    @property
     def source_media_file(self) -> Path:
         return self.metadata_dir / "source_media.json"
 

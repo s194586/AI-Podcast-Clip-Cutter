@@ -5,6 +5,7 @@ from collections.abc import Callable
 from .executor import PipelineStage
 from .stages import (
     CleanupInputStage,
+    DetectHeatmapPeaksStage,
     DownloadMediaStage,
     GenerateCandidatesStage,
     ImportCandidatesStage,
@@ -34,6 +35,7 @@ class PipelineStageRegistry:
         self._factories: dict[str, Callable[..., PipelineStage]] = {
             "prepare_workspace": PrepareWorkspaceStage,
             "download_source": DownloadMediaStage,
+            "detect_heatmap_peaks": DetectHeatmapPeaksStage,
             "transcribe": TranscribeAudioStage,
             "validate_transcript": ValidateTranscriptStage,
             "generate_candidates": GenerateCandidatesStage,

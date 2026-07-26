@@ -24,6 +24,7 @@ class ProjectValidationError(ValueError):
 STAGE_MESSAGES = {
     "waiting": "Waiting to start",
     "downloading": "Downloading source media",
+    "detecting_heatmap_peaks": "Detecting replay-interest peaks",
     "transcribing": "Transcribing podcast",
     "validating_transcript": "Validating transcript",
     "generating_candidates": "Generating candidate clips",

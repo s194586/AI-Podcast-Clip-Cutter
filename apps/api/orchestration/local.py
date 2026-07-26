@@ -304,7 +304,7 @@ class LocalPipelineOrchestrator:
                     self._apply_pipeline_event(project_id, job_id, event)
                     continue
                 stage = parse_manager_stage(line)
-                if stage in {"downloading", "transcribing", "validating_transcript", "generating_candidates"}:
+                if stage in {"downloading", "detecting_heatmap_peaks", "transcribing", "validating_transcript", "generating_candidates"}:
                     self._mark_running_stage(project_id, job_id, stage)
         finally:
             process.stdout.close()
@@ -463,6 +463,7 @@ class LocalPipelineOrchestrator:
             if event.stage in {
                 "waiting",
                 "downloading",
+                "detecting_heatmap_peaks",
                 "transcribing",
                 "validating_transcript",
                 "generating_candidates",

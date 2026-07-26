@@ -1,4 +1,5 @@
 from .download import DownloadMediaStage
+from .detect_heatmap_peaks import DetectHeatmapPeaksStage
 from .generate_candidates import GenerateCandidatesStage
 from .import_candidates import ImportCandidatesStage
 from .prepare import PrepareWorkspaceStage
@@ -11,6 +12,7 @@ from .validate_transcript import ValidateTranscriptStage
 __all__ = [
     "CleanupInputStage",
     "DownloadMediaStage",
+    "DetectHeatmapPeaksStage",
     "GenerateCandidatesStage",
     "ImportCandidatesStage",
     "MarkProjectReadyStage",
