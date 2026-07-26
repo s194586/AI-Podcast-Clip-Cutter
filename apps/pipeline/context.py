@@ -97,10 +97,6 @@ class PipelineContext:
         return self.metadata_dir / "cutting_logic.json"
 
     @property
-    def content_profile_file(self) -> Path:
-        return self.metadata_dir / "content_profile.json"
-
-    @property
     def heatmap_file(self) -> Path:
         return self.metadata_dir / "heatmap.json"
 

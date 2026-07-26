@@ -22,8 +22,9 @@ The core pipeline is not an agent. Its sequence is fixed:
 download/reuse media
 -> transcribe with Faster-Whisper
 -> optional local diarization
--> score podcast candidate windows
--> write top_windows.json and metadata/cutting_logic.json
+-> detect trusted YouTube replay-interest peaks
+-> generate canonical metadata/candidate_windows.json
+-> write top_windows.json compatibility adapter
 -> cut raw clips
 -> burn subtitles
 ```
@@ -32,12 +33,13 @@ Important root modules:
 
 - `download_content.py`: downloads source media with `yt-dlp`.
 - `transcribe.py`: writes `transcripts/final_transcript.json` using Faster-Whisper.
-- `content_classifier.py`: writes a podcast-only compatibility profile.
-- `analyze_virals.py`: historical filename; currently scores podcast clip windows.
-- `local_scoring.py`: transcript-aware local candidate scoring.
+- `heatmap_peaks.py`: detects replay-interest peaks from the trusted heatmap.
+- `candidate_windows.py`: creates canonical neutral candidate windows.
 - `cutter.py`: renders 9:16 raw clips.
 - `subtitler.py`: burns subtitles into clips.
-- `subtitler_checker.py` and `semantic_clip_director.py`: optional Gemini-assisted subtitle/context checks used by the legacy pipeline modes.
+- `subtitler_checker.py`: optional subtitle/context checks.
+
+`metadata/candidate_windows.json` is canonical. `top_windows.json` is a compatibility adapter; local code does not score semantic clip quality, which is reviewed by Gemini/LangGraph.
 
 Transcription device selection is controlled by `TRANSCRIPTION_DEVICE`. The default `auto` mode prefers CUDA, then falls back once to CPU int8 for missing CUDA runtime libraries. Explicit `cpu` never initializes CUDA; explicit `cuda` does not fall back.
 

@@ -22,7 +22,7 @@ def parse_manager_stage(line: str) -> str | None:
     if not text.strip():
         return None
 
-    if any(marker in text for marker in ("analysis-only", "podcast clip analysis", "analiza podcast", "analyze_virals")):
+    if any(marker in text for marker in ("analysis-only", "podcast clip analysis", "analiza podcast")):
         return "generating_candidates"
     if any(marker in text for marker in ("ai subtitler checker", "subtitle checker", "sprawdzane audio", "validating transcript")):
         return "validating_transcript"

@@ -51,7 +51,7 @@ prepare workspace
 
 The legacy CLI profile uses the same preparation, download, transcription, validation, and candidate stages. Unless `--analysis-only` is set, it then runs the existing cutter/subtitle scripts. Optional input cleanup remains last.
 
-Stage wrappers call existing implementations such as `download_content.download_content`, `transcribe.transcribe_file`, `content_classifier`, `analyze_virals.py`, `subtitler_checker.py`, the existing candidate importer, and `ReviewAgentService`. Proven scoring, transcription, validation, rendering, and review algorithms were not rewritten.
+Stage wrappers call existing implementations such as `download_content.download_content`, `transcribe.transcribe_file`, heatmap peak detection, candidate-window generation, `subtitler_checker.py`, the existing candidate importer, and `ReviewAgentService`. `candidate_windows.json` is canonical; `top_windows.json` is only its compatibility adapter. Semantic review belongs to Gemini/LangGraph.
 
 ## Legacy CLI
 

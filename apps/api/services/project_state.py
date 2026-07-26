@@ -46,7 +46,6 @@ def default_project_state(project_id: str = DEFAULT_PROJECT_ID) -> dict[str, Any
         "artifacts": {
             "transcript_path": "transcripts/final_transcript.json",
             "heatmap_path": "metadata/heatmap.json",
-            "content_profile_path": "metadata/content_profile.json",
             "cutting_logic_path": "metadata/cutting_logic.json",
             "candidate_source_path": "",
         },

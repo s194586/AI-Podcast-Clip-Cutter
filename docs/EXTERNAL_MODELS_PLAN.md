@@ -7,7 +7,7 @@ upgrades, not requirements for the editor workflow.
 
 - Faster-Whisper transcripts can contain language mistakes.
 - Heuristic speaker attribution can over-segment speakers.
-- Local scoring can miss story completeness, setup, or payoff.
+- Replay-interest candidates can still need semantic boundary review for story completeness, setup, or payoff.
 - Clip boundaries often need human adjustment.
 - Crop and framing still benefit from manual review.
 

@@ -8,11 +8,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import analyze_virals
-import content_classifier
 import download_content
 import heatmap_contract
 from apps.pipeline.stages import download as download_stage
+from apps.pipeline.stages.detect_heatmap_peaks import DetectHeatmapPeaksStage
 from apps.pipeline.exceptions import DownloadStageError
 from heatmap_contract import (
     HeatmapUnavailableError,
@@ -206,13 +205,23 @@ class HeatmapContractTests(unittest.TestCase):
             self.assertEqual(path.read_text("utf-8"), '{"old": true}')
             self.assertEqual(list(path.parent.glob(".heatmap.json.*.tmp")), [])
 
-    def test_active_consumers_load_envelope_points(self) -> None:
+    def test_active_peak_stage_consumes_validated_heatmap(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
-            path = Path(temporary_directory) / "heatmap.json"
-            atomic_write_json(path, valid_document())
-            expected = valid_document()["points"]
-            self.assertEqual(analyze_virals.load_heatmap(path), expected)
-            self.assertEqual(content_classifier.load_heatmap(path), expected)
+            root = Path(temporary_directory)
+            heatmap_file = root / "metadata" / "heatmap.json"
+            peaks_file = root / "metadata" / "heatmap_peaks.json"
+            atomic_write_json(heatmap_file, valid_document())
+            context = SimpleNamespace(
+                heatmap_file=heatmap_file,
+                heatmap_peaks_file=peaks_file,
+                safe_artifact=lambda path: Path(path).relative_to(root).as_posix(),
+            )
+
+            result = DetectHeatmapPeaksStage().run(context)
+
+            self.assertTrue(result.success)
+            self.assertEqual(result.produced_artifacts, ("metadata/heatmap_peaks.json",))
+            self.assertTrue(peaks_file.exists())
 
     def test_download_stage_propagates_heatmap_unavailable(self) -> None:
         context = SimpleNamespace(

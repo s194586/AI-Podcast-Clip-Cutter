@@ -15,7 +15,7 @@ not add placeholder image links to the README.
 | 0:00-0:20 | Projects | “AI Podcast Clip Cutter turns long conversations into reviewable short-form projects and exposes the next valid action for each project state.” |
 | 0:20-0:40 | New Project | “A project records the source, review setting, and local or Airflow orchestrator choice. Both modes reuse the same pipeline services.” |
 | 0:40-1:00 | Processing | “The compact processing view polls persisted FastAPI state, shows the active stage, and changes its primary action when the project is ready.” |
-| 1:00-1:35 | Review/Edit in the Editor | “Deterministic local scoring proposes candidates. Gemini reviews only semantic start and end boundaries through LangGraph, while backend validation remains authoritative.” |
+| 1:00-1:35 | Review/Edit in the Editor | “Trusted replay-interest peaks produce neutral candidate windows. Gemini reviews only semantic start and end boundaries through LangGraph, while backend validation remains authoritative.” |
 | 1:35-2:00 | Boundary preview and state-aware action | “The user previews and edits exact boundaries, accepts or rejects the clip, and explicitly triggers rendering. AI review never rewrites the quoted transcript.” |
 | 2:00-2:25 | Prepared 1080x1920 render | “Stable detections use smoothed face tracking. If detection is unavailable, the dynamic renderer moves to the full source on a blurred background. Captions are formatted deterministically from transcript timestamps.” |
 | 2:25-2:55 | Exports | “The latest render is foregrounded, previous attempts stay collapsed as history, and Raw and With subtitles are grouped as variants of the same clip.” |

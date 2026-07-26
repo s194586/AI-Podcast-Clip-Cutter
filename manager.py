@@ -13,7 +13,7 @@ from apps.pipeline.context import PipelineContext
 from apps.pipeline.profiles import legacy_cli_stages
 from apps.pipeline.reporting import HumanReadableEventPrinter, print_legacy_summary
 from apps.pipeline.runner import PipelineRunner
-from content_classifier import VALID_CONTENT_TYPE_MODES
+from apps.pipeline.content_mode import VALID_CONTENT_TYPE_MODES
 from layout import VALID_LAYOUT_MODES
 from pipeline_modes import VALID_AI_MODES, VALID_SUBTITLE_CHECKER_MODES
 

@@ -12,13 +12,11 @@ The main media pipeline is deterministic. It is not an agent. The agentic compon
 
 `manager.py` is now a thin backwards-compatible CLI. It parses the historical flags, creates a legacy `PipelineContext`, invokes `PipelineRunner`, prints readable output, and returns an exit code. Root-level defaults, `--workspace-dir`, skip flags, transcription options, and `--analysis-only` remain compatible.
 
-`transcribe.py` creates transcript JSON from source audio using Faster-Whisper. The transcript is the main input for candidate scoring, boundary checks, and subtitles.
+`transcribe.py` creates transcript JSON from source audio using Faster-Whisper. The transcript supports boundary review and subtitles.
 
 Transcription device selection is controlled by `TRANSCRIPTION_DEVICE=auto|cuda|cpu` and optional `TRANSCRIPTION_COMPUTE_TYPE`. Auto mode prefers CUDA when CTranslate2 reports it, but retries once on CPU int8 when CUDA runtime libraries such as cuBLAS/cuDNN cannot be loaded. Explicit `cuda` mode fails clearly and does not fall back.
 
-`content_classifier.py` is now a podcast-only compatibility module. It writes `metadata/content_profile.json` so older pipeline calls still work, but it no longer routes to gameplay, tutorial, commentary, or generic strategies.
-
-`analyze_virals.py` keeps its historical filename for compatibility. In the current product it generates and scores podcast candidate windows. The boundary reviewer runs later and does not rank candidates.
+Candidate preparation follows one path: trusted YouTube replay heatmap, `metadata/heatmap_peaks.json`, and `generate_candidate_windows()` produce canonical `metadata/candidate_windows.json`. `top_windows.json` is only a compatibility adapter. Local code does not score a clip's semantic quality; semantic review belongs to Gemini/LangGraph.
 
 `cutter.py` renders vertical 9:16 clips from the original input video.
 
@@ -215,4 +213,4 @@ It does not claim that the whole application is autonomous or multi-agent. The e
 
 ## Podcast-Only Compatibility Routing
 
-The active product no longer supports separate gameplay, tutorial, commentary, or generic strategies. The `strategies/`, `layout/`, and `content_classifier.py` compatibility layers still exist because the deterministic pipeline imports them, but their registries resolve to podcast behavior only.
+The active product supports podcast material only. Content-type normalization accepts the podcast-only product modes; layout compatibility remains available for rendering.
