@@ -11,11 +11,14 @@ import statistics
 from typing import Any
 import unicodedata
 
+from apps.pipeline.content_mode import (
+    VALID_CONTENT_TYPE_MODES,
+    VALID_CONTENT_TYPES,
+    normalize_content_type_mode,
+)
 from heatmap_contract import load_heatmap_points
 
 
-VALID_CONTENT_TYPES = ("podcast",)
-VALID_CONTENT_TYPE_MODES = ("auto",) + VALID_CONTENT_TYPES
 PODCAST_ONLY_MVP_REASON = (
     "Podcast-only product: every supported source is routed as podcast/talking-head material."
 )
@@ -85,16 +88,6 @@ class ContentClassificationResult:
         if self.forced_content_type:
             payload["forced_content_type"] = self.forced_content_type
         return payload
-
-
-def normalize_content_type_mode(value: str | None, default: str = "auto") -> str:
-    normalized = str(value or default).strip().lower()
-    if normalized not in VALID_CONTENT_TYPE_MODES:
-        raise ValueError(
-            f"Unsupported content type for the podcast-only product: {value}. "
-            f"Expected one of: {', '.join(VALID_CONTENT_TYPE_MODES)}"
-        )
-    return normalized
 
 
 def clamp(value: float, lower: float = 0.0, upper: float = 1.0) -> float:

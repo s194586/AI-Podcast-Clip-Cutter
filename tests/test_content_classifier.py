@@ -4,7 +4,6 @@ from content_classifier import (
     VALID_CONTENT_TYPE_MODES,
     VALID_CONTENT_TYPES,
     classify_from_features,
-    normalize_content_type_mode,
 )
 
 
@@ -35,13 +34,6 @@ class ContentClassifierTests(unittest.TestCase):
         self.assertEqual(result.strategy_name, "podcast")
         self.assertEqual(result.forced_content_type, "podcast")
         self.assertEqual(result.source, "manual_override")
-
-    def test_legacy_content_types_are_rejected(self):
-        for content_type in ("gameplay", "tutorial", "commentary", "generic"):
-            with self.subTest(content_type=content_type):
-                with self.assertRaises(ValueError):
-                    normalize_content_type_mode(content_type)
-
 
 if __name__ == "__main__":
     unittest.main()

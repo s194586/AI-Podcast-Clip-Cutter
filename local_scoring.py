@@ -1,6 +1,8 @@
 import re
 from typing import Any
 
+from apps.review_agent.transcript_segments import normalize_transcript_segments
+
 
 WORD_RE = re.compile(r"[^\W_]+(?:['-][^\W_]+)*", re.UNICODE)
 SENTENCE_SPLIT_RE = re.compile(r"(?:(?<=[.!?])|(?<=\.\.\.))\s+")
@@ -207,32 +209,6 @@ def split_sentences(text: str) -> list[str]:
     if not normalized:
         return []
     return [part.strip() for part in SENTENCE_SPLIT_RE.split(normalized) if part.strip()]
-
-
-def normalize_transcript_segments(transcript: list[dict[str, Any]] | dict[str, Any]) -> list[dict[str, Any]]:
-    raw_segments = transcript.get("segments", []) if isinstance(transcript, dict) else transcript
-    normalized: list[dict[str, Any]] = []
-    for item in raw_segments or []:
-        if not isinstance(item, dict):
-            continue
-        try:
-            start = parse_time(item.get("start", 0.0))
-            end = parse_time(item.get("end", start))
-        except Exception:
-            continue
-        if end <= start:
-            continue
-        normalized.append(
-            {
-                "start": start,
-                "end": end,
-                "text": " ".join(str(item.get("text", "")).split()),
-                "speaker": str(item.get("speaker") or item.get("speaker_id") or item.get("speakerId") or ""),
-                "importance": int(item.get("importance", 3) or 3),
-                "chaos": bool(item.get("chaos", False)),
-            }
-        )
-    return sorted(normalized, key=lambda item: item["start"])
 
 
 def _overlap_seconds(start: float, end: float, item_start: float, item_end: float) -> float:

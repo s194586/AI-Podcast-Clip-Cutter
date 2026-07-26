@@ -9,11 +9,7 @@ from apps.api.db.database import init_database, session_scope
 from apps.api.db.models import ClipEvaluation
 from apps.api.db.repositories import ClipEvaluationRepository, ClipRepository, ProjectRepository
 from apps.api.services.clips import validate_adjusted_bounds
-
-try:
-    from local_scoring import normalize_transcript_segments
-except Exception:  # pragma: no cover - defensive fallback for isolated imports
-    normalize_transcript_segments = None
+from apps.review_agent.transcript_segments import normalize_transcript_segments
 
 
 EMAIL_RE = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE)
@@ -62,27 +58,7 @@ def _parse_float(value: Any, default: float = 0.0) -> float:
 
 
 def _normalize_segments(payload: Any) -> list[dict[str, Any]]:
-    if normalize_transcript_segments is not None:
-        return normalize_transcript_segments(payload)
-
-    raw_segments = payload.get("segments", []) if isinstance(payload, dict) else payload
-    normalized: list[dict[str, Any]] = []
-    for item in raw_segments or []:
-        if not isinstance(item, dict):
-            continue
-        start = _parse_float(item.get("start"))
-        end = _parse_float(item.get("end"), start)
-        if end <= start:
-            continue
-        normalized.append(
-            {
-                "start": start,
-                "end": end,
-                "text": " ".join(str(item.get("text") or "").split()),
-                "speaker": str(item.get("speaker") or item.get("speaker_id") or ""),
-            }
-        )
-    return sorted(normalized, key=lambda item: item["start"])
+    return normalize_transcript_segments(payload)
 
 
 def load_transcript_segments(transcript_path: Path | str | None) -> list[dict[str, Any]]:

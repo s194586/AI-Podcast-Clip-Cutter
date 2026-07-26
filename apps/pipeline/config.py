@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from content_classifier import normalize_content_type_mode
+from apps.pipeline.content_mode import normalize_content_type_mode
 from layout import normalize_layout_mode
 from pipeline_modes import (
     AI_MODE_LOCAL_ONLY,
