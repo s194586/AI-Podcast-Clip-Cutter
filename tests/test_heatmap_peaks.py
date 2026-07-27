@@ -5,7 +5,7 @@ import math
 import unittest
 
 from heatmap_contract import build_youtube_heatmap
-from heatmap_peaks import PeakDetectorConfig, detect_heatmap_peaks
+from heatmap_peaks import ALGORITHM_VERSION, PeakDetectorConfig, detect_heatmap_peaks
 
 
 def document(values: list[float], *, width: float = 10.0) -> dict:
@@ -54,6 +54,27 @@ class HeatmapPeakTests(unittest.TestCase):
         for values in ([0.5, 0.5, 0.5], [0.1, 0.2, 0.3], [0.3, 0.2, 0.1]):
             with self.subTest(values=values):
                 self.assertEqual(self.peaks(values), [])
+
+    def test_default_config_detects_sparse_peak_beyond_prominence_window(self) -> None:
+        trusted = document([0.1, 0.9, 0.1], width=31.0)
+
+        first = detect_heatmap_peaks(trusted)
+        peaks = first["peaks"]
+
+        self.assertEqual([peak["peak_time"] for peak in peaks], [46.5])
+        self.assertEqual(first, detect_heatmap_peaks(trusted))
+
+    def test_sparse_gaps_beyond_sixty_seconds_fall_back_to_nearest_baseline(self) -> None:
+        trusted = document([0.1, 0.9, 0.1], width=61.0)
+
+        peaks = detect_heatmap_peaks(trusted)["peaks"]
+
+        self.assertEqual([peak["peak_time"] for peak in peaks], [91.5])
+
+    def test_sparse_flat_and_monotonic_heatmaps_have_no_peaks(self) -> None:
+        for values in ([0.5, 0.5, 0.5], [0.1, 0.2, 0.3], [0.3, 0.2, 0.1]):
+            with self.subTest(values=values):
+                self.assertEqual(detect_heatmap_peaks(document(values, width=61.0))["peaks"], [])
 
     def test_plateau_returns_one_deterministic_peak(self) -> None:
         peaks = self.peaks([0.0, 0.9, 0.9, 0.0])
@@ -117,6 +138,10 @@ class HeatmapPeakTests(unittest.TestCase):
         self.assertEqual(result["duration_seconds"], 30.0)
         self.assertEqual(result["parameters"]["min_distance_seconds"], 12.0)
         self.assertEqual(result["algorithm"], "time_weighted_local_prominence")
+
+    def test_algorithm_version_is_two(self) -> None:
+        self.assertEqual(ALGORITHM_VERSION, 2)
+        self.assertEqual(detect_heatmap_peaks(document([0.0, 0.9, 0.0]))["algorithm_version"], 2)
 
     def test_invalid_configuration_is_rejected(self) -> None:
         invalid = (

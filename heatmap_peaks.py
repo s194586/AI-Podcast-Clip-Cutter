@@ -11,7 +11,7 @@ from heatmap_contract import validate_heatmap_document
 
 PEAK_SCHEMA_VERSION = 1
 ALGORITHM = "time_weighted_local_prominence"
-ALGORITHM_VERSION = 1
+ALGORITHM_VERSION = 2
 _PLATEAU_TOLERANCE = 1e-9
 
 
@@ -141,6 +141,14 @@ def _local_prominence(
         for index in range(plateau_end + 1, len(values))
         if midpoints[index] <= peak_time + window_seconds
     ]
+    # Sparse source heatmaps can have adjacent midpoint gaps larger than the
+    # configured window.  Keep in-window samples as the baseline, but retain
+    # the nearest point beyond an empty side so an internal local maximum is
+    # still comparable to both of its neighbours.
+    if not left_values and plateau_start > 0:
+        left_values = [values[plateau_start - 1]]
+    if not right_values and plateau_end + 1 < len(values):
+        right_values = [values[plateau_end + 1]]
     if not left_values or not right_values:
         return None
     prominence = values[plateau_start] - max(min(left_values), min(right_values))

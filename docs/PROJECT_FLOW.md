@@ -62,13 +62,19 @@ with application cancellation persisted before remote state changes.
 
 ## Product Stages
 
+The download stage accepts only trusted YouTube Most Replayed heatmap input for
+replay-interest detection. `DetectHeatmapPeaksStage` emits peak detector
+algorithm version 2. Candidate generation is deterministic and neutral: it uses
+replay-interest peaks and does not apply local semantic scoring.
+
 | Stage | Progress | Meaning |
 | --- | ---: | --- |
 | `waiting` | 0 | Workspace preparation |
 | `downloading` | 10 | Download or reuse source media |
+| `detecting_heatmap_peaks` | 20 | Detect version-2 replay-interest peaks from the trusted YouTube Most Replayed heatmap |
 | `transcribing` | 30 | Create or reuse transcript |
 | `validating_transcript` | 45 | Validate/fix transcript when enabled |
-| `generating_candidates` | 60 | Profile and score deterministic candidates |
+| `generating_candidates` | 60 | Generate neutral replay-interest candidate windows |
 | `importing_candidates` | 75 | Idempotent import into the existing project |
 | `reviewing_with_ai` | 85-95 | Direct configured boundary review when enabled; completed clips advance coarse progress |
 | `ready` | 100 | Ready for human review |
