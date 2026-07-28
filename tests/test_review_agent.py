@@ -26,6 +26,7 @@ from apps.review_agent.providers import (
     ReviewProviderExtractionError,
     ReviewProviderError,
     ReviewProviderOutputError,
+    build_compact_review_request,
     build_gemini_prompt,
 )
 from apps.review_agent.schemas import GeminiBoundaryDecision
@@ -302,11 +303,12 @@ class ReviewAgentTests(unittest.TestCase):
         self.assertEqual(calls[0]["model"], "gemini-test-model")
         self.assertIn("schema", calls[0]["response_format"])
         prompt = calls[0]["input"]
-        self.assertIn("CONTEXT BEFORE", prompt)
-        self.assertIn("ALLOWED START OPTIONS", prompt)
-        self.assertIn("ALLOWED BOUNDARY PAIRS", prompt)
-        self.assertIn("current_aligned_start_option_index", prompt)
-        self.assertIn("current_aligned_end_option_index", prompt)
+        self.assertIn("COMPACT REVIEW REQUEST", prompt)
+        self.assertIn("review_request_contract_version", prompt)
+        self.assertIn("start_option_index", prompt)
+        self.assertIn("end_option_index", prompt)
+        self.assertNotIn("ALLOWED BOUNDARY PAIRS", prompt)
+        self.assertNotIn('"allowed_boundary_pairs"', prompt)
         self.assertIn("selected_start_option_index", calls[0]["response_format"]["schema"]["properties"])
         self.assertIn('"text": "The setup matters here."', prompt)
         self.assertNotIn("local_score", prompt)
@@ -318,6 +320,29 @@ class ReviewAgentTests(unittest.TestCase):
         self.assertNotIn("secret-key", prompt)
         self.assertIn("You must make the editorial decision yourself.", prompt)
         self.assertIn("improving the setup, opening sentence, question, answer completeness, payoff, or ending", prompt)
+
+    def test_compact_provider_request_keeps_pairs_backend_only(self):
+        context = build_clip_transcript_context(
+            self.root / "transcripts" / "final_transcript.json",
+            100.0,
+            140.0,
+            context_seconds=20.0,
+            clip_id="clip_001",
+        )
+
+        request = build_compact_review_request(context)
+
+        self.assertNotIn("allowed_boundary_pairs", request)
+        self.assertEqual(request["candidate"]["clip_id"], "clip_001")
+        self.assertIsNone(request["candidate"]["candidate_id"])
+        self.assertEqual(
+            [segment["segment_id"] for segment in request["segments"]],
+            [
+                segment["segment_id"]
+                for key in ("context_before", "candidate_segments", "context_after")
+                for segment in context[key]
+            ],
+        )
 
     def test_interactions_steps_adapter_rejects_legacy_outputs_only(self):
         class FakeInteractions:
@@ -731,7 +756,8 @@ class ReviewAgentTests(unittest.TestCase):
         self.assertEqual(len(calls), 2)
         self.assertIsNone(calls[0])
         self.assertIn("duration exceeds 90 seconds", calls[1])
-        self.assertIn("allowed_boundary_pairs", calls[1])
+        self.assertIn("non-null start_option_index", calls[1])
+        self.assertNotIn("allowed_boundary_pairs", calls[1])
         self.assertNotIn("Candidate explanation", calls[1])
         self.assertNotIn(str(self.root), calls[1])
         self.assertNotIn("test-key", calls[1])

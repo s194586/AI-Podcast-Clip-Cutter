@@ -20,6 +20,7 @@ def build_clip_transcript_context(
     context_seconds: float = DEFAULT_REVIEW_CONTEXT_SECONDS,
     *,
     clip_id: str | None = None,
+    candidate_id: str | None = None,
     allowed_start_min: float | None = None,
     allowed_start_max: float | None = None,
     allowed_end_min: float | None = None,
@@ -27,7 +28,7 @@ def build_clip_transcript_context(
     min_duration_seconds: float = DEFAULT_MIN_REVIEW_DURATION_SECONDS,
     max_duration_seconds: float = DEFAULT_MAX_REVIEW_DURATION_SECONDS,
 ) -> dict[str, Any]:
-    """Build the compact transcript-only payload used by the boundary reviewer."""
+    """Build the internal transcript context used by the boundary reviewer."""
 
     segments = _with_canonical_ids(load_transcript_segments(transcript_path))
     return build_clip_transcript_context_from_segments(
@@ -36,6 +37,7 @@ def build_clip_transcript_context(
         clip_end,
         context_seconds=context_seconds,
         clip_id=clip_id,
+        candidate_id=candidate_id,
         allowed_start_min=allowed_start_min,
         allowed_start_max=allowed_start_max,
         allowed_end_min=allowed_end_min,
@@ -52,6 +54,7 @@ def build_clip_transcript_context_from_segments(
     *,
     context_seconds: float = DEFAULT_REVIEW_CONTEXT_SECONDS,
     clip_id: str | None = None,
+    candidate_id: str | None = None,
     allowed_start_min: float | None = None,
     allowed_start_max: float | None = None,
     allowed_end_min: float | None = None,
@@ -148,8 +151,11 @@ def build_clip_transcript_context_from_segments(
 
     context = ClipTranscriptContext(
         clip_id=clip_id,
+        candidate_id=candidate_id,
         candidate_start=round(start, 2),
         candidate_end=round(end, 2),
+        minimum_duration_seconds=round(float(min_duration_seconds), 2),
+        maximum_duration_seconds=round(float(max_duration_seconds), 2),
         context_seconds=round(padding, 2),
         context_before=[_public_segment(segment) for segment in before],
         candidate_segments=[_public_segment(segment) for segment in candidate],

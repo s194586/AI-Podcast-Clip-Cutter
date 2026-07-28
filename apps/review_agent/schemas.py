@@ -48,8 +48,11 @@ class BoundaryOptionPair(BaseModel):
 
 class ClipTranscriptContext(BaseModel):
     clip_id: str | None = None
+    candidate_id: str | None = None
     candidate_start: float
     candidate_end: float
+    minimum_duration_seconds: float = 10.0
+    maximum_duration_seconds: float = 90.0
     context_seconds: float = 20.0
     context_before: list[TranscriptSegment] = Field(default_factory=list)
     candidate_segments: list[TranscriptSegment] = Field(default_factory=list)

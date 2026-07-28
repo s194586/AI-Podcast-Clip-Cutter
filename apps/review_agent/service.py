@@ -155,6 +155,7 @@ class ReviewAgentService:
                 float(clip["ai_end"]),
                 context_seconds=self.config.context_seconds,
                 clip_id=str(clip["id"]),
+                candidate_id=clip.get("candidate_id"),
                 allowed_start_min=float(clip["min_start"]),
                 allowed_start_max=float(clip["max_start"]),
                 allowed_end_min=float(clip["min_end"]),
@@ -784,8 +785,8 @@ def _boundary_retry_message(
     return (
         f"{_concise_boundary_correction(error)} You must return selected_start_option_index and "
         "selected_end_option_index as non-null "
-        "integers. Choose the start index only from START OPTIONS and the end index only from END OPTIONS. "
-        "Choose one exact pair from allowed_boundary_pairs. "
+        "integers. Choose the start index only from non-null start_option_index values and the end index only "
+        "from non-null end_option_index values in the transcript window. The backend will validate the combined selection. "
         f"Valid start option indexes: {_format_option_indexes(_option_map(context.get('start_boundary_options') or []))}. "
         f"Valid end option indexes: {_format_option_indexes(_option_map(context.get('end_boundary_options') or []))}. "
         f"For reject, use current_aligned_start_option_index={context.get('current_aligned_start_option_index')} "
