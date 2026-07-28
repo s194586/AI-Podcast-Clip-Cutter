@@ -341,8 +341,10 @@ class ReviewAgentTests(unittest.TestCase):
         prompt = calls[0]["input"]
         self.assertIn("COMPACT REVIEW REQUEST", prompt)
         self.assertIn("review_request_contract_version", prompt)
-        self.assertIn("start_option_index", prompt)
-        self.assertIn("end_option_index", prompt)
+        self.assertIn('"start_eligible": true', prompt)
+        self.assertIn('"end_eligible": true', prompt)
+        self.assertNotIn('"start_option_index"', prompt)
+        self.assertNotIn('"end_option_index"', prompt)
         self.assertNotIn("ALLOWED BOUNDARY PAIRS", prompt)
         self.assertNotIn('"allowed_boundary_pairs"', prompt)
         self.assertIn("start_segment_id", calls[0]["response_format"]["schema"]["properties"])
@@ -586,6 +588,32 @@ class ReviewAgentTests(unittest.TestCase):
             service._result_from_decision(
                 project_id=1, clip=clip, context=unlisted_context, decision=unlisted,
                 provider="gemini", model="unit", apply_safe_suggestions=True,
+            )
+
+    def test_id_path_rejects_inconsistent_boundary_option_before_using_timestamps(self):
+        context = build_clip_transcript_context(
+            self.root / "transcripts" / "final_transcript.json", 100.0, 140.0, clip_id="clip_001"
+        )
+        invalid_context = deepcopy(context)
+        invalid_context["start_boundary_options"][1]["start"] = 99.0
+        decision = GeminiBoundaryDecision(
+            review_response_contract_version=2,
+            decision="adjust_boundaries",
+            start_segment_id=invalid_context["current_aligned_start_segment_id"],
+            end_segment_id=invalid_context["current_aligned_end_segment_id"],
+            reasoning_summary="Test.",
+            start_reason="Test.",
+            end_reason="Test.",
+        )
+        with self.assertRaisesRegex(Exception, "Invalid internal review context: .*does not match canonical"):
+            ReviewAgentService(project_root=self.root)._result_from_decision(
+                project_id=1,
+                clip={"id": "clip_001", "ai_start": 100.0, "ai_end": 140.0, "min_start": 80.0, "max_start": 120.0, "min_end": 110.0, "max_end": 160.0},
+                context=invalid_context,
+                decision=decision,
+                provider="gemini",
+                model="unit",
+                apply_safe_suggestions=True,
             )
 
     def test_reject_requires_current_aligned_segment_ids(self):
@@ -949,7 +977,7 @@ class ReviewAgentTests(unittest.TestCase):
         self.assertEqual(len(calls), 2)
         self.assertIsNone(calls[0])
         self.assertIn("duration exceeds 90 seconds", calls[1])
-        self.assertIn("non-null start_option_index", calls[1])
+        self.assertIn("Start IDs:", calls[1])
         self.assertNotIn("allowed_boundary_pairs", calls[1])
         self.assertNotIn("Candidate explanation", calls[1])
         self.assertNotIn(str(self.root), calls[1])
@@ -1039,9 +1067,14 @@ class ReviewAgentTests(unittest.TestCase):
             def review(self, context, corrective_message=None):
                 calls.append(corrective_message)
                 if len(calls) == 1:
-                    selected_pair = (
+                    current_pair = (
                         context["current_aligned_start_option_index"],
                         context["current_aligned_end_option_index"],
+                    )
+                    selected_pair = next(
+                        (pair["start_option_index"], pair["end_option_index"])
+                        for pair in context["allowed_boundary_pairs"]
+                        if (pair["start_option_index"], pair["end_option_index"]) != current_pair
                     )
                     context["allowed_boundary_pairs"] = [
                         pair
@@ -1244,7 +1277,7 @@ class ReviewAgentTests(unittest.TestCase):
 
         self.assertEqual(len(calls), 2)
         self.assertIsNone(calls[0])
-        self.assertIn("Valid start segment IDs", calls[1])
+        self.assertIn("Start IDs:", calls[1])
         self.assertTrue(result["failed"])
         self.assertTrue(result["retry_used"])
         self.assertEqual(result["provider_attempt_count"], 2)
@@ -1285,7 +1318,7 @@ class ReviewAgentTests(unittest.TestCase):
             )
 
         self.assertEqual(len(calls), 2)
-        self.assertIn("Valid end segment IDs", calls[1])
+        self.assertIn("End IDs:", calls[1])
         self.assertTrue(result["failed"])
         self.assertIn("unknown or end-ineligible segment_id", result["first_attempt_validation_error"])
 

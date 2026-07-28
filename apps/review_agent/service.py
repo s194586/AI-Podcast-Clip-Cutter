@@ -20,7 +20,13 @@ from apps.api.services.project_service import project_to_dict
 from apps.api.services.project_state import PROJECT_ROOT
 
 from .config import ReviewConfig, ReviewConfigError, load_review_config, normalize_review_mode_value
-from .context import build_clip_transcript_context
+from .context import (
+    allowed_boundary_pair_indexes,
+    boundary_options_by_segment_id,
+    build_clip_transcript_context,
+    current_aligned_boundary_options,
+    segment_map,
+)
 from .graph import GRAPH_WORKFLOW_NAME, GRAPH_WORKFLOW_VERSION, run_review_workflow
 from .graph.runtime import ReviewGraphRuntime
 from .providers import (
@@ -595,11 +601,13 @@ def _validated_reviewed_bounds(
     clip: dict[str, Any],
     decision: GeminiBoundaryDecision,
 ) -> tuple[float, float, str, str, int, int]:
-    start_option, end_option = _selected_options(context, decision)
-    selected_start_id = str(start_option["segment_id"])
-    selected_end_id = str(end_option["segment_id"])
-    reviewed_start = round(float(start_option["start"]), 2)
-    reviewed_end = round(float(end_option["end"]), 2)
+    selected_start, selected_end, start_option, end_option = _selected_options(context, decision)
+    selected_start_id = str(selected_start["segment_id"])
+    selected_end_id = str(selected_end["segment_id"])
+    # Boundary options convey eligibility and the transitional persistence
+    # index only.  Canonical transcript segments are the sole timestamp source.
+    reviewed_start = round(float(selected_start["start"]), 2)
+    reviewed_end = round(float(selected_end["end"]), 2)
     if reviewed_start >= reviewed_end:
         raise BoundaryOptionSelectionError("Gemini returned reversed or zero-length boundaries.")
     if reviewed_start < float(context.get("earliest_allowed_start", reviewed_start)):
@@ -628,9 +636,32 @@ def _validated_reviewed_bounds(
 def _selected_options(
     context: dict[str, Any],
     decision: GeminiBoundaryDecision,
-) -> tuple[dict[str, Any], dict[str, Any]]:
-    start_options = _option_map_by_segment_id(context.get("start_boundary_options") or [])
-    end_options = _option_map_by_segment_id(context.get("end_boundary_options") or [])
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
+    try:
+        canonical_segments = segment_map(context)
+        start_options = boundary_options_by_segment_id(
+            context,
+            option_list_name="start_boundary_options",
+            canonical_segments=canonical_segments,
+        )
+        end_options = boundary_options_by_segment_id(
+            context,
+            option_list_name="end_boundary_options",
+            canonical_segments=canonical_segments,
+        )
+        allowed_pairs = allowed_boundary_pair_indexes(
+            context,
+            start_options=start_options,
+            end_options=end_options,
+        )
+        current_aligned_boundary_options(
+            context,
+            start_options=start_options,
+            end_options=end_options,
+            allowed_pairs=allowed_pairs,
+        )
+    except ValueError as exc:
+        raise BoundaryOptionSelectionError(f"Invalid internal review context: {exc}") from exc
     start_segment_id = str(decision.start_segment_id)
     end_segment_id = str(decision.end_segment_id)
     if start_segment_id not in start_options:
@@ -645,42 +676,32 @@ def _selected_options(
         )
     start_option = start_options[start_segment_id]
     end_option = end_options[end_segment_id]
-    segments = {
-        str(segment["segment_id"]): segment
-        for key in ("context_before", "candidate_segments", "context_after")
-        for segment in context.get(key) or []
-    }
-    for option, boundary in ((start_option, "start"), (end_option, "end")):
-        segment = segments.get(str(option.get("segment_id") or ""))
-        if segment is None:
-            raise BoundaryOptionSelectionError(
-                f"Gemini selected a {boundary} option that does not map to a transcript segment."
-            )
-        if abs(float(option[boundary]) - float(segment[boundary])) > 0.01:
-            raise BoundaryOptionSelectionError(
-                f"Gemini selected a {boundary} option that does not match its transcript segment boundary."
-            )
-    return start_option, end_option
+    return (
+        canonical_segments[start_segment_id],
+        canonical_segments[end_segment_id],
+        start_option,
+        end_option,
+    )
 
 
 def _derive_segment_ids_for_reject(
     context: dict[str, Any],
     decision: GeminiBoundaryDecision,
 ) -> tuple[str, str, int, int]:
-    start_option, end_option = _selected_options(context, decision)
+    start_segment, end_segment, start_option, end_option = _selected_options(context, decision)
     _ensure_allowed_pair(context, start_option, end_option)
     expected_start_id = context.get("current_aligned_start_segment_id")
     expected_end_id = context.get("current_aligned_end_segment_id")
     if (
-        str(start_option["segment_id"]) != str(expected_start_id)
-        or str(end_option["segment_id"]) != str(expected_end_id)
+        str(start_segment["segment_id"]) != str(expected_start_id)
+        or str(end_segment["segment_id"]) != str(expected_end_id)
     ):
         raise BoundaryOptionSelectionError(
             "Gemini reject responses must use the current aligned segment IDs."
         )
     return (
-        str(start_option["segment_id"]),
-        str(end_option["segment_id"]),
+        str(start_segment["segment_id"]),
+        str(end_segment["segment_id"]),
         int(start_option["option_index"]),
         int(end_option["option_index"]),
     )
@@ -702,18 +723,23 @@ def _ensure_allowed_pair(
 
 
 def _allowed_pair_indexes(context: dict[str, Any]) -> set[tuple[int, int]]:
-    indexes: set[tuple[int, int]] = set()
-    for pair in context.get("allowed_boundary_pairs") or []:
-        try:
-            indexes.add(
-                (
-                    int(pair["start_option_index"]),
-                    int(pair["end_option_index"]),
-                )
-            )
-        except (KeyError, TypeError, ValueError):
-            continue
-    return indexes
+    try:
+        canonical_segments = segment_map(context)
+        start_options = boundary_options_by_segment_id(
+            context,
+            option_list_name="start_boundary_options",
+            canonical_segments=canonical_segments,
+        )
+        end_options = boundary_options_by_segment_id(
+            context,
+            option_list_name="end_boundary_options",
+            canonical_segments=canonical_segments,
+        )
+        return allowed_boundary_pair_indexes(
+            context, start_options=start_options, end_options=end_options
+        )
+    except ValueError as exc:
+        raise BoundaryOptionSelectionError(f"Invalid internal review context: {exc}") from exc
 
 
 def _option_map(options: list[dict[str, Any]]) -> dict[int, dict[str, Any]]:
@@ -821,13 +847,10 @@ def _boundary_retry_message(
     error: Exception | str,
 ) -> str:
     return (
-        f"{_concise_boundary_correction(error)} You must return start_segment_id and end_segment_id as non-empty strings. "
-        "Choose a start ID only from segments with non-null start_option_index and an end ID only from segments "
-        "with non-null end_option_index. Do not return option indexes or timestamps; the backend validates the pair. "
-        f"Valid start segment IDs: {_format_segment_ids(_option_map_by_segment_id(context.get('start_boundary_options') or []))}. "
-        f"Valid end segment IDs: {_format_segment_ids(_option_map_by_segment_id(context.get('end_boundary_options') or []))}. "
-        f"For reject, use current_aligned_start_segment_id={context.get('current_aligned_start_segment_id')} "
-        f"and current_aligned_end_segment_id={context.get('current_aligned_end_segment_id')}."
+        f"{_concise_boundary_correction(error)} Return non-empty start_segment_id and end_segment_id only; "
+        "no timestamps or indexes. "
+        f"Start IDs: {_format_segment_ids(_option_map_by_segment_id(context.get('start_boundary_options') or []))}. "
+        f"End IDs: {_format_segment_ids(_option_map_by_segment_id(context.get('end_boundary_options') or []))}."
     )
 
 

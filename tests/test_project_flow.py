@@ -499,9 +499,10 @@ class ProjectFlowTests(unittest.TestCase):
 
             def review(self, context, corrective_message=None):
                 return GeminiBoundaryDecision(
+                    review_response_contract_version=2,
                     decision="render_ready",
-                    selected_start_option_index=context["current_aligned_start_option_index"],
-                    selected_end_option_index=context["current_aligned_end_option_index"],
+                    start_segment_id=context["current_aligned_start_segment_id"],
+                    end_segment_id=context["current_aligned_end_segment_id"],
                     reasoning_summary="Ready from Project Flow Gemini config.",
                     start_reason="Aligned start.",
                     end_reason="Aligned end.",

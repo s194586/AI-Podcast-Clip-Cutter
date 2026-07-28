@@ -53,9 +53,10 @@ def _hanging_worker(send_connection, sleep_seconds):
 
 def _aligned_decision(context):
     return GeminiBoundaryDecision(
+        review_response_contract_version=2,
         decision="render_ready",
-        selected_start_option_index=context["current_aligned_start_option_index"],
-        selected_end_option_index=context["current_aligned_end_option_index"],
+        start_segment_id=context["current_aligned_start_segment_id"],
+        end_segment_id=context["current_aligned_end_segment_id"],
         reasoning_summary="Offline aligned decision.",
         start_reason="Aligned start.",
         end_reason="Aligned end.",
@@ -82,9 +83,10 @@ class GeminiProviderTimeoutTests(unittest.TestCase):
 
     def test_child_process_receives_default_request_deadline(self):
         decision = {
+            "review_response_contract_version": 2,
             "decision": "render_ready",
-            "selected_start_option_index": 1,
-            "selected_end_option_index": 1,
+            "start_segment_id": "seg_v1_start",
+            "end_segment_id": "seg_v1_end",
             "reasoning_summary": "Offline decision.",
             "start_reason": "Offline start.",
             "end_reason": "Offline end.",

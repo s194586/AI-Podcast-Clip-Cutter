@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -174,16 +176,188 @@ def build_clip_transcript_context_from_segments(
 
 
 def segment_map(context: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    segments: list[dict[str, Any]] = []
-    for key in ("context_before", "candidate_segments", "context_after"):
-        segments.extend(dict(segment) for segment in context.get(key) or [])
+    """Return the canonical transcript segments in a review context by ID.
+
+    Boundary options are derived compatibility data.  They must never become a
+    competing source of timestamps or segment identity.
+    """
+
     mapped: dict[str, dict[str, Any]] = {}
-    for segment in segments:
-        segment_id = str(segment["segment_id"])
-        if segment_id in mapped:
-            raise ValueError(f"Duplicate segment_id in review context: {segment_id}")
-        mapped[segment_id] = segment
+    for key in ("context_before", "candidate_segments", "context_after"):
+        items = context.get(key, [])
+        if items is None:
+            items = []
+        if not isinstance(items, list):
+            raise ValueError(f"{key} must be a list of canonical transcript segments.")
+        for position, segment in enumerate(items):
+            if not isinstance(segment, Mapping):
+                raise ValueError(f"{key}[{position}] must be a canonical transcript segment.")
+            segment_id = _required_context_segment_id(
+                segment.get("segment_id"), location=f"{key}[{position}]"
+            )
+            _context_timestamp(segment.get("start"), location=f"{key}[{position}].start")
+            _context_timestamp(segment.get("end"), location=f"{key}[{position}].end")
+            if segment_id in mapped:
+                raise ValueError(f"Duplicate segment_id in review context: {segment_id}")
+            mapped[segment_id] = dict(segment)
     return mapped
+
+
+def boundary_options_by_segment_id(
+    context: dict[str, Any],
+    *,
+    option_list_name: str,
+    canonical_segments: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Validate boundary-option compatibility data against canonical segments."""
+
+    canonical_segments = canonical_segments if canonical_segments is not None else segment_map(context)
+    options = context.get(option_list_name, [])
+    if options is None:
+        options = []
+    if not isinstance(options, list):
+        raise ValueError(f"{option_list_name} must be a list of boundary options.")
+
+    by_id: dict[str, dict[str, Any]] = {}
+    indexes: set[int] = set()
+    for position, option in enumerate(options):
+        location = f"{option_list_name}[{position}]"
+        if not isinstance(option, Mapping):
+            raise ValueError(f"{location} must be a boundary option.")
+        segment_id = _required_context_segment_id(option.get("segment_id"), location=location)
+        if segment_id in by_id:
+            raise ValueError(f"Duplicate segment_id in {option_list_name}: {segment_id}")
+        canonical = canonical_segments.get(segment_id)
+        if canonical is None:
+            raise ValueError(
+                f"{option_list_name} references segment_id not present in canonical transcript segments: {segment_id}"
+            )
+        option_index = option.get("option_index")
+        if type(option_index) is not int or option_index <= 0:
+            raise ValueError(f"{location}.option_index must be a positive integer.")
+        if option_index in indexes:
+            raise ValueError(f"Duplicate option_index in {option_list_name}: {option_index}")
+        indexes.add(option_index)
+        for field in ("start", "end"):
+            option_value = _context_timestamp(option.get(field), location=f"{location}.{field}")
+            canonical_value = _context_timestamp(
+                canonical.get(field), location=f"canonical segment {segment_id}.{field}"
+            )
+            if option_value != canonical_value:
+                raise ValueError(
+                    f"{location}.{field} does not match canonical transcript segment {segment_id}.{field}."
+                )
+        if option.get("text") != canonical.get("text"):
+            raise ValueError(f"{location}.text does not match canonical transcript segment {segment_id}.text.")
+        by_id[segment_id] = dict(option)
+    return by_id
+
+
+def allowed_boundary_pair_indexes(
+    context: dict[str, Any],
+    *,
+    start_options: dict[str, dict[str, Any]],
+    end_options: dict[str, dict[str, Any]],
+) -> set[tuple[int, int]]:
+    """Validate backend-only allowed pairs without silently discarding bad data."""
+
+    pairs = context.get("allowed_boundary_pairs", [])
+    if pairs is None:
+        pairs = []
+    if not isinstance(pairs, list):
+        raise ValueError("allowed_boundary_pairs must be a list of boundary option pairs.")
+    start_indexes = {option["option_index"] for option in start_options.values()}
+    end_indexes = {option["option_index"] for option in end_options.values()}
+    indexes: set[tuple[int, int]] = set()
+    for position, pair in enumerate(pairs):
+        location = f"allowed_boundary_pairs[{position}]"
+        if not isinstance(pair, Mapping):
+            raise ValueError(f"{location} must be a boundary option pair.")
+        start_index = _required_option_index(pair.get("start_option_index"), location=location)
+        end_index = _required_option_index(pair.get("end_option_index"), location=location)
+        if start_index not in start_indexes or end_index not in end_indexes:
+            raise ValueError(f"{location} references an unknown boundary option index.")
+        selected_pair = (start_index, end_index)
+        if selected_pair in indexes:
+            raise ValueError(f"Duplicate allowed boundary option pair: {selected_pair}")
+        indexes.add(selected_pair)
+    return indexes
+
+
+def current_aligned_boundary_options(
+    context: dict[str, Any],
+    *,
+    start_options: dict[str, dict[str, Any]],
+    end_options: dict[str, dict[str, Any]],
+    allowed_pairs: set[tuple[int, int]],
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Resolve current alignment only when its IDs and compatibility indexes agree."""
+
+    start = _current_aligned_boundary_option(
+        context, boundary="start", options=start_options
+    )
+    end = _current_aligned_boundary_option(context, boundary="end", options=end_options)
+    if (start is None) != (end is None):
+        raise ValueError("Current aligned start and end boundaries must both be present or both be null.")
+    if start is None and allowed_pairs:
+        raise ValueError("Current aligned boundaries are required when allowed_boundary_pairs are present.")
+    if start is not None and (start["option_index"], end["option_index"]) not in allowed_pairs:
+        raise ValueError("Current aligned boundary pair is not present in allowed_boundary_pairs.")
+    return start, end
+
+
+def _current_aligned_boundary_option(
+    context: dict[str, Any],
+    *,
+    boundary: str,
+    options: dict[str, dict[str, Any]],
+) -> dict[str, Any] | None:
+    segment_id_value = context.get(f"current_aligned_{boundary}_segment_id")
+    option_index_value = context.get(f"current_aligned_{boundary}_option_index")
+    if segment_id_value is None and option_index_value is None:
+        return None
+    if segment_id_value is None or option_index_value is None:
+        raise ValueError(
+            f"current_aligned_{boundary}_segment_id and current_aligned_{boundary}_option_index must agree."
+        )
+    segment_id = _required_context_segment_id(
+        segment_id_value, location=f"current_aligned_{boundary}_segment_id"
+    )
+    option_index = _required_option_index(
+        option_index_value, location=f"current_aligned_{boundary}_option_index"
+    )
+    option = options.get(segment_id)
+    if option is None:
+        raise ValueError(f"current_aligned_{boundary}_segment_id is not an eligible boundary segment: {segment_id}")
+    if option["option_index"] != option_index:
+        raise ValueError(
+            f"current_aligned_{boundary}_option_index does not match current_aligned_{boundary}_segment_id."
+        )
+    return option
+
+
+def _required_context_segment_id(value: Any, *, location: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{location}.segment_id must be a non-empty string.")
+    return value
+
+
+def _required_option_index(value: Any, *, location: str) -> int:
+    if type(value) is not int or value <= 0:
+        raise ValueError(f"{location} must be a positive integer.")
+    return value
+
+
+def _context_timestamp(value: Any, *, location: str) -> float:
+    if isinstance(value, bool):
+        raise ValueError(f"{location} must be a finite timestamp.")
+    try:
+        timestamp = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{location} must be a finite timestamp.") from exc
+    if not math.isfinite(timestamp):
+        raise ValueError(f"{location} must be a finite timestamp.")
+    return timestamp
 
 
 def _with_canonical_ids(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:

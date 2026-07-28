@@ -9,13 +9,19 @@ from typing import Any, Protocol
 
 from pydantic import ValidationError
 
+from .context import (
+    allowed_boundary_pair_indexes,
+    boundary_options_by_segment_id,
+    current_aligned_boundary_options,
+    segment_map,
+)
 from .schemas import GeminiBoundaryDecision
 
 
 DEFAULT_GEMINI_MODEL = "gemini-3.5-flash"
 DEFAULT_GEMINI_REQUEST_TIMEOUT_SECONDS = 300
 LOCAL_STUB_MODEL = "local_stub"
-COMPACT_REVIEW_REQUEST_CONTRACT_VERSION = 2
+COMPACT_REVIEW_REQUEST_CONTRACT_VERSION = 3
 REVIEW_RESPONSE_CONTRACT_VERSION = 2
 
 
@@ -236,31 +242,33 @@ def build_compact_review_request(context: dict[str, Any]) -> dict[str, Any]:
     Internal boundary options and allowed pairs remain available to backend
     validation, but segment text is sent to Gemini exactly once.
     """
+    canonical_segments = segment_map(context)
     segments = _compact_segments(context)
-    segment_ids = {segment["segment_id"] for segment in segments}
-    start_indexes = _option_indexes_by_segment(
-        context.get("start_boundary_options") or [],
+    compact_segment_ids = {segment["segment_id"] for segment in segments}
+    if compact_segment_ids != set(canonical_segments):
+        raise ValueError("Compact review request segments do not match canonical transcript segments.")
+    start_options = boundary_options_by_segment_id(
+        context,
         option_list_name="start_boundary_options",
-        compact_segment_ids=segment_ids,
+        canonical_segments=canonical_segments,
     )
-    end_indexes = _option_indexes_by_segment(
-        context.get("end_boundary_options") or [],
+    end_options = boundary_options_by_segment_id(
+        context,
         option_list_name="end_boundary_options",
-        compact_segment_ids=segment_ids,
+        canonical_segments=canonical_segments,
     )
-    _validate_current_aligned_index(
-        context.get("current_aligned_start_option_index"),
-        indexes=start_indexes,
-        field_name="current_aligned_start_option_index",
+    allowed_pairs = allowed_boundary_pair_indexes(
+        context, start_options=start_options, end_options=end_options
     )
-    _validate_current_aligned_index(
-        context.get("current_aligned_end_option_index"),
-        indexes=end_indexes,
-        field_name="current_aligned_end_option_index",
+    current_start, current_end = current_aligned_boundary_options(
+        context,
+        start_options=start_options,
+        end_options=end_options,
+        allowed_pairs=allowed_pairs,
     )
     for segment in segments:
-        segment["start_option_index"] = start_indexes.get(segment["segment_id"])
-        segment["end_option_index"] = end_indexes.get(segment["segment_id"])
+        segment["start_eligible"] = segment["segment_id"] in start_options
+        segment["end_eligible"] = segment["segment_id"] in end_options
     return {
         "review_request_contract_version": COMPACT_REVIEW_REQUEST_CONTRACT_VERSION,
         "candidate": {
@@ -274,10 +282,12 @@ def build_compact_review_request(context: dict[str, Any]) -> dict[str, Any]:
             "maximum_duration_seconds": _float_or_none(
                 context.get("maximum_duration_seconds", 90.0)
             ),
-            "current_aligned_start_option_index": context.get("current_aligned_start_option_index"),
-            "current_aligned_end_option_index": context.get("current_aligned_end_option_index"),
-            "current_aligned_start_segment_id": context.get("current_aligned_start_segment_id"),
-            "current_aligned_end_segment_id": context.get("current_aligned_end_segment_id"),
+            "current_aligned_start_segment_id": (
+                current_start["segment_id"] if current_start is not None else None
+            ),
+            "current_aligned_end_segment_id": (
+                current_end["segment_id"] if current_end is not None else None
+            ),
         },
         "segments": segments,
     }
@@ -292,8 +302,8 @@ def build_gemini_prompt(payload: dict[str, Any], corrective_message: str | None 
         "You do not analyze video.\n"
         "You only decide whether the clip forms a coherent standalone excerpt and which supplied transcript "
         "segment boundaries should be used.\n\n"
-        "Each segment relation is before, candidate, or after. Nullable start_option_index and "
-        "end_option_index identify whether that segment is eligible for each respective boundary.\n"
+        "Each segment relation is before, candidate, or after. Boolean start_eligible and "
+        "end_eligible identify whether that segment is eligible for each respective boundary.\n"
         "The current aligned segment IDs in candidate metadata identify the transcript boundaries nearest to the "
         "original candidate start and end. The backend resolves IDs to timestamps and performs final validation.\n\n"
         "You must make the editorial decision yourself.\n"
@@ -312,8 +322,8 @@ def build_gemini_prompt(payload: dict[str, Any], corrective_message: str | None 
         "For adjust_boundaries, select the segment IDs that improve the beginning or ending.\n"
         "For reject, return current_aligned_start_segment_id and current_aligned_end_segment_id; the backend will "
         "ignore the boundaries.\n\n"
-        "The start segment must have a non-null start_option_index.\n"
-        "The end segment must have a non-null end_option_index.\n"
+        "The start segment must have start_eligible=true.\n"
+        "The end segment must have end_eligible=true.\n"
         "Choose IDs only from the supplied chronological transcript window.\n"
         "Do not return option indexes. Do not invent segment IDs or timestamps.\n\n"
         "You are evaluating a podcast / talking-head transcript. Visual framing is not part of your task. "
@@ -680,8 +690,6 @@ def _compact_segments(
                 "end": float(segment.get("end") or 0.0),
                 "text": str(segment.get("text") or ""),
                 "relation": relation,
-                "start_option_index": None,
-                "end_option_index": None,
             }
             speaker = str(segment.get("speaker") or "").strip()
             if speaker:
@@ -691,53 +699,10 @@ def _compact_segments(
     return [item for _, _, _, item in sorted(ordered)]
 
 
-def _option_indexes_by_segment(
-    options: list[dict[str, Any]],
-    *,
-    option_list_name: str,
-    compact_segment_ids: set[str],
-) -> dict[str, int]:
-    indexes: dict[str, int] = {}
-    used_indexes: set[int] = set()
-    for option in options:
-        segment_id = _required_segment_id(
-            option.get("segment_id"),
-            location=f"{option_list_name} option",
-        )
-        if segment_id in indexes:
-            raise ValueError(f"Duplicate segment_id in {option_list_name}: {segment_id}")
-        if segment_id not in compact_segment_ids:
-            raise ValueError(
-                f"{option_list_name} references segment_id not present in compact segments: {segment_id}"
-            )
-        option_index = option.get("option_index")
-        if type(option_index) is not int or option_index <= 0:
-            raise ValueError(f"{option_list_name} option_index must be a positive integer.")
-        if option_index in used_indexes:
-            raise ValueError(f"Duplicate option_index in {option_list_name}: {option_index}")
-        used_indexes.add(option_index)
-        indexes[segment_id] = option_index
-    return indexes
-
-
 def _required_segment_id(value: Any, *, location: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{location} segment_id must be a non-empty string.")
     return value
-
-
-def _validate_current_aligned_index(
-    value: Any,
-    *,
-    indexes: dict[str, int],
-    field_name: str,
-) -> None:
-    if value is None:
-        return
-    if type(value) is not int or value <= 0:
-        raise ValueError(f"{field_name} must be a positive integer or null.")
-    if value not in set(indexes.values()):
-        raise ValueError(f"{field_name} does not exist in its boundary option indexes: {value}")
 
 
 def _float_or_none(value: Any) -> float | None:
@@ -749,34 +714,42 @@ def _coerce_local_stub_to_allowed_pair(
     selected_start: dict[str, Any],
     selected_end: dict[str, Any],
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    allowed_pairs = [dict(pair) for pair in context.get("allowed_boundary_pairs") or []]
+    canonical_segments = segment_map(context)
+    starts_by_id = boundary_options_by_segment_id(
+        context,
+        option_list_name="start_boundary_options",
+        canonical_segments=canonical_segments,
+    )
+    ends_by_id = boundary_options_by_segment_id(
+        context,
+        option_list_name="end_boundary_options",
+        canonical_segments=canonical_segments,
+    )
+    allowed_indexes = allowed_boundary_pair_indexes(
+        context, start_options=starts_by_id, end_options=ends_by_id
+    )
+    current_start, current_end = current_aligned_boundary_options(
+        context,
+        start_options=starts_by_id,
+        end_options=ends_by_id,
+        allowed_pairs=allowed_indexes,
+    )
     selected_pair = (
         int(selected_start["option_index"]),
         int(selected_end["option_index"]),
     )
-    allowed_indexes = {
-        (int(pair["start_option_index"]), int(pair["end_option_index"]))
-        for pair in allowed_pairs
-    }
-    if selected_pair in allowed_indexes or not allowed_pairs:
+    if selected_pair in allowed_indexes or not allowed_indexes:
         return selected_start, selected_end
 
-    current_pair = (
-        int(context.get("current_aligned_start_option_index") or 0),
-        int(context.get("current_aligned_end_option_index") or 0),
-    )
-    first_allowed = allowed_pairs[0]
-    fallback_pair = current_pair if current_pair in allowed_indexes else (
-        int(first_allowed["start_option_index"]),
-        int(first_allowed["end_option_index"]),
-    )
+    current_pair = (current_start["option_index"], current_end["option_index"])
+    fallback_pair = current_pair if current_pair in allowed_indexes else min(allowed_indexes)
     starts = {
         int(option["option_index"]): option
-        for option in context.get("start_boundary_options") or []
+        for option in starts_by_id.values()
     }
     ends = {
         int(option["option_index"]): option
-        for option in context.get("end_boundary_options") or []
+        for option in ends_by_id.values()
     }
     return starts[fallback_pair[0]], ends[fallback_pair[1]]
 

@@ -44,8 +44,6 @@ class CompactReviewRequestTests(unittest.TestCase):
                 "current_end": 140.0,
                 "minimum_duration_seconds": 15.0,
                 "maximum_duration_seconds": 80.0,
-                "current_aligned_start_option_index": 2,
-                "current_aligned_end_option_index": 2,
                 "current_aligned_start_segment_id": self.context["current_aligned_start_segment_id"],
                 "current_aligned_end_segment_id": self.context["current_aligned_end_segment_id"],
             },
@@ -76,7 +74,7 @@ class CompactReviewRequestTests(unittest.TestCase):
         legacy_context["candidate_id"] = None
         self.assertIsNone(build_compact_review_request(legacy_context)["candidate"]["candidate_id"])
 
-    def test_projection_preserves_speakers_and_exact_option_indexes(self) -> None:
+    def test_projection_preserves_speakers_and_exposes_eligibility_without_indexes(self) -> None:
         request = build_compact_review_request(self.context)
         segments = request["segments"]
         before, candidate_opening, candidate_payoff, after = segments
@@ -85,14 +83,11 @@ class CompactReviewRequestTests(unittest.TestCase):
         self.assertNotIn("speaker", candidate_opening)
         self.assertEqual(candidate_payoff["speaker"], "Guest")
         self.assertNotIn("speaker", after)
-        self.assertEqual(before["start_option_index"], 1)
-        self.assertIsNone(before["end_option_index"])
-        self.assertEqual(candidate_opening["start_option_index"], 2)
-        self.assertEqual(candidate_opening["end_option_index"], 1)
-        self.assertEqual(candidate_payoff["start_option_index"], 3)
-        self.assertEqual(candidate_payoff["end_option_index"], 2)
-        self.assertIsNone(after["start_option_index"])
-        self.assertEqual(after["end_option_index"], 3)
+        self.assertEqual(
+            [(segment["start_eligible"], segment["end_eligible"]) for segment in segments],
+            [(True, False), (True, True), (True, True), (False, True)],
+        )
+        self.assertNotIn("option_index", json.dumps(request))
 
     def test_prompt_embeds_only_compact_request_and_requires_segment_ids(self) -> None:
         request = build_compact_review_request(self.context)
@@ -105,6 +100,10 @@ class CompactReviewRequestTests(unittest.TestCase):
             "start_boundary_options",
             "end_boundary_options",
             "allowed_boundary_pairs",
+            "start_option_index",
+            "end_option_index",
+            "current_aligned_start_option_index",
+            "current_aligned_end_option_index",
         ):
             self.assertNotIn(f'"{field}"', json.dumps(request))
             self.assertNotIn(f'"{field}"', prompt)
@@ -160,7 +159,7 @@ class CompactReviewRequestTests(unittest.TestCase):
         invalid = deepcopy(self.context)
         invalid["start_boundary_options"][0]["segment_id"] = "seg_v1_missing"
 
-        with self.assertRaisesRegex(ValueError, "not present in compact segments"):
+        with self.assertRaisesRegex(ValueError, "not present in canonical transcript segments"):
             build_compact_review_request(invalid)
 
     def test_compact_contract_rejects_unknown_current_aligned_indexes(self) -> None:
@@ -171,8 +170,30 @@ class CompactReviewRequestTests(unittest.TestCase):
             with self.subTest(field_name=field_name):
                 invalid = deepcopy(self.context)
                 invalid[field_name] = 999
-                with self.assertRaisesRegex(ValueError, "does not exist in its boundary option indexes"):
+                with self.assertRaisesRegex(ValueError, "does not match current_aligned"):
                     build_compact_review_request(invalid)
+
+    def test_compact_contract_rejects_boundary_option_timestamp_or_text_mismatch(self) -> None:
+        for field, value in (("start", 99.0), ("end", 121.0), ("text", "Inconsistent copy.")):
+            with self.subTest(field=field):
+                invalid = deepcopy(self.context)
+                invalid["start_boundary_options"][1][field] = value
+                with self.assertRaisesRegex(ValueError, "does not match canonical transcript segment"):
+                    build_compact_review_request(invalid)
+
+    def test_compact_contract_rejects_current_alignment_id_index_mismatch(self) -> None:
+        invalid = deepcopy(self.context)
+        invalid["current_aligned_start_option_index"] = invalid["start_boundary_options"][0]["option_index"]
+
+        with self.assertRaisesRegex(ValueError, "does not match current_aligned_start_segment_id"):
+            build_compact_review_request(invalid)
+
+    def test_compact_contract_rejects_malformed_or_unknown_allowed_pairs(self) -> None:
+        invalid = deepcopy(self.context)
+        invalid["allowed_boundary_pairs"] = [{"start_option_index": 999, "end_option_index": 1}]
+
+        with self.assertRaisesRegex(ValueError, "references an unknown boundary option index"):
+            build_compact_review_request(invalid)
 
 
 if __name__ == "__main__":

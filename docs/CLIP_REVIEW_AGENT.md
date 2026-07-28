@@ -69,9 +69,10 @@ Gemini returns a Pydantic-validated schema:
 
 ```python
 class GeminiBoundaryDecision(BaseModel):
+    review_response_contract_version: Literal[2]
     decision: Literal["render_ready", "adjust_boundaries", "reject"]
-    selected_start_option_index: int
-    selected_end_option_index: int
+    start_segment_id: str
+    end_segment_id: str
     reasoning_summary: str
     start_reason: str
     end_reason: str
@@ -80,7 +81,9 @@ class GeminiBoundaryDecision(BaseModel):
 
 Gemini does not produce numeric quality, hook, payoff, boundary, context, or privacy scores. It also does not return crop advice or defer editorial decisions to `manual_review`.
 
-The selected option indexes are required for every Gemini response, including `reject`. For `reject`, the backend ignores the indexes and does not apply boundaries.
+Segment IDs are required for every Gemini response, including `reject`. For
+`reject`, Gemini returns the current aligned IDs; the backend does not apply
+boundaries.
 
 ## Segment IDs And Timestamps
 
@@ -97,16 +100,25 @@ The selected option indexes are required for every Gemini response, including `r
 }
 ```
 
-Gemini chooses `selected_start_option_index` from `start_boundary_options` and `selected_end_option_index` from `end_boundary_options`. The backend maps indexes back to segment IDs and exact timestamps:
+Gemini receives compact request contract version `3`: one transcript window, one
+copy of each segment and its text, canonical timestamps, and boolean
+`start_eligible` / `end_eligible` flags. It never receives boundary option
+indexes, boundary options, or allowed pairs. The backend resolves the selected
+IDs to canonical transcript segments, then derives transitional compatibility
+indexes from validated boundary options:
 
 ```text
-selected_start_segment_id = start option.segment_id
-selected_end_segment_id = end option.segment_id
-reviewed_start = start option.start
-reviewed_end = end option.end
+selected_start_segment_id = canonical start segment.segment_id
+selected_end_segment_id = canonical end segment.segment_id
+reviewed_start = canonical start segment.start
+reviewed_end = canonical end segment.end
 ```
 
-The backend validates that option indexes exist, start precedes end, boundaries stay inside the compact context, and the final duration fits editor limits. Invalid safe decisions get one corrective retry; if that still fails, the backend creates `manual_review` with `failed=true`.
+The backend rejects duplicate or unknown IDs/indexes, mismatched boundary-option
+copies, invalid allowed pairs, and inconsistent current alignment explicitly. It
+then validates ordering, context range, and final duration. Invalid safe decisions
+get one corrective retry; if that still fails, the backend creates `manual_review`
+with `failed=true`.
 
 ## Boundary Lifecycle
 

@@ -110,10 +110,21 @@ class LangGraphReleaseSmokeTests(unittest.TestCase):
     @staticmethod
     def _valid_decision(context: dict) -> GeminiBoundaryDecision:
         pair = context["allowed_boundary_pairs"][0]
+        start_id = next(
+            option["segment_id"]
+            for option in context["start_boundary_options"]
+            if option["option_index"] == pair["start_option_index"]
+        )
+        end_id = next(
+            option["segment_id"]
+            for option in context["end_boundary_options"]
+            if option["option_index"] == pair["end_option_index"]
+        )
         return GeminiBoundaryDecision(
+            review_response_contract_version=2,
             decision="adjust_boundaries",
-            selected_start_option_index=pair["start_option_index"],
-            selected_end_option_index=pair["end_option_index"],
+            start_segment_id=start_id,
+            end_segment_id=end_id,
             reasoning_summary="Mocked semantic decision.",
             start_reason="Mocked complete start.",
             end_reason="Mocked complete end.",
@@ -176,9 +187,10 @@ class LangGraphReleaseSmokeTests(unittest.TestCase):
                 feedback.append(corrective_message)
                 if len(feedback) == 1:
                     return GeminiBoundaryDecision(
+                        review_response_contract_version=2,
                         decision="adjust_boundaries",
-                        selected_start_option_index=999,
-                        selected_end_option_index=999,
+                        start_segment_id="seg_v1_unknown_start",
+                        end_segment_id="seg_v1_unknown_end",
                         reasoning_summary="Invalid mocked pair.",
                         start_reason="Invalid.",
                         end_reason="Invalid.",
@@ -216,9 +228,10 @@ class LangGraphReleaseSmokeTests(unittest.TestCase):
                 nonlocal calls
                 calls += 1
                 return GeminiBoundaryDecision(
+                    review_response_contract_version=2,
                     decision="adjust_boundaries",
-                    selected_start_option_index=999,
-                    selected_end_option_index=999,
+                    start_segment_id="seg_v1_unknown_start",
+                    end_segment_id="seg_v1_unknown_end",
                     reasoning_summary="Invalid mocked pair.",
                     start_reason="Invalid.",
                     end_reason="Invalid.",
@@ -392,9 +405,10 @@ class LangGraphReleaseSmokeTests(unittest.TestCase):
                 calls[clip_id] += 1
                 if clip_id == "clip_002":
                     return GeminiBoundaryDecision(
+                        review_response_contract_version=2,
                         decision="adjust_boundaries",
-                        selected_start_option_index=999,
-                        selected_end_option_index=999,
+                        start_segment_id="seg_v1_unknown_start",
+                        end_segment_id="seg_v1_unknown_end",
                         reasoning_summary="Invalid mocked pair.",
                         start_reason="Invalid.",
                         end_reason="Invalid.",
