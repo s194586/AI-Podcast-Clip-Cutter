@@ -433,7 +433,7 @@ class ReviewAgentService:
         debug_metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if decision.decision in {"render_ready", "adjust_boundaries"}:
-            reviewed_start, reviewed_end, selected_start_id, selected_end_id = _validated_reviewed_bounds(
+            reviewed_start, reviewed_end, selected_start_id, selected_end_id, start_option_index, end_option_index = _validated_reviewed_bounds(
                 context=context,
                 clip=clip,
                 decision=decision,
@@ -441,7 +441,7 @@ class ReviewAgentService:
         else:
             reviewed_start = None
             reviewed_end = None
-            selected_start_id, selected_end_id = _derive_segment_ids_for_reject(context, decision)
+            selected_start_id, selected_end_id, start_option_index, end_option_index = _derive_segment_ids_for_reject(context, decision)
 
         start_delta = _delta(reviewed_start, clip.get("ai_start"))
         end_delta = _delta(reviewed_end, clip.get("ai_end"))
@@ -455,8 +455,8 @@ class ReviewAgentService:
             "model": model,
             "decision": decision.decision,
             "recommended_action": decision.decision,
-            "selected_start_option_index": int(decision.selected_start_option_index),
-            "selected_end_option_index": int(decision.selected_end_option_index),
+            "selected_start_option_index": start_option_index,
+            "selected_end_option_index": end_option_index,
             "selected_start_segment_id": selected_start_id,
             "selected_end_segment_id": selected_end_id,
             "suggested_start": reviewed_start,
@@ -488,6 +488,8 @@ class ReviewAgentService:
                 end_delta=end_delta,
                 selected_start_segment_id=selected_start_id,
                 selected_end_segment_id=selected_end_id,
+                selected_start_option_index=start_option_index,
+                selected_end_option_index=end_option_index,
                 failed=False,
                 debug_metadata=debug,
             ),
@@ -544,6 +546,7 @@ class ReviewAgentService:
             "raw_result": {
                 "provider": provider,
                 "model": model,
+                "review_response_contract_version": 2,
                 "decision": "manual_review",
                 "failed": True,
                 "failure_reason": safe_warning,
@@ -591,7 +594,7 @@ def _validated_reviewed_bounds(
     context: dict[str, Any],
     clip: dict[str, Any],
     decision: GeminiBoundaryDecision,
-) -> tuple[float, float, str, str]:
+) -> tuple[float, float, str, str, int, int]:
     start_option, end_option = _selected_options(context, decision)
     selected_start_id = str(start_option["segment_id"])
     selected_end_id = str(end_option["segment_id"])
@@ -611,30 +614,37 @@ def _validated_reviewed_bounds(
     duration = reviewed_end - reviewed_start
     if duration < MIN_EDITED_DURATION_SECONDS or duration > MAX_EDITED_DURATION_SECONDS:
         raise BoundaryOptionSelectionError("Gemini returned boundaries outside the editor duration limits.")
-    _ensure_allowed_pair(context, decision)
-    return reviewed_start, reviewed_end, selected_start_id, selected_end_id
+    _ensure_allowed_pair(context, start_option, end_option)
+    return (
+        reviewed_start,
+        reviewed_end,
+        selected_start_id,
+        selected_end_id,
+        int(start_option["option_index"]),
+        int(end_option["option_index"]),
+    )
 
 
 def _selected_options(
     context: dict[str, Any],
     decision: GeminiBoundaryDecision,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    start_options = _option_map(context.get("start_boundary_options") or [])
-    end_options = _option_map(context.get("end_boundary_options") or [])
-    start_index = int(decision.selected_start_option_index)
-    end_index = int(decision.selected_end_option_index)
-    if start_index not in start_options:
+    start_options = _option_map_by_segment_id(context.get("start_boundary_options") or [])
+    end_options = _option_map_by_segment_id(context.get("end_boundary_options") or [])
+    start_segment_id = str(decision.start_segment_id)
+    end_segment_id = str(decision.end_segment_id)
+    if start_segment_id not in start_options:
         raise BoundaryOptionSelectionError(
-            f"Gemini selected unknown start option index {start_index}. "
-            f"Valid start option indexes: {_format_option_indexes(start_options)}."
+            f"Gemini selected unknown or start-ineligible segment_id {start_segment_id!r}. "
+            f"Valid start segment IDs: {_format_segment_ids(start_options)}."
         )
-    if end_index not in end_options:
+    if end_segment_id not in end_options:
         raise BoundaryOptionSelectionError(
-            f"Gemini selected unknown end option index {end_index}. "
-            f"Valid end option indexes: {_format_option_indexes(end_options)}."
+            f"Gemini selected unknown or end-ineligible segment_id {end_segment_id!r}. "
+            f"Valid end segment IDs: {_format_segment_ids(end_options)}."
         )
-    start_option = start_options[start_index]
-    end_option = end_options[end_index]
+    start_option = start_options[start_segment_id]
+    end_option = end_options[end_segment_id]
     segments = {
         str(segment["segment_id"]): segment
         for key in ("context_before", "candidate_segments", "context_after")
@@ -656,19 +666,34 @@ def _selected_options(
 def _derive_segment_ids_for_reject(
     context: dict[str, Any],
     decision: GeminiBoundaryDecision,
-) -> tuple[str | None, str | None]:
+) -> tuple[str, str, int, int]:
     start_option, end_option = _selected_options(context, decision)
-    _ensure_allowed_pair(context, decision)
-    return str(start_option["segment_id"]), str(end_option["segment_id"])
+    _ensure_allowed_pair(context, start_option, end_option)
+    expected_start_id = context.get("current_aligned_start_segment_id")
+    expected_end_id = context.get("current_aligned_end_segment_id")
+    if (
+        str(start_option["segment_id"]) != str(expected_start_id)
+        or str(end_option["segment_id"]) != str(expected_end_id)
+    ):
+        raise BoundaryOptionSelectionError(
+            "Gemini reject responses must use the current aligned segment IDs."
+        )
+    return (
+        str(start_option["segment_id"]),
+        str(end_option["segment_id"]),
+        int(start_option["option_index"]),
+        int(end_option["option_index"]),
+    )
 
 
 def _ensure_allowed_pair(
     context: dict[str, Any],
-    decision: GeminiBoundaryDecision,
+    start_option: dict[str, Any],
+    end_option: dict[str, Any],
 ) -> None:
     selected_pair = (
-        int(decision.selected_start_option_index),
-        int(decision.selected_end_option_index),
+        int(start_option["option_index"]),
+        int(end_option["option_index"]),
     )
     if selected_pair not in _allowed_pair_indexes(context):
         raise BoundaryOptionSelectionError(
@@ -699,6 +724,19 @@ def _option_map(options: list[dict[str, Any]]) -> dict[int, dict[str, Any]]:
         except (KeyError, TypeError, ValueError):
             continue
     return mapped
+
+
+def _option_map_by_segment_id(options: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    mapped: dict[str, dict[str, Any]] = {}
+    for option in options:
+        segment_id = str(option.get("segment_id") or "")
+        if segment_id:
+            mapped[segment_id] = option
+    return mapped
+
+
+def _format_segment_ids(options: dict[str, dict[str, Any]]) -> str:
+    return ", ".join(sorted(options)) or "none"
 
 
 def _format_option_indexes(options: dict[int, dict[str, Any]]) -> str:
@@ -783,14 +821,13 @@ def _boundary_retry_message(
     error: Exception | str,
 ) -> str:
     return (
-        f"{_concise_boundary_correction(error)} You must return selected_start_option_index and "
-        "selected_end_option_index as non-null "
-        "integers. Choose the start index only from non-null start_option_index values and the end index only "
-        "from non-null end_option_index values in the transcript window. The backend will validate the combined selection. "
-        f"Valid start option indexes: {_format_option_indexes(_option_map(context.get('start_boundary_options') or []))}. "
-        f"Valid end option indexes: {_format_option_indexes(_option_map(context.get('end_boundary_options') or []))}. "
-        f"For reject, use current_aligned_start_option_index={context.get('current_aligned_start_option_index')} "
-        f"and current_aligned_end_option_index={context.get('current_aligned_end_option_index')}."
+        f"{_concise_boundary_correction(error)} You must return start_segment_id and end_segment_id as non-empty strings. "
+        "Choose a start ID only from segments with non-null start_option_index and an end ID only from segments "
+        "with non-null end_option_index. Do not return option indexes or timestamps; the backend validates the pair. "
+        f"Valid start segment IDs: {_format_segment_ids(_option_map_by_segment_id(context.get('start_boundary_options') or []))}. "
+        f"Valid end segment IDs: {_format_segment_ids(_option_map_by_segment_id(context.get('end_boundary_options') or []))}. "
+        f"For reject, use current_aligned_start_segment_id={context.get('current_aligned_start_segment_id')} "
+        f"and current_aligned_end_segment_id={context.get('current_aligned_end_segment_id')}."
     )
 
 
@@ -806,8 +843,8 @@ def _concise_boundary_correction(error: Exception | str) -> str:
         return "The selected boundary pair is invalid because the end must be after the start."
     if "allowed_boundary_pairs" in message or "boundary pair" in message:
         return "The selected boundary pair is not allowed."
-    if "unknown start option" in message or "unknown end option" in message:
-        return "The selected boundary option index is not available."
+    if "unknown" in message or "ineligible" in message:
+        return "The selected boundary segment ID is not available."
     return "The prior structured boundary response was invalid."
 
 
@@ -867,6 +904,8 @@ def _raw_result(
     end_delta: float | None,
     selected_start_segment_id: str | None,
     selected_end_segment_id: str | None,
+    selected_start_option_index: int | None,
+    selected_end_option_index: int | None,
     failed: bool,
     debug_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -874,9 +913,10 @@ def _raw_result(
     return {
         "provider": provider,
         "model": model,
+        "review_response_contract_version": decision.review_response_contract_version,
         "decision": decision.decision,
-        "selected_start_option_index": int(decision.selected_start_option_index),
-        "selected_end_option_index": int(decision.selected_end_option_index),
+        "selected_start_option_index": selected_start_option_index,
+        "selected_end_option_index": selected_end_option_index,
         "selected_start_segment_id": selected_start_segment_id,
         "selected_end_segment_id": selected_end_segment_id,
         "reviewed_start": reviewed_start,

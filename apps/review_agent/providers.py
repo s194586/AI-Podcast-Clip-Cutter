@@ -16,6 +16,7 @@ DEFAULT_GEMINI_MODEL = "gemini-3.5-flash"
 DEFAULT_GEMINI_REQUEST_TIMEOUT_SECONDS = 300
 LOCAL_STUB_MODEL = "local_stub"
 COMPACT_REVIEW_REQUEST_CONTRACT_VERSION = 2
+REVIEW_RESPONSE_CONTRACT_VERSION = 2
 
 
 class ReviewProviderError(RuntimeError):
@@ -121,9 +122,10 @@ class LocalStubBoundaryReviewer:
         )
         decision = "adjust_boundaries" if changed else "render_ready"
         return GeminiBoundaryDecision(
+            review_response_contract_version=REVIEW_RESPONSE_CONTRACT_VERSION,
             decision=decision,
-            selected_start_option_index=int(selected_start["option_index"]),
-            selected_end_option_index=int(selected_end["option_index"]),
+            start_segment_id=str(selected_start["segment_id"]),
+            end_segment_id=str(selected_end["segment_id"]),
             reasoning_summary=(
                 "Local stub selected transcript-aligned boundaries for offline development and tests."
             ),
@@ -274,6 +276,8 @@ def build_compact_review_request(context: dict[str, Any]) -> dict[str, Any]:
             ),
             "current_aligned_start_option_index": context.get("current_aligned_start_option_index"),
             "current_aligned_end_option_index": context.get("current_aligned_end_option_index"),
+            "current_aligned_start_segment_id": context.get("current_aligned_start_segment_id"),
+            "current_aligned_end_segment_id": context.get("current_aligned_end_segment_id"),
         },
         "segments": segments,
     }
@@ -289,28 +293,29 @@ def build_gemini_prompt(payload: dict[str, Any], corrective_message: str | None 
         "You only decide whether the clip forms a coherent standalone excerpt and which supplied transcript "
         "segment boundaries should be used.\n\n"
         "Each segment relation is before, candidate, or after. Nullable start_option_index and "
-        "end_option_index identify whether that segment may be used for each respective boundary.\n"
-        "The current aligned indexes in candidate metadata identify the transcript boundaries nearest to the "
-        "original candidate start and end. The backend performs final boundary validation.\n\n"
+        "end_option_index identify whether that segment is eligible for each respective boundary.\n"
+        "The current aligned segment IDs in candidate metadata identify the transcript boundaries nearest to the "
+        "original candidate start and end. The backend resolves IDs to timestamps and performs final validation.\n\n"
         "You must make the editorial decision yourself.\n"
         "You are not allowed to defer the decision to a human.\n\n"
         "Choose exactly one action:\n"
         "- render_ready\n"
         "- adjust_boundaries\n"
         "- reject\n\n"
-        "You must always return one valid start option index and one valid end option index.\n"
+        "You must always return exactly one valid start_segment_id and one valid end_segment_id.\n"
         "Do not return null.\n"
-        "For render_ready, select the option indexes representing the best current coherent boundaries.\n"
+        "For render_ready, select the segment IDs representing the best current coherent boundaries.\n"
         "Use adjust_boundaries when another supplied start or end segment creates a better standalone clip by "
         "improving the setup, opening sentence, question, answer completeness, payoff, or ending.\n"
         "Use reject when the candidate cannot be turned into a coherent useful short using the supplied "
         "transcript context.\n"
-        "For adjust_boundaries, select the option indexes that improve the beginning or ending.\n"
-        "For reject, return the current aligned option indexes; the backend will ignore them.\n\n"
-        "The start index refers to a segment's start_option_index.\n"
-        "The end index refers to a segment's end_option_index.\n"
-        "Do not invent an index.\n"
-        "Do not invent timestamps. Choose only non-null indexes in the supplied transcript window.\n\n"
+        "For adjust_boundaries, select the segment IDs that improve the beginning or ending.\n"
+        "For reject, return current_aligned_start_segment_id and current_aligned_end_segment_id; the backend will "
+        "ignore the boundaries.\n\n"
+        "The start segment must have a non-null start_option_index.\n"
+        "The end segment must have a non-null end_option_index.\n"
+        "Choose IDs only from the supplied chronological transcript window.\n"
+        "Do not return option indexes. Do not invent segment IDs or timestamps.\n\n"
         "You are evaluating a podcast / talking-head transcript. Visual framing is not part of your task. "
         "Phrases such as \"jak widzisz\", \"na tym wykresie\", or \"spojrz tutaj\" may be mentioned in warnings, "
         "but you must still choose render_ready, adjust_boundaries, or reject based on semantic transcript "
@@ -552,9 +557,12 @@ def _parse_boundary_decision(response: Any) -> GeminiBoundaryDecision:
     if not text:
         raise ReviewProviderError("Gemini response did not contain structured output text.")
     try:
+        _reject_legacy_response_fields(str(text))
         if hasattr(GeminiBoundaryDecision, "model_validate_json"):
             return GeminiBoundaryDecision.model_validate_json(str(text))
         return GeminiBoundaryDecision.parse_raw(str(text))
+    except ReviewProviderOutputError:
+        raise
     except ValidationError as exc:
         raise ReviewProviderOutputError(
             "Gemini response did not match the boundary decision schema."
@@ -625,9 +633,26 @@ def _object_field(value: Any, name: str) -> Any:
 
 
 def _validate_decision(value: dict[str, Any]) -> GeminiBoundaryDecision:
+    if "selected_start_option_index" in value or "selected_end_option_index" in value:
+        raise ReviewProviderOutputError(
+            "Gemini response used deprecated option-index boundary fields."
+        )
     if hasattr(GeminiBoundaryDecision, "model_validate"):
         return GeminiBoundaryDecision.model_validate(value)
     return GeminiBoundaryDecision.parse_obj(value)
+
+
+def _reject_legacy_response_fields(text: str) -> None:
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError:
+        return
+    if isinstance(value, dict) and (
+        "selected_start_option_index" in value or "selected_end_option_index" in value
+    ):
+        raise ReviewProviderOutputError(
+            "Gemini response used deprecated option-index boundary fields."
+        )
 
 
 def _compact_segments(

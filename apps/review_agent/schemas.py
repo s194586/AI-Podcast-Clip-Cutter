@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, StrictInt
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator
 
 
 ReviewMode = Literal["local_stub", "gemini"]
@@ -69,13 +69,24 @@ class ClipTranscriptContext(BaseModel):
 
 
 class GeminiBoundaryDecision(BaseModel):
+    """Versioned provider response: Gemini chooses stable transcript segment IDs."""
+
+    model_config = ConfigDict(extra="forbid")
+    review_response_contract_version: Literal[2]
     decision: GeminiReviewDecision
-    selected_start_option_index: StrictInt
-    selected_end_option_index: StrictInt
+    start_segment_id: str = Field(min_length=1)
+    end_segment_id: str = Field(min_length=1)
     reasoning_summary: str
     start_reason: str
     end_reason: str
     warnings: list[str] = Field(default_factory=list)
+
+    @field_validator("start_segment_id", "end_segment_id")
+    @classmethod
+    def _require_non_blank_segment_id(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("segment_id must be a non-empty string")
+        return value
 
 
 class TranscriptContext(BaseModel):

@@ -41,8 +41,8 @@ def invoke_reviewer(
         return {
             "attempt_number": attempt,
             "decision": str(decision.decision),
-            "selected_start_option_index": int(decision.selected_start_option_index),
-            "selected_end_option_index": int(decision.selected_end_option_index),
+            "selected_start_segment_id": str(decision.start_segment_id),
+            "selected_end_segment_id": str(decision.end_segment_id),
             "validation_category": None,
             "safe_validation_error": None,
             "provider_failure_classification": None,
@@ -83,6 +83,8 @@ def validate_review(
         )
         runtime.context.validated_result = result
         return {
+            "selected_start_option_index": result.get("selected_start_option_index"),
+            "selected_end_option_index": result.get("selected_end_option_index"),
             "selected_start_segment_id": result.get("selected_start_segment_id"),
             "selected_end_segment_id": result.get("selected_end_segment_id"),
             "mapped_start": result.get("reviewed_start"),

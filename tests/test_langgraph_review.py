@@ -12,13 +12,14 @@ from apps.review_agent.service import BoundaryOptionSelectionError
 
 def _decision(
     decision: str = "adjust_boundaries",
-    start: int = 1,
-    end: int = 2,
+    start_segment_id: str = "segment-1",
+    end_segment_id: str = "segment-2",
 ) -> GeminiBoundaryDecision:
     return GeminiBoundaryDecision(
+        review_response_contract_version=2,
         decision=decision,
-        selected_start_option_index=start,
-        selected_end_option_index=end,
+        start_segment_id=start_segment_id,
+        end_segment_id=end_segment_id,
         reasoning_summary="Safe summary.",
         start_reason="Complete start.",
         end_reason="Complete end.",
@@ -73,7 +74,7 @@ class _Harness:
         decision: GeminiBoundaryDecision,
         debug: dict[str, Any],
     ) -> dict[str, Any]:
-        if decision.selected_start_option_index != 1 or decision.selected_end_option_index != 2:
+        if decision.start_segment_id != "segment-1" or decision.end_segment_id != "segment-2":
             raise BoundaryOptionSelectionError("Selected pair is not in allowed_boundary_pairs.")
         return {
             "decision": decision.decision,
@@ -178,7 +179,10 @@ class LangGraphReviewTests(unittest.TestCase):
         self.assertIn("allowed pair", harness.feedback[1])
 
     def test_invalid_pair_gets_one_retry_then_manual_review(self):
-        harness = _Harness([_decision(start=99), _decision(start=98)])
+        harness = _Harness([
+            _decision(start_segment_id="segment-99"),
+            _decision(start_segment_id="segment-98"),
+        ])
         state = self._run(harness)
         self.assertEqual(state["terminal_route"], "manual_review")
         self.assertEqual(state["result"]["decision"], "manual_review")

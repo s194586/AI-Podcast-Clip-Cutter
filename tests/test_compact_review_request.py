@@ -46,6 +46,8 @@ class CompactReviewRequestTests(unittest.TestCase):
                 "maximum_duration_seconds": 80.0,
                 "current_aligned_start_option_index": 2,
                 "current_aligned_end_option_index": 2,
+                "current_aligned_start_segment_id": self.context["current_aligned_start_segment_id"],
+                "current_aligned_end_segment_id": self.context["current_aligned_end_segment_id"],
             },
         )
         segments = request["segments"]
@@ -54,7 +56,14 @@ class CompactReviewRequestTests(unittest.TestCase):
         self.assertEqual(len({segment["segment_id"] for segment in segments}), len(segments))
         serialized = json.dumps(request, ensure_ascii=False, sort_keys=True)
         for segment in segments:
-            self.assertEqual(serialized.count(segment["segment_id"]), 1)
+            expected_id_count = 1 + int(
+                segment["segment_id"]
+                in {
+                    request["candidate"]["current_aligned_start_segment_id"],
+                    request["candidate"]["current_aligned_end_segment_id"],
+                }
+            )
+            self.assertEqual(serialized.count(segment["segment_id"]), expected_id_count)
             self.assertEqual(serialized.count(segment["text"]), 1)
         self.assertEqual(build_compact_review_request(self.context), request)
 
@@ -85,7 +94,7 @@ class CompactReviewRequestTests(unittest.TestCase):
         self.assertIsNone(after["start_option_index"])
         self.assertEqual(after["end_option_index"], 3)
 
-    def test_prompt_embeds_only_compact_request_and_response_stays_option_indexed(self) -> None:
+    def test_prompt_embeds_only_compact_request_and_requires_segment_ids(self) -> None:
         request = build_compact_review_request(self.context)
         prompt = build_gemini_prompt(request)
 
@@ -102,15 +111,20 @@ class CompactReviewRequestTests(unittest.TestCase):
         for segment in request["segments"]:
             self.assertEqual(prompt.count(segment["text"]), 1)
         decision = GeminiBoundaryDecision(
+            review_response_contract_version=2,
             decision="render_ready",
-            selected_start_option_index=2,
-            selected_end_option_index=2,
+            start_segment_id=request["candidate"]["current_aligned_start_segment_id"],
+            end_segment_id=request["candidate"]["current_aligned_end_segment_id"],
             reasoning_summary="Complete thought.",
             start_reason="The setup begins here.",
             end_reason="The payoff ends here.",
         )
-        self.assertEqual(decision.selected_start_option_index, 2)
-        self.assertEqual(decision.selected_end_option_index, 2)
+        self.assertEqual(decision.start_segment_id, request["candidate"]["current_aligned_start_segment_id"])
+        self.assertEqual(decision.end_segment_id, request["candidate"]["current_aligned_end_segment_id"])
+        self.assertIn("start_segment_id", prompt)
+        self.assertIn("end_segment_id", prompt)
+        self.assertIn("Do not return option indexes", prompt)
+        self.assertIn("Do not invent segment IDs or timestamps", prompt)
 
     def test_duplicate_segment_ids_fail_explicitly(self) -> None:
         duplicate = dict(self.context)

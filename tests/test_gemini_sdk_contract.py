@@ -18,9 +18,10 @@ from apps.review_agent.providers import (
 
 
 VALID_DECISION = """{
+  "review_response_contract_version": 2,
   "decision": "render_ready",
-  "selected_start_option_index": 0,
-  "selected_end_option_index": 1,
+  "start_segment_id": "seg_v1_start",
+  "end_segment_id": "seg_v1_end",
   "reasoning_summary": "The current boundaries are complete.",
   "start_reason": "The opening is complete.",
   "end_reason": "The ending is complete.",
@@ -72,7 +73,15 @@ class GeminiSdkContractTests(unittest.TestCase):
 
         self.assertEqual(interaction.output_text, VALID_DECISION)
         self.assertEqual(_interaction_structured_text(interaction), VALID_DECISION.strip())
-        self.assertEqual(_parse_boundary_decision(interaction).selected_end_option_index, 1)
+        self.assertEqual(_parse_boundary_decision(interaction).end_segment_id, "seg_v1_end")
+
+    def test_option_index_only_response_is_rejected(self) -> None:
+        legacy = VALID_DECISION.replace('"start_segment_id": "seg_v1_start",', '"selected_start_option_index": 1,').replace(
+            '"end_segment_id": "seg_v1_end",', '"selected_end_option_index": 2,'
+        )
+        response = SimpleNamespace(status="completed", output_text=legacy, steps=[])
+        with self.assertRaises(ReviewProviderOutputError):
+            _parse_boundary_decision(response)
 
     def test_real_sdk_steps_fallback_concatenates_text_blocks(self) -> None:
         midpoint = len(VALID_DECISION) // 2
