@@ -5,10 +5,11 @@
 LangGraph is the internal workflow orchestrator for one existing semantic clip
 boundary review. It is not a recommendation agent or a multi-agent simulation.
 The runtime dependency is pinned to LangGraph 1.1.10, the newest tested line
-compatible with the Airflow 3.3.0 Python 3.12 constraint set.
-Gemini still makes the semantic choice from the existing numbered start/end
-options and `allowed_boundary_pairs`. Existing backend validation remains
-authoritative and local heuristics do not replace Gemini's semantic selection.
+compatible with the project's Python 3.14 constraint set. The workflow is
+version 2. Gemini selects only canonical `seg_v1` start/end segment IDs;
+numbered boundary-option indexes remain backend-derived compatibility data.
+Existing backend validation remains authoritative and local heuristics do not
+replace Gemini's semantic selection.
 
 The public FastAPI and React contracts remain unchanged. Batch review invokes
 one isolated graph per clip, so a controlled failure or `manual_review` outcome
@@ -31,14 +32,16 @@ START
 `validate_review` has conditional edges for valid, retryable-invalid,
 second-invalid, provider-failure, and cancellation outcomes. `apply_review`
 checks cancellation again before persistence. `invoke_reviewer` is the only
-provider-call node. The retry edge is guarded by `retry_used`, so one clip can
-make no more than two provider calls: the initial call and one corrective call.
+provider-call node and the only place that increments `provider_attempt_count`.
+`attempt_number` records the planned workflow attempt; `retry_used` becomes
+true only when the second provider call actually starts. One clip can make no
+more than two provider calls: the initial call and one corrective call.
 
 The corrective call is only for invalid structured output or authoritative
 domain validation failure, such as an unknown option, a pair absent from
 `allowed_boundary_pairs`, reversed boundaries, invalid duration, an
 out-of-range boundary, or inconsistent segment mapping. Its feedback contains
-only a concise error category and valid option indexes. It does not contain a
+only a concise error category and valid segment IDs. It does not contain a
 complete transcript, prompt, secret, raw provider body, or filesystem path.
 
 Quota/rate-limit responses, timeouts, HTTP 499, provider availability failures,
@@ -48,11 +51,14 @@ exhaustion do not take the corrective edge. Automatic HTTP 429
 
 ## State and persistence
 
-The typed graph state contains routing metadata: project and clip identifiers,
-review mode, attempt/retry counters, original and pre-existing boundary values,
-allowed-pair count, selected indexes and mapped segment identifiers/timestamps,
-safe validation/provider categories, cancellation state, terminal route, and
-workflow timing/version metadata.
+The typed graph state keeps provider-selected IDs separate from backend-validated
+IDs, canonical mapped timestamps, and backend-derived option indexes. The
+validation-derived fields and `validated_result` are empty before validation and
+are cleared before the one corrective retry and on manual/provider-failure/
+cancelled terminal routes. Canonical transcript segments are the only source of
+timestamps. State also contains routing metadata, attempt/retry counters, safe
+validation/provider categories, terminal route, and workflow contract metadata:
+workflow v2, request contract v3, and response contract v2.
 
 Transcript context, complete prompts, provider objects, credentials, raw HTTP
 bodies, and filesystem paths remain ephemeral runtime context. The graph is

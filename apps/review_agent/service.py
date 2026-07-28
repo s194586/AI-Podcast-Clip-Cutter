@@ -32,6 +32,8 @@ from .graph.runtime import ReviewGraphRuntime
 from .providers import (
     GeminiBoundaryReviewer,
     LocalStubBoundaryReviewer,
+    COMPACT_REVIEW_REQUEST_CONTRACT_VERSION,
+    REVIEW_RESPONSE_CONTRACT_VERSION,
     ReviewProviderCancelledError,
     ReviewProviderCompatibilityError,
     ReviewProviderError,
@@ -270,6 +272,8 @@ class ReviewAgentService:
             raise ClipReviewError("Boundary review graph ended without a terminal result.")
         result["review_workflow"] = GRAPH_WORKFLOW_NAME
         result["review_workflow_version"] = GRAPH_WORKFLOW_VERSION
+        result["review_request_contract_version"] = COMPACT_REVIEW_REQUEST_CONTRACT_VERSION
+        result["review_response_contract_version"] = REVIEW_RESPONSE_CONTRACT_VERSION
         result["review_workflow_route"] = graph_state.get("terminal_route")
         result["review_workflow_duration_ms"] = int(graph_state.get("duration_ms") or 0)
         raw_result = dict(result.get("raw_result") or {})
@@ -277,6 +281,8 @@ class ReviewAgentService:
             {
                 "review_workflow": GRAPH_WORKFLOW_NAME,
                 "review_workflow_version": GRAPH_WORKFLOW_VERSION,
+                "review_request_contract_version": COMPACT_REVIEW_REQUEST_CONTRACT_VERSION,
+                "review_response_contract_version": REVIEW_RESPONSE_CONTRACT_VERSION,
                 "review_workflow_route": graph_state.get("terminal_route"),
                 "review_workflow_duration_ms": int(graph_state.get("duration_ms") or 0),
             }
@@ -552,7 +558,8 @@ class ReviewAgentService:
             "raw_result": {
                 "provider": provider,
                 "model": model,
-                "review_response_contract_version": 2,
+                "review_request_contract_version": COMPACT_REVIEW_REQUEST_CONTRACT_VERSION,
+                "review_response_contract_version": REVIEW_RESPONSE_CONTRACT_VERSION,
                 "decision": "manual_review",
                 "failed": True,
                 "failure_reason": safe_warning,
@@ -936,6 +943,7 @@ def _raw_result(
     return {
         "provider": provider,
         "model": model,
+        "review_request_contract_version": COMPACT_REVIEW_REQUEST_CONTRACT_VERSION,
         "review_response_contract_version": decision.review_response_contract_version,
         "decision": decision.decision,
         "selected_start_option_index": selected_start_option_index,

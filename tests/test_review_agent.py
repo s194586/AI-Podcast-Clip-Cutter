@@ -31,7 +31,7 @@ from apps.review_agent.providers import (
     build_gemini_prompt,
 )
 from apps.review_agent.schemas import GeminiBoundaryDecision
-from apps.review_agent.service import ReviewAgentService
+from apps.review_agent.service import BoundaryOptionSelectionError, ReviewAgentService
 from apps.review_agent.tools import check_sensitive_patterns, save_evaluation
 from transcription.segment_identity import canonical_segment_id
 
@@ -444,8 +444,12 @@ class ReviewAgentTests(unittest.TestCase):
         self.assertEqual(result["model"], "local_stub")
         self.assertIn(result["decision"], {"render_ready", "adjust_boundaries", "reject", "manual_review"})
         self.assertEqual(result["raw_result"]["review_workflow"], "langgraph_boundary_review")
-        self.assertEqual(result["raw_result"]["review_workflow_version"], "1")
+        self.assertEqual(result["raw_result"]["review_workflow_version"], "2")
+        self.assertEqual(result["raw_result"]["review_request_contract_version"], 3)
         self.assertEqual(result["raw_result"]["review_response_contract_version"], 2)
+        self.assertEqual(result["review_workflow_version"], "2")
+        self.assertEqual(result["review_request_contract_version"], 3)
+        self.assertEqual(result["review_response_contract_version"], 2)
         self.assertIn(
             result["raw_result"]["review_workflow_route"],
             {"applied", "manual_review", "provider_failure"},
@@ -565,7 +569,7 @@ class ReviewAgentTests(unittest.TestCase):
                     start_segment_id=start_id, end_segment_id=end_id,
                     reasoning_summary="Test.", start_reason="Test.", end_reason="Test.",
                 )
-                with self.assertRaisesRegex(Exception, message):
+                with self.assertRaisesRegex(BoundaryOptionSelectionError, message):
                     service._result_from_decision(
                         project_id=1, clip=clip, context=context, decision=decision,
                         provider="gemini", model="unit", apply_safe_suggestions=True,
@@ -584,7 +588,7 @@ class ReviewAgentTests(unittest.TestCase):
             end_segment_id=unlisted_context["current_aligned_end_segment_id"],
             reasoning_summary="Test.", start_reason="Test.", end_reason="Test.",
         )
-        with self.assertRaisesRegex(Exception, "allowed_boundary_pairs"):
+        with self.assertRaisesRegex(BoundaryOptionSelectionError, "allowed_boundary_pairs"):
             service._result_from_decision(
                 project_id=1, clip=clip, context=unlisted_context, decision=unlisted,
                 provider="gemini", model="unit", apply_safe_suggestions=True,
@@ -605,7 +609,7 @@ class ReviewAgentTests(unittest.TestCase):
             start_reason="Test.",
             end_reason="Test.",
         )
-        with self.assertRaisesRegex(Exception, "Invalid internal review context: .*does not match canonical"):
+        with self.assertRaisesRegex(BoundaryOptionSelectionError, "Invalid internal review context: .*does not match canonical"):
             ReviewAgentService(project_root=self.root)._result_from_decision(
                 project_id=1,
                 clip={"id": "clip_001", "ai_start": 100.0, "ai_end": 140.0, "min_start": 80.0, "max_start": 120.0, "min_end": 110.0, "max_end": 160.0},
@@ -628,7 +632,7 @@ class ReviewAgentTests(unittest.TestCase):
             end_segment_id=context["current_aligned_end_segment_id"],
             reasoning_summary="Reject.", start_reason="Reject.", end_reason="Reject.",
         )
-        with self.assertRaisesRegex(Exception, "current aligned segment IDs"):
+        with self.assertRaisesRegex(BoundaryOptionSelectionError, "current aligned segment IDs"):
             service._result_from_decision(
                 project_id=1, clip=clip, context=context, decision=non_aligned,
                 provider="gemini", model="unit", apply_safe_suggestions=True,

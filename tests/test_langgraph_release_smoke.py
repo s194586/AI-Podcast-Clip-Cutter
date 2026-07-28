@@ -162,6 +162,14 @@ class LangGraphReleaseSmokeTests(unittest.TestCase):
         payload = response.json()
         self.assertEqual(calls, 1)
         self.assertEqual(payload["raw_result"]["review_workflow"], "langgraph_boundary_review")
+        self.assertEqual(payload["raw_result"]["review_workflow_version"], "2")
+        self.assertEqual(payload["raw_result"]["review_request_contract_version"], 3)
+        self.assertEqual(payload["raw_result"]["review_response_contract_version"], 2)
+        self.assertEqual(payload["review_workflow_version"], "2")
+        self.assertEqual(payload["review_request_contract_version"], 3)
+        self.assertEqual(payload["review_response_contract_version"], 2)
+        self.assertFalse(payload["retry_used"])
+        self.assertEqual(payload["provider_attempt_count"], 1)
         self.assertEqual(payload["raw_result"]["review_workflow_route"], "applied")
         self.assertNotIn("transcript", json.dumps(payload).casefold())
         self.assertNotIn("prompt", json.dumps(payload).casefold())
@@ -210,6 +218,10 @@ class LangGraphReleaseSmokeTests(unittest.TestCase):
         self.assertNotIn(str(self.root), feedback[1] or "")
         self.assertTrue(result["retry_used"])
         self.assertEqual(result["provider_attempt_count"], 2)
+        self.assertEqual(result["raw_result"]["review_workflow_version"], "2")
+        self.assertEqual(result["raw_result"]["review_request_contract_version"], 3)
+        self.assertEqual(result["raw_result"]["review_response_contract_version"], 2)
+        self.assertEqual(result["review_workflow_version"], "2")
         self.assertEqual(result["raw_result"]["review_workflow_route"], "applied")
         self.assertEqual(self._counts(project_id), (1, 1, 1))
 
@@ -247,6 +259,9 @@ class LangGraphReleaseSmokeTests(unittest.TestCase):
         self.assertEqual(calls, 2)
         self.assertEqual(result["decision"], "manual_review")
         self.assertEqual(result["raw_result"]["review_workflow_route"], "manual_review")
+        self.assertEqual(result["raw_result"]["review_workflow_version"], "2")
+        self.assertIsNone(result["raw_result"].get("reviewed_start"))
+        self.assertIsNone(result["raw_result"].get("reviewed_end"))
         self.assertEqual((clip["ai_start"], clip["ai_end"]), (100.0, 140.0))
         self.assertEqual((clip["edited_start"], clip["edited_end"]), (101.0, 139.0))
         self.assertIsNone(clip["reviewed_start"])
@@ -285,6 +300,7 @@ class LangGraphReleaseSmokeTests(unittest.TestCase):
             "Gemini quota is temporarily unavailable. Retry this review later.",
         )
         self.assertEqual(result["raw_result"]["review_workflow_route"], "provider_failure")
+        self.assertEqual(result["raw_result"]["review_workflow_version"], "2")
         self.assertEqual((clip["edited_start"], clip["edited_end"]), (101.0, 139.0))
 
     def test_provider_compatibility_failure_uses_one_call_and_preserves_boundaries(self):

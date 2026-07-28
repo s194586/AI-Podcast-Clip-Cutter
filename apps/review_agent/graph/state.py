@@ -16,6 +16,7 @@ class ReviewGraphState(TypedDict, total=False):
     clip_id: str
     review_mode: str
     attempt_number: int
+    provider_attempt_count: int
     retry_used: bool
     original_candidate_start: float
     original_candidate_end: float
@@ -24,13 +25,19 @@ class ReviewGraphState(TypedDict, total=False):
     existing_edited_start: float
     existing_edited_end: float
     allowed_boundary_pair_count: int
-    decision: str | None
-    selected_start_option_index: int | None
-    selected_end_option_index: int | None
-    selected_start_segment_id: str | None
-    selected_end_segment_id: str | None
+    provider_decision: str | None
+    provider_selected_start_segment_id: str | None
+    provider_selected_end_segment_id: str | None
+    review_request_contract_version: int
+    review_response_contract_version: int | None
+    validated_start_segment_id: str | None
+    validated_end_segment_id: str | None
+    validated_start_option_index: int | None
+    validated_end_option_index: int | None
     mapped_start: float | None
     mapped_end: float | None
+    validated_result: dict[str, Any] | None
+    validated_attempt_number: int | None
     validation_category: str | None
     safe_validation_error: str | None
     first_attempt_validation_error: str | None

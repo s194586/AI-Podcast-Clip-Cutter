@@ -183,6 +183,11 @@ def evaluation_to_dict(evaluation: ClipEvaluation) -> dict[str, Any]:
         "provider_attempt_count": int(raw_result.get("provider_attempt_count") or 1),
         "first_attempt_validation_error": raw_result.get("first_attempt_validation_error"),
         "final_validation_error": raw_result.get("final_validation_error"),
+        "review_workflow": raw_result.get("review_workflow"),
+        "review_workflow_version": raw_result.get("review_workflow_version"),
+        "review_request_contract_version": raw_result.get("review_request_contract_version"),
+        "review_response_contract_version": raw_result.get("review_response_contract_version"),
+        "review_workflow_route": raw_result.get("review_workflow_route"),
         "raw_result": raw_result,
         "created_at": evaluation.created_at.isoformat() if evaluation.created_at else None,
     }
