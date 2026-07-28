@@ -1,6 +1,7 @@
 import unittest
 
 from apps.review_agent.transcript_segments import normalize_transcript_segments
+from transcription.segment_identity import canonical_segment_id
 
 
 class TranscriptSegmentNormalizationTests(unittest.TestCase):
@@ -20,7 +21,15 @@ class TranscriptSegmentNormalizationTests(unittest.TestCase):
 
         self.assertEqual(
             normalize_transcript_segments(payload),
-            [{"start": 5.5, "end": 8.0, "text": "Hello world", "speaker": "speaker-2", "importance": 4, "chaos": True}],
+            [{
+                "segment_id": canonical_segment_id(5.5, 8.0),
+                "start": 5.5,
+                "end": 8.0,
+                "text": "Hello world",
+                "speaker": "speaker-2",
+                "importance": 4,
+                "chaos": True,
+            }],
         )
         self.assertEqual(payload["segments"][0]["text"], "  Hello\n  world  ")
 

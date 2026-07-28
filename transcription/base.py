@@ -1,9 +1,19 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 import re
 from typing import Any
+
+from .segment_identity import (
+    SEGMENT_ID_SCHEME,
+    SEGMENT_ID_VERSION,
+    TRANSCRIPT_SCHEMA_VERSION,
+    canonical_segment_id,
+    canonical_time_range,
+    centiseconds_to_hms,
+)
 
 
 PROFANITY_TOKENS = {
@@ -61,9 +71,11 @@ class TranscriptSegment:
     words: list[TranscriptWord] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
+        start_centiseconds, end_centiseconds = canonical_time_range(self.start, self.end)
         payload = {
-            "start": sec_to_hms(self.start),
-            "end": sec_to_hms(self.end),
+            "segment_id": canonical_segment_id(self.start, self.end),
+            "start": centiseconds_to_hms(start_centiseconds),
+            "end": centiseconds_to_hms(end_centiseconds),
             "text": self.text,
             "speaker": normalize_speaker_label(self.speaker),
             "importance": int(self.importance),
@@ -112,20 +124,32 @@ class TranscriptionResult:
             "compute_type": self.compute_type,
         }
         metadata.update(self.extra_metadata)
+        segments = [segment.to_dict() for segment in self.segments]
+        segment_ids = [segment["segment_id"] for segment in segments]
+        if len(segment_ids) != len(set(segment_ids)):
+            raise ValueError("Transcript contains duplicate canonical segment time ranges.")
         return {
-            "segments": [segment.to_dict() for segment in self.segments],
+            "transcript_schema_version": TRANSCRIPT_SCHEMA_VERSION,
+            "segment_id_scheme": SEGMENT_ID_SCHEME,
+            "segment_id_version": SEGMENT_ID_VERSION,
+            "segments": segments,
             "metadata": metadata,
         }
 
 
 def sec_to_hms(seconds: float) -> str:
-    seconds = max(0.0, float(seconds))
-    hours = int(seconds // 3600)
-    minutes = int((seconds % 3600) // 60)
-    secs = seconds % 60
-    if hours:
-        return f"{hours:02d}:{minutes:02d}:{secs:05.2f}"
-    return f"{minutes:02d}:{secs:05.2f}"
+    """Format a general timestamp without applying strict segment validation."""
+
+    if isinstance(seconds, bool):
+        raise ValueError("Timestamp must be numeric, not a boolean.")
+    try:
+        value = Decimal(str(seconds))
+    except (InvalidOperation, ValueError) as exc:
+        raise ValueError("Timestamp must be numeric.") from exc
+    if not value.is_finite():
+        raise ValueError("Timestamp must be finite.")
+    centiseconds = int((max(Decimal(0), value) * 100).to_integral_value(rounding=ROUND_HALF_UP))
+    return centiseconds_to_hms(centiseconds)
 
 
 def parse_time_to_seconds(value: str | float | int) -> float:

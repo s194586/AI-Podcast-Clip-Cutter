@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from .schemas import BoundaryOption, BoundaryOptionPair, ClipTranscriptContext, TranscriptSegment
+from .transcript_segments import normalize_transcript_segments
 from .tools import load_transcript_segments
 
 
@@ -28,7 +29,7 @@ def build_clip_transcript_context(
 ) -> dict[str, Any]:
     """Build the compact transcript-only payload used by the boundary reviewer."""
 
-    segments = _with_stable_ids(load_transcript_segments(transcript_path))
+    segments = _with_canonical_ids(load_transcript_segments(transcript_path))
     return build_clip_transcript_context_from_segments(
         segments,
         clip_start,
@@ -64,7 +65,7 @@ def build_clip_transcript_context_from_segments(
     context_start = max(0.0, start - padding)
     context_end = end + padding
 
-    normalized = _with_stable_ids(segments)
+    normalized = _with_canonical_ids(segments)
     before = [
         segment
         for segment in normalized
@@ -170,32 +171,26 @@ def segment_map(context: dict[str, Any]) -> dict[str, dict[str, Any]]:
     segments: list[dict[str, Any]] = []
     for key in ("context_before", "candidate_segments", "context_after"):
         segments.extend(dict(segment) for segment in context.get(key) or [])
-    return {str(segment["segment_id"]): segment for segment in segments}
+    mapped: dict[str, dict[str, Any]] = {}
+    for segment in segments:
+        segment_id = str(segment["segment_id"])
+        if segment_id in mapped:
+            raise ValueError(f"Duplicate segment_id in review context: {segment_id}")
+        mapped[segment_id] = segment
+    return mapped
 
 
-def _with_stable_ids(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    normalized: list[dict[str, Any]] = []
-    for index, segment in enumerate(sorted(segments or [], key=lambda item: float(item.get("start") or 0.0)), start=1):
-        start = round(float(segment.get("start") or 0.0), 2)
-        end = round(float(segment.get("end") or start), 2)
-        if end <= start:
-            continue
-        normalized.append(
-            {
-                "segment_id": str(segment.get("segment_id") or _stable_segment_id(index, start, end)),
-                "start": start,
-                "end": end,
-                "text": " ".join(str(segment.get("text") or "").split()),
-                "speaker": _optional_speaker(segment),
-            }
-        )
-    return normalized
-
-
-def _stable_segment_id(index: int, start: float, end: float) -> str:
-    start_cs = int(round(start * 100))
-    end_cs = int(round(end * 100))
-    return f"seg_{index:05d}_{start_cs}_{end_cs}"
+def _with_canonical_ids(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "segment_id": str(segment["segment_id"]),
+            "start": float(segment["start"]),
+            "end": float(segment["end"]),
+            "text": str(segment.get("text") or ""),
+            "speaker": _optional_speaker(segment),
+        }
+        for segment in normalize_transcript_segments(segments)
+    ]
 
 
 def _optional_speaker(segment: dict[str, Any]) -> str | None:
@@ -222,7 +217,7 @@ def _boundary_options(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for segment in segments:
         segment_id = str(segment["segment_id"])
         if segment_id in seen:
-            continue
+            raise ValueError(f"Duplicate segment_id in boundary options: {segment_id}")
         seen.add(segment_id)
         options.append(
             {

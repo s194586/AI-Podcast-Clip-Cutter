@@ -31,6 +31,7 @@ from apps.review_agent.providers import (
 from apps.review_agent.schemas import GeminiBoundaryDecision
 from apps.review_agent.service import ReviewAgentService
 from apps.review_agent.tools import check_sensitive_patterns, save_evaluation
+from transcription.segment_identity import canonical_segment_id
 
 
 def _sqlite_url(path: Path) -> str:
@@ -523,7 +524,7 @@ class ReviewAgentTests(unittest.TestCase):
         self.assertFalse(result["failed"])
         self.assertEqual(result["selected_start_option_index"], 2)
         self.assertEqual(result["selected_end_option_index"], 2)
-        self.assertEqual(result["selected_start_segment_id"], state_start := "seg_00003_10000_12000")
+        self.assertEqual(result["selected_start_segment_id"], state_start := canonical_segment_id(100.0, 120.0))
         self.assertEqual(result["selected_start_segment_id"], state_start)
         self.assertIsNone(result["reviewed_start"])
         self.assertIsNone(result["reviewed_end"])
@@ -679,8 +680,8 @@ class ReviewAgentTests(unittest.TestCase):
 
         self.assertEqual(result["provider"], "gemini")
         self.assertEqual(result["model"], "gemini-unit")
-        self.assertEqual(result["selected_start_segment_id"], "seg_00002_9500_10000")
-        self.assertEqual(result["selected_end_segment_id"], "seg_00004_12000_14000")
+        self.assertEqual(result["selected_start_segment_id"], canonical_segment_id(95.0, 100.0))
+        self.assertEqual(result["selected_end_segment_id"], canonical_segment_id(120.0, 140.0))
         self.assertEqual(result["reviewed_start"], 95.0)
         self.assertEqual(result["reviewed_end"], 140.0)
         self.assertEqual(result["start_delta_seconds"], -5.0)
