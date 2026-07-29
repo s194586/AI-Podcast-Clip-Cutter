@@ -7,7 +7,7 @@ from typing import Any
 
 from apps.api.db.database import init_database, session_scope
 from apps.api.db.models import ClipEvaluation
-from apps.api.db.repositories import ClipEvaluationRepository, ClipRepository, ProjectRepository
+from apps.api.db.repositories import ClipEvaluationRepository, ClipRepository, JobRepository, ProjectRepository
 from apps.api.services.clips import validate_adjusted_bounds
 from apps.review_agent.transcript_segments import normalize_transcript_segments
 
@@ -206,7 +206,11 @@ def evaluation_to_dict(evaluation: ClipEvaluation) -> dict[str, Any]:
     return result
 
 
-def save_evaluation(result: dict[str, Any]) -> dict[str, Any]:
+class ReviewPersistenceCancelledError(RuntimeError):
+    """Raised before a review write when its owning pipeline job was cancelled."""
+
+
+def save_evaluation(result: dict[str, Any], *, job_id: int | None = None) -> dict[str, Any]:
     init_database()
     with session_scope() as session:
         project_id = int(result["project_id"])
@@ -214,6 +218,12 @@ def save_evaluation(result: dict[str, Any]) -> dict[str, Any]:
         project = ProjectRepository(session).get(project_id)
         if project is None:
             raise ValueError(f"Unknown project_id: {project_id}")
+        if job_id is not None:
+            job = JobRepository(session).get_for_update(int(job_id))
+            if job is None or job.project_id != project_id:
+                raise ValueError(f"Unknown review job_id: {job_id}")
+            if job.cancel_requested or job.status == "cancelled":
+                raise ReviewPersistenceCancelledError("Boundary review cancelled by user.")
         clip = ClipRepository(session).get_by_external_id(project_id, external_clip_id)
         raw_result = dict(result.get("raw_result") or result)
         raw_result.setdefault("context_expansions", result.get("context_expansions", 0))

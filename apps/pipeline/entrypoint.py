@@ -5,6 +5,10 @@ import signal
 import sys
 from pathlib import Path
 
+from apps.api.db.database import session_scope
+from apps.api.db.repositories import JobRepository
+
+from .cancellation import CancellationToken
 from .config import PipelineConfig
 from .context import PipelineContext
 from .persistence import ProjectStateEventSink
@@ -19,6 +23,7 @@ DEFAULT_REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run one isolated podcast project pipeline.")
     parser.add_argument("--project-id", required=True, type=int)
+    parser.add_argument("--job-id", type=int, help=argparse.SUPPRESS)
     parser.add_argument("--source-url", required=True)
     parser.add_argument("--workspace-dir", required=True)
     parser.add_argument("--repository-root", default=str(DEFAULT_REPOSITORY_ROOT), help=argparse.SUPPRESS)
@@ -65,13 +70,32 @@ def create_context(args: argparse.Namespace) -> PipelineContext:
     )
     return PipelineContext(
         project_id=args.project_id,
+        job_id=args.job_id,
         source_url=args.source_url,
         workspace_path=Path(args.workspace_dir),
         repository_root=Path(args.repository_root),
         auto_review=bool(args.auto_review),
         analysis_only=True,
         config=config,
+        cancellation=CancellationToken(
+            external_check=_database_cancellation_check(args.job_id)
+            if args.job_id is not None
+            else None
+        ),
     )
+
+
+def _database_cancellation_check(job_id: int):
+    def is_cancelled() -> bool:
+        try:
+            with session_scope() as session:
+                job = JobRepository(session).get(int(job_id))
+                return bool(job is not None and (job.cancel_requested or job.status == "cancelled"))
+        except Exception:
+            # A transient status-read failure must not recategorise the review as cancelled.
+            return False
+
+    return is_cancelled
 
 
 def run_project_pipeline(context: PipelineContext) -> int:

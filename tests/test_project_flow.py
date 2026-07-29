@@ -21,6 +21,7 @@ from apps.api.orchestration.stage_parser import parse_manager_stage, progress_fo
 from apps.api.services import project_service
 from apps.pipeline.config import PipelineConfig
 from apps.pipeline.context import PipelineContext
+from apps.pipeline.entrypoint import _database_cancellation_check
 from apps.pipeline.events import PipelineEvent
 from apps.pipeline.persistence import ProjectStateEventSink
 from apps.pipeline.profiles import project_pipeline_stages
@@ -377,6 +378,7 @@ class ProjectFlowTests(unittest.TestCase):
         self.assertFalse(kwargs["shell"])
         self.assertIn("--workspace-dir", command)
         self.assertIn("--project-id", command)
+        self.assertIn("--job-id", command)
         self.assertIn("--no-auto-review", command)
         self.assertFalse((self.root / "input" / "source.mp4").exists())
         self.assertFalse((self.root / "top_windows.json").exists())
@@ -635,6 +637,95 @@ class ProjectFlowTests(unittest.TestCase):
             job = session.scalars(select(Job)).one()
         self.assertEqual(project.status, "cancelled")
         self.assertEqual(job.status, "cancelled")
+        self.assertTrue(job.cancel_requested)
+
+    def test_cancellation_before_worker_start_is_a_durable_noop(self):
+        project_id = self._create_project(auto_review=False)
+        orchestrator = LocalPipelineOrchestrator(
+            project_root=self.root,
+            popen_factory=FakeSuccessfulPopen,
+        )
+
+        with patch("apps.api.orchestration.local.threading.Thread.start", return_value=None):
+            started = orchestrator.start_project(project_id)
+        cancelled = orchestrator.cancel_project(project_id)
+        orchestrator._run_job(project_id, int(started.job_id))
+
+        self.assertEqual(cancelled.status, "cancelled")
+        self.assertEqual(FakeSuccessfulPopen.calls, [])
+        with session_scope() as session:
+            project = session.get(Project, project_id)
+            job = session.get(Job, int(started.job_id))
+        self.assertEqual(project.status, "cancelled")
+        self.assertEqual(job.status, "cancelled")
+        self.assertTrue(job.cancel_requested)
+
+    def test_database_cancellation_check_survives_worker_state_reset(self):
+        project_id = self._create_project(auto_review=False)
+        orchestrator = LocalPipelineOrchestrator(project_root=self.root)
+        with patch("apps.api.orchestration.local.threading.Thread.start", return_value=None):
+            started = orchestrator.start_project(project_id)
+        orchestrator.cancel_project(project_id)
+        LocalPipelineOrchestrator.reset_for_tests()
+
+        self.assertTrue(_database_cancellation_check(int(started.job_id))())
+
+    def test_cancel_endpoint_is_idempotent_and_rejects_non_active_jobs(self):
+        project_id = self._create_project(auto_review=False)
+        orchestrator = LocalPipelineOrchestrator(project_root=self.root)
+        with patch("apps.api.orchestration.local.threading.Thread.start", return_value=None):
+            orchestrator.start_project(project_id)
+
+        with TestClient(app) as client:
+            first = client.post(f"/projects/{project_id}/cancel")
+            second = client.post(f"/projects/{project_id}/cancel")
+            missing = client.post("/projects/999999/cancel")
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(first.json(), second.json())
+        self.assertEqual(missing.status_code, 404)
+
+        inactive_project_id = self._create_project(auto_review=False)
+        with TestClient(app) as client:
+            inactive = client.post(f"/projects/{inactive_project_id}/cancel")
+        self.assertEqual(inactive.status_code, 409)
+
+        for terminal_status, project_status in (("completed", "ready"), ("failed", "failed")):
+            terminal_project_id = self._create_project(auto_review=False)
+            with session_scope() as session:
+                project = session.get(Project, terminal_project_id)
+                ProjectRepository(session).update_flow_state(
+                    project,
+                    status=project_status,
+                    current_stage="ready" if project_status == "ready" else "failed",
+                )
+                JobRepository(session).create(
+                    project_id=terminal_project_id,
+                    job_type="local_pipeline",
+                    status=terminal_status,
+                    current_stage="ready" if terminal_status == "completed" else "failed",
+                )
+            with TestClient(app) as client:
+                response = client.post(f"/projects/{terminal_project_id}/cancel")
+            self.assertEqual(response.status_code, 409)
+
+    def test_late_worker_finalizers_cannot_overwrite_cancelled_state(self):
+        project_id = self._create_project(auto_review=False)
+        orchestrator = LocalPipelineOrchestrator(project_root=self.root)
+        with patch("apps.api.orchestration.local.threading.Thread.start", return_value=None):
+            started = orchestrator.start_project(project_id)
+        orchestrator.cancel_project(project_id)
+
+        orchestrator._mark_running_stage(project_id, int(started.job_id), "reviewing_with_ai")
+        orchestrator._mark_failed(project_id, int(started.job_id), "late failure")
+        orchestrator._mark_ready(project_id, int(started.job_id), exit_code=0)
+
+        with session_scope() as session:
+            project = session.get(Project, project_id)
+            job = session.get(Job, int(started.job_id))
+        self.assertEqual((project.status, project.current_stage), ("cancelled", "cancelled"))
+        self.assertEqual((job.status, job.current_stage), ("cancelled", "cancelled"))
 
     def test_subprocess_launch_failure_marks_job_and_project_failed(self):
         project_id = self._create_project(auto_review=False)

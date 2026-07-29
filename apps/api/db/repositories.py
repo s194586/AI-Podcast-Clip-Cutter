@@ -212,6 +212,12 @@ class JobRepository:
     def get(self, job_id: int) -> Job | None:
         return self.session.get(Job, job_id)
 
+    def get_for_update(self, job_id: int) -> Job | None:
+        """Return a job while serialising terminal cancellation with review writes."""
+        return self.session.scalars(
+            select(Job).where(Job.id == int(job_id)).with_for_update()
+        ).first()
+
     def latest_for_project(self, project_id: int, job_type: str | None = None) -> Job | None:
         statement = select(Job).where(Job.project_id == project_id)
         if job_type is not None:
@@ -223,6 +229,14 @@ class JobRepository:
         if job_type is not None:
             statement = statement.where(Job.job_type == job_type)
         return self.session.scalars(statement.order_by(Job.created_at.desc(), Job.id.desc()).limit(1)).first()
+
+    def active_for_project_for_update(self, project_id: int, job_type: str | None = None) -> Job | None:
+        statement = select(Job).where(Job.project_id == project_id, Job.status.in_(("queued", "running")))
+        if job_type is not None:
+            statement = statement.where(Job.job_type == job_type)
+        return self.session.scalars(
+            statement.order_by(Job.created_at.desc(), Job.id.desc()).limit(1).with_for_update()
+        ).first()
 
     def latest_for_project_types(self, project_id: int, job_types: tuple[str, ...]) -> Job | None:
         return self.session.scalars(

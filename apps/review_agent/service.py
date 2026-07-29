@@ -44,7 +44,7 @@ from .providers import (
     ReviewProviderTimeoutError,
 )
 from .schemas import GeminiBoundaryDecision, ReviewMode
-from .tools import get_latest_evaluation, save_evaluation
+from .tools import ReviewPersistenceCancelledError, get_latest_evaluation, save_evaluation
 
 
 class ClipReviewError(RuntimeError):
@@ -142,6 +142,7 @@ class ReviewAgentService:
         clip_id: str,
         project_id: int | None = None,
         apply_safe_suggestions: bool = True,
+        job_id: int | None = None,
         cancellation_check: Callable[[], bool] | None = None,
         deadline: float | None = None,
     ) -> dict[str, Any]:
@@ -295,7 +296,10 @@ class ReviewAgentService:
         result["raw_result"] = raw_result
         _raise_if_cancelled(cancellation_check)
         _raise_if_deadline_expired(deadline)
-        saved = save_evaluation(result)
+        try:
+            saved = save_evaluation(result, job_id=job_id)
+        except ReviewPersistenceCancelledError as exc:
+            raise ClipReviewCancelledError("Boundary review cancelled by user.") from exc
         return saved
 
     def review_project_clips(
@@ -304,6 +308,7 @@ class ReviewAgentService:
         project_id: int,
         apply_safe_suggestions: bool = True,
         progress_callback: Callable[[str, dict[str, Any]], None] | None = None,
+        job_id: int | None = None,
         cancellation_check: Callable[[], bool] | None = None,
         skip_completed: bool = False,
     ) -> dict[str, Any]:
@@ -342,6 +347,7 @@ class ReviewAgentService:
                     project_id=project_id,
                     clip_id=clip_id,
                     apply_safe_suggestions=apply_safe_suggestions,
+                    job_id=job_id,
                     cancellation_check=cancellation_check,
                     deadline=deadline,
                 )

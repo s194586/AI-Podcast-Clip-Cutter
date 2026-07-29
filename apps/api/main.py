@@ -13,6 +13,7 @@ from pydantic import BaseModel
 
 from .orchestration import (
     ProjectAlreadyRunningError,
+    ProjectNotCancellableError,
     ProjectOrchestratorConfigurationError,
     ProjectOrchestratorNotFoundError,
     configured_orchestrator_name,
@@ -306,6 +307,8 @@ def cancel_project_endpoint(project_id: int) -> dict[str, Any]:
         return get_pipeline_orchestrator(project_root=api_project_root()).cancel_project(project_id).to_dict()
     except ProjectOrchestratorNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ProjectNotCancellableError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ProjectOrchestratorConfigurationError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 

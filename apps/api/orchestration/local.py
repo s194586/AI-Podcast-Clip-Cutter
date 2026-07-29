@@ -28,6 +28,7 @@ from .base import (
     JobResult,
     PipelineStatus,
     ProjectAlreadyRunningError,
+    ProjectNotCancellableError,
     ProjectOrchestratorNotFoundError,
 )
 from .stage_parser import (
@@ -155,24 +156,27 @@ class LocalPipelineOrchestrator:
 
     def cancel_project(self, project_id: int) -> PipelineStatus:
         init_database()
-        worker = None
-        with self._lock:
-            worker = self._workers.get(int(project_id))
-            if worker is not None:
-                worker.cancel_requested = True
-                process = worker.process
-                if process is not None and process.poll() is None:
-                    self._terminate_process_tree(process)
-
+        should_terminate = False
         now = utc_now()
-        with session_scope() as session:
-            project_repo = ProjectRepository(session)
-            job_repo = JobRepository(session)
-            project = project_repo.get(int(project_id))
-            if project is None:
-                raise ProjectOrchestratorNotFoundError(f"Unknown project_id: {project_id}")
-            active_job = job_repo.active_for_project(project.id, PIPELINE_JOB_TYPE)
-            if active_job is not None:
+        with self._lock:
+            with session_scope() as session:
+                project_repo = ProjectRepository(session)
+                job_repo = JobRepository(session)
+                project = project_repo.get(int(project_id))
+                if project is None:
+                    raise ProjectOrchestratorNotFoundError(f"Unknown project_id: {project_id}")
+                active_job = job_repo.active_for_project_for_update(project.id, PIPELINE_JOB_TYPE)
+                if active_job is None:
+                    latest_job = job_repo.latest_for_project(project.id, PIPELINE_JOB_TYPE)
+                    if latest_job is not None and latest_job.status == "cancelled":
+                        return self.get_status(project_id)
+                    raise ProjectNotCancellableError(f"Project {project.id} has no active local pipeline job.")
+
+                if active_job.status == "cancelled":
+                    return self.get_status(project_id)
+                if active_job.status not in ACTIVE_STATUSES:
+                    raise ProjectNotCancellableError(f"Project {project.id} has no active local pipeline job.")
+
                 cancelled_progress = float(active_job.progress or 0.0)
                 job_repo.update_state(
                     active_job,
@@ -182,16 +186,25 @@ class LocalPipelineOrchestrator:
                     finished_at=now,
                     process_id=None,
                     error_message="Cancelled by user.",
+                    cancel_requested=True,
                 )
-            cancelled_progress = float(project.progress_percent or 0.0)
-            project_repo.update_flow_state(
-                project,
-                status="cancelled",
-                current_stage="cancelled",
-                progress_percent=cancelled_progress,
-                error_message="Cancelled by user.",
-                completed_at=now,
-            )
+                cancelled_progress = float(project.progress_percent or 0.0)
+                project_repo.update_flow_state(
+                    project,
+                    status="cancelled",
+                    current_stage="cancelled",
+                    progress_percent=cancelled_progress,
+                    error_message="Cancelled by user.",
+                    completed_at=now,
+                )
+                should_terminate = True
+
+            worker = self._workers.get(int(project_id))
+            if worker is not None:
+                worker.cancel_requested = True
+                process = worker.process
+                if should_terminate and process is not None and process.poll() is None:
+                    self._terminate_process_tree(process)
         return self.get_status(project_id)
 
     def read_project_log_tail(self, project_id: int, *, tail: int = 200) -> dict[str, Any]:
@@ -253,15 +266,22 @@ class LocalPipelineOrchestrator:
 
     def _execute_job(self, project_id: int, job_id: int) -> None:
         project_data = self._prepare_running_state(project_id, job_id)
+        if project_data is None:
+            return
         workspace = self._resolve_project_path(str(project_data["workspace_path"]))
         log_path = self._resolve_project_path(str(project_data["log_path"]))
         command = self._build_pipeline_command(
             project_id,
+            job_id,
             project_data["source_url"],
             workspace,
             auto_review=bool(project_data["auto_review"]),
         )
         self._append_log(log_path, f"$ {_display_command(command)}\n")
+
+        if self._is_cancel_requested(project_id, job_id):
+            self._mark_cancelled(project_id, job_id)
+            return
 
         popen_options: dict[str, Any] = {
             "cwd": str(self.project_root),
@@ -310,7 +330,7 @@ class LocalPipelineOrchestrator:
             process.stdout.close()
 
         exit_code = process.wait()
-        if self._is_cancel_requested(project_id):
+        if self._is_cancel_requested(project_id, job_id):
             self._mark_cancelled(project_id, job_id)
             return
         if exit_code != 0:
@@ -332,7 +352,7 @@ class LocalPipelineOrchestrator:
             return
         self._mark_ready(project_id, job_id, exit_code=exit_code)
 
-    def _prepare_running_state(self, project_id: int, job_id: int) -> dict[str, Any]:
+    def _prepare_running_state(self, project_id: int, job_id: int) -> dict[str, Any] | None:
         now = utc_now()
         with session_scope() as session:
             project_repo = ProjectRepository(session)
@@ -341,6 +361,13 @@ class LocalPipelineOrchestrator:
             job = job_repo.get(job_id)
             if project is None or job is None:
                 raise ProjectOrchestratorNotFoundError(f"Unknown project/job: {project_id}/{job_id}")
+            if (
+                job.cancel_requested
+                or job.status == "cancelled"
+                or project.status == "cancelled"
+                or job.status != "queued"
+            ):
+                return None
             workspace = ensure_project_workspace(project.id, project_root=self.project_root)
             log_path = workspace / "logs" / "pipeline.log"
             project.workspace_path = safe_relative_path(workspace, project_root=self.project_root)
@@ -372,6 +399,7 @@ class LocalPipelineOrchestrator:
     def _build_pipeline_command(
         self,
         project_id: int,
+        job_id: int,
         source_url: str,
         workspace: Path,
         *,
@@ -383,6 +411,8 @@ class LocalPipelineOrchestrator:
             "apps.pipeline.entrypoint",
             "--project-id",
             str(int(project_id)),
+            "--job-id",
+            str(int(job_id)),
             "--source-url",
             str(source_url),
             "--workspace-dir",
@@ -402,17 +432,29 @@ class LocalPipelineOrchestrator:
     def _set_process(self, project_id: int, job_id: int, process: subprocess.Popen) -> None:
         with self._lock:
             worker = self._workers.get(project_id)
+            cancel_requested = bool(worker and worker.cancel_requested)
             if worker is not None:
                 worker.process = process
+        if cancel_requested or self._is_job_cancel_requested(job_id):
+            self._terminate_process_tree(process)
+            return
         with session_scope() as session:
             job = JobRepository(session).get(job_id)
-            if job is not None:
+            if job is not None and not job.cancel_requested and job.status != "cancelled":
                 JobRepository(session).update_state(job, process_id=process.pid)
 
-    def _is_cancel_requested(self, project_id: int) -> bool:
+    def _is_cancel_requested(self, project_id: int, job_id: int) -> bool:
         with self._lock:
             worker = self._workers.get(project_id)
-            return bool(worker and worker.cancel_requested)
+            if worker is not None and worker.cancel_requested:
+                return True
+        return self._is_job_cancel_requested(job_id)
+
+    @staticmethod
+    def _is_job_cancel_requested(job_id: int) -> bool:
+        with session_scope() as session:
+            job = JobRepository(session).get(job_id)
+            return bool(job is not None and (job.cancel_requested or job.status == "cancelled"))
 
     def _mark_running_stage(
         self,
@@ -434,7 +476,7 @@ class LocalPipelineOrchestrator:
             job = job_repo.get(job_id)
             if project is None or job is None:
                 return
-            if project.status == "cancelled" or job.status == "cancelled":
+            if project.status == "cancelled" or job.status == "cancelled" or job.cancel_requested:
                 return
             job_repo.update_state(job, status="running", current_stage=stage, progress=progress)
             project_repo.update_flow_state(
@@ -495,7 +537,7 @@ class LocalPipelineOrchestrator:
             job = job_repo.get(job_id)
             if project is None or job is None:
                 return
-            if project.status == "cancelled" or job.status == "cancelled":
+            if project.status == "cancelled" or job.status == "cancelled" or job.cancel_requested:
                 return
             job_repo.update_state(
                 job,
@@ -532,10 +574,10 @@ class LocalPipelineOrchestrator:
             project = project_repo.get(project_id)
             job = job_repo.get(job_id)
             if (project is not None and project.status == "cancelled") or (
-                job is not None and job.status == "cancelled"
+                job is not None and (job.status == "cancelled" or job.cancel_requested)
             ):
                 return
-            if job is not None:
+            if job is not None and job.status != "cancelled":
                 failed_progress = float(job.progress or 0.0)
                 job_repo.update_state(
                     job,
@@ -576,8 +618,9 @@ class LocalPipelineOrchestrator:
                     finished_at=now,
                     process_id=None,
                     error_message="Cancelled by user.",
+                    cancel_requested=True,
                 )
-            if project is not None:
+            if project is not None and project.status != "cancelled":
                 cancelled_progress = float(project.progress_percent or 0.0)
                 project_repo.update_flow_state(
                     project,

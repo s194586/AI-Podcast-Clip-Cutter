@@ -12,8 +12,9 @@ from sqlalchemy import select
 
 from apps.api.db.database import configure_database, init_database, session_scope
 from apps.api.db.models import ClipEvaluation, Project
-from apps.api.db.repositories import ClipRepository, ProjectRepository
+from apps.api.db.repositories import ClipRepository, JobRepository, ProjectRepository
 from apps.api.main import app
+from apps.api.orchestration.local import LocalPipelineOrchestrator
 from apps.api.services.clip_service import load_clips
 from apps.review_agent.providers import (
     ReviewProviderCompatibilityError,
@@ -106,6 +107,20 @@ class LangGraphReleaseSmokeTests(unittest.TestCase):
                     },
                 )
             return project.id
+
+    def _create_running_review_job(self, project_id: int) -> int:
+        with session_scope() as session:
+            project = ProjectRepository(session).get(project_id)
+            project.status = "running"
+            project.current_stage = "reviewing_with_ai"
+            job = JobRepository(session).create(
+                project_id=project_id,
+                job_type="local_pipeline",
+                status="running",
+                current_stage="reviewing_with_ai",
+                orchestrator_type="local",
+            )
+            return int(job.id)
 
     @staticmethod
     def _valid_decision(context: dict) -> GeminiBoundaryDecision:
@@ -403,6 +418,110 @@ class LangGraphReleaseSmokeTests(unittest.TestCase):
         self.assertEqual(self._counts(project_id), (1, 1, 0))
         clip = load_clips(project_id=project_id, project_root=self.root)[0]
         self.assertEqual((clip["edited_start"], clip["edited_end"]), (101.0, 139.0))
+
+    def test_durable_job_cancellation_after_provider_rolls_back_review_write(self):
+        project_id = self._seed_project()
+        job_id = self._create_running_review_job(project_id)
+        calls = 0
+
+        class Provider:
+            provider = "gemini"
+            model = "mock-gemini"
+
+            def __init__(self, **_kwargs):
+                pass
+
+            def review(inner_self, context, **_kwargs):
+                nonlocal calls
+                calls += 1
+                with session_scope() as session:
+                    job = JobRepository(session).get(job_id)
+                    JobRepository(session).update_state(
+                        job,
+                        status="cancelled",
+                        current_stage="cancelled",
+                        cancel_requested=True,
+                    )
+                return self._valid_decision(context)
+
+        with patch("apps.review_agent.service.GeminiBoundaryReviewer", Provider), patch(
+            "apps.review_agent.service.LocalStubBoundaryReviewer"
+        ) as local_stub:
+            with self.assertRaises(ClipReviewCancelledError):
+                ReviewAgentService(project_root=self.root, mode="gemini").review_clip(
+                    project_id=project_id,
+                    clip_id="clip_001",
+                    job_id=job_id,
+                )
+
+        self.assertEqual(calls, 1)
+        local_stub.assert_not_called()
+        self.assertEqual(self._counts(project_id), (1, 1, 0))
+        clip = load_clips(project_id=project_id, project_root=self.root)[0]
+        self.assertEqual((clip["edited_start"], clip["edited_end"]), (101.0, 139.0))
+
+    def test_batch_cancellation_keeps_completed_clip_and_discards_current_write(self):
+        project_id = self._seed_project(clip_count=2)
+        job_id = self._create_running_review_job(project_id)
+        calls: list[str] = []
+
+        class Provider:
+            provider = "gemini"
+            model = "mock-gemini"
+
+            def __init__(self, **_kwargs):
+                pass
+
+            def review(inner_self, context, **_kwargs):
+                clip_id = str(context["clip_id"])
+                calls.append(clip_id)
+                if clip_id == "clip_002":
+                    with session_scope() as session:
+                        job = JobRepository(session).get(job_id)
+                        JobRepository(session).update_state(
+                            job,
+                            status="cancelled",
+                            current_stage="cancelled",
+                            cancel_requested=True,
+                        )
+                return self._valid_decision(context)
+
+        with patch("apps.review_agent.service.GeminiBoundaryReviewer", Provider):
+            with self.assertRaises(ClipReviewCancelledError):
+                ReviewAgentService(project_root=self.root, mode="gemini").review_project_clips(
+                    project_id=project_id,
+                    job_id=job_id,
+                )
+
+        self.assertEqual(calls, ["clip_001", "clip_002"])
+        with session_scope() as session:
+            evaluations = list(session.scalars(select(ClipEvaluation)).all())
+        self.assertEqual([evaluation.external_clip_id for evaluation in evaluations], ["clip_001"])
+
+    def test_save_first_remains_atomic_before_later_cancellation_is_accepted(self):
+        project_id = self._seed_project()
+        job_id = self._create_running_review_job(project_id)
+
+        class Provider:
+            provider = "gemini"
+            model = "mock-gemini"
+
+            def __init__(self, **_kwargs):
+                pass
+
+            def review(inner_self, context, **_kwargs):
+                return self._valid_decision(context)
+
+        with patch("apps.review_agent.service.GeminiBoundaryReviewer", Provider):
+            ReviewAgentService(project_root=self.root, mode="gemini").review_clip(
+                project_id=project_id,
+                clip_id="clip_001",
+                job_id=job_id,
+            )
+
+        status = LocalPipelineOrchestrator(project_root=self.root).cancel_project(project_id)
+        self.assertEqual(status.status, "cancelled")
+        self.assertEqual(self._counts(project_id), (1, 1, 1))
 
     def test_batch_isolates_three_graph_invocations_and_counts_outcomes(self):
         project_id = self._seed_project(clip_count=3)
