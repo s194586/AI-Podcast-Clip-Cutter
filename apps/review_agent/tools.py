@@ -215,15 +215,15 @@ def save_evaluation(result: dict[str, Any], *, job_id: int | None = None) -> dic
     with session_scope() as session:
         project_id = int(result["project_id"])
         external_clip_id = str(result["clip_id"])
+        if job_id is not None:
+            # This write is the SQLite-safe cancellation fence.  It must be
+            # first in the transaction before evaluation, clip, or provenance
+            # writes; SELECT ... FOR UPDATE is not sufficient on SQLite.
+            if JobRepository(session).touch_running_review(int(job_id), project_id) != 1:
+                raise ReviewPersistenceCancelledError("Boundary review cancelled by user.")
         project = ProjectRepository(session).get(project_id)
         if project is None:
             raise ValueError(f"Unknown project_id: {project_id}")
-        if job_id is not None:
-            job = JobRepository(session).get_for_update(int(job_id))
-            if job is None or job.project_id != project_id:
-                raise ValueError(f"Unknown review job_id: {job_id}")
-            if job.cancel_requested or job.status == "cancelled":
-                raise ReviewPersistenceCancelledError("Boundary review cancelled by user.")
         clip = ClipRepository(session).get_by_external_id(project_id, external_clip_id)
         raw_result = dict(result.get("raw_result") or result)
         raw_result.setdefault("context_expansions", result.get("context_expansions", 0))

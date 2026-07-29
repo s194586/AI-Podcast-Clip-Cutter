@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -23,6 +24,7 @@ from apps.review_agent.providers import (
 )
 from apps.review_agent.schemas import GeminiBoundaryDecision
 from apps.review_agent.service import ClipReviewCancelledError, ReviewAgentService
+from apps.review_agent.tools import ReviewPersistenceCancelledError, save_evaluation
 
 
 def _sqlite_url(path: Path) -> str:
@@ -151,6 +153,19 @@ class LangGraphReleaseSmokeTests(unittest.TestCase):
             evaluations = len(list(session.scalars(select(ClipEvaluation)).all()))
         clips = len(load_clips(project_id=project_id, project_root=self.root))
         return projects, clips, evaluations
+
+    @staticmethod
+    def _review_result(project_id: int) -> dict:
+        return {
+            "project_id": project_id,
+            "clip_id": "clip_001",
+            "provider": "gemini",
+            "model": "mock-gemini",
+            "decision": "adjust_boundaries",
+            "recommended_action": "adjust_boundaries",
+            "reviewed_start": 102.0,
+            "reviewed_end": 138.0,
+        }
 
     def test_valid_first_response_persists_once_through_api(self):
         project_id = self._seed_project()
@@ -459,6 +474,77 @@ class LangGraphReleaseSmokeTests(unittest.TestCase):
         self.assertEqual(self._counts(project_id), (1, 1, 0))
         clip = load_clips(project_id=project_id, project_root=self.root)[0]
         self.assertEqual((clip["edited_start"], clip["edited_end"]), (101.0, 139.0))
+
+    def test_cancel_first_rejects_later_review_persistence_without_clip_changes(self):
+        project_id = self._seed_project()
+        job_id = self._create_running_review_job(project_id)
+        orchestrator = LocalPipelineOrchestrator(project_root=self.root)
+
+        self.assertEqual(orchestrator.cancel_project(project_id).status, "cancelled")
+        with self.assertRaises(ReviewPersistenceCancelledError):
+            save_evaluation(self._review_result(project_id), job_id=job_id)
+
+        self.assertEqual(self._counts(project_id), (1, 1, 0))
+        clip = load_clips(project_id=project_id, project_root=self.root)[0]
+        self.assertEqual((clip["edited_start"], clip["edited_end"]), (101.0, 139.0))
+
+    def test_save_fence_commits_atomically_before_parallel_cancellation(self):
+        project_id = self._seed_project()
+        job_id = self._create_running_review_job(project_id)
+        orchestrator = LocalPipelineOrchestrator(project_root=self.root)
+        fence_acquired = threading.Event()
+        release_save = threading.Event()
+        cancellation_attempted = threading.Event()
+        save_errors: list[BaseException] = []
+        cancellation_result: list[object] = []
+        original_touch = JobRepository.touch_running_review
+        original_transition = JobRepository.transition_if_active
+
+        def hold_after_fence(repo, *args, **kwargs):
+            result = original_touch(repo, *args, **kwargs)
+            if result:
+                fence_acquired.set()
+                self.assertTrue(release_save.wait(5), "test did not release review transaction")
+            return result
+
+        def observe_cancellation(repo, *args, **kwargs):
+            if kwargs.get("status") == "cancelled":
+                cancellation_attempted.set()
+            return original_transition(repo, *args, **kwargs)
+
+        def save_in_second_connection():
+            try:
+                save_evaluation(self._review_result(project_id), job_id=job_id)
+            except BaseException as exc:  # Propagate thread failures to this test.
+                save_errors.append(exc)
+
+        def cancel_in_third_connection():
+            cancellation_result.append(orchestrator.cancel_project(project_id))
+
+        with patch.object(JobRepository, "touch_running_review", hold_after_fence), patch.object(
+            JobRepository, "transition_if_active", observe_cancellation
+        ):
+            save_thread = threading.Thread(target=save_in_second_connection)
+            save_thread.start()
+            self.assertTrue(fence_acquired.wait(5), "review did not acquire its write fence")
+
+            cancellation_thread = threading.Thread(target=cancel_in_third_connection)
+            cancellation_thread.start()
+            self.assertTrue(cancellation_attempted.wait(5), "cancellation did not reach its conditional update")
+            self.assertEqual(cancellation_result, [])
+
+            release_save.set()
+            save_thread.join(5)
+            cancellation_thread.join(5)
+
+        self.assertFalse(save_thread.is_alive())
+        self.assertFalse(cancellation_thread.is_alive())
+        self.assertEqual(save_errors, [])
+        self.assertEqual(len(cancellation_result), 1)
+        self.assertEqual(cancellation_result[0].status, "cancelled")
+        self.assertEqual(self._counts(project_id), (1, 1, 1))
+        clip = load_clips(project_id=project_id, project_root=self.root)[0]
+        self.assertEqual((clip["edited_start"], clip["edited_end"]), (102.0, 138.0))
 
     def test_batch_cancellation_keeps_completed_clip_and_discards_current_write(self):
         project_id = self._seed_project(clip_count=2)

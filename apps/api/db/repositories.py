@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from .models import Artifact, Clip, ClipEvaluation, Job, Project, utc_now
@@ -217,6 +217,54 @@ class JobRepository:
         return self.session.scalars(
             select(Job).where(Job.id == int(job_id)).with_for_update()
         ).first()
+
+    def transition_if_active(
+        self,
+        job_id: int,
+        *,
+        expected_statuses: tuple[str, ...] = ("queued", "running"),
+        **values: Any,
+    ) -> int:
+        """Apply a job transition only while it remains active and not cancelled.
+
+        This is deliberately a SQL UPDATE rather than a read-modify-write
+        operation: it is the cancellation fence used by local workers on
+        SQLite as well as databases which support row locks.
+        """
+        if not expected_statuses:
+            return 0
+        values["updated_at"] = utc_now()
+        result = self.session.execute(
+            update(Job)
+            .where(
+                Job.id == int(job_id),
+                Job.status.in_(expected_statuses),
+                Job.cancel_requested.is_(False),
+            )
+            .values(**values),
+            execution_options={"synchronize_session": False},
+        )
+        return int(result.rowcount or 0)
+
+    def touch_running_review(self, job_id: int, project_id: int) -> int:
+        """Acquire the write fence before an automatic review is persisted.
+
+        Updating ``updated_at`` is intentional.  On SQLite this obtains a
+        real write lock for the transaction that also persists the evaluation
+        and clip provenance, rather than relying on unsupported FOR UPDATE.
+        """
+        result = self.session.execute(
+            update(Job)
+            .where(
+                Job.id == int(job_id),
+                Job.project_id == int(project_id),
+                Job.status == "running",
+                Job.cancel_requested.is_(False),
+            )
+            .values(updated_at=utc_now()),
+            execution_options={"synchronize_session": False},
+        )
+        return int(result.rowcount or 0)
 
     def latest_for_project(self, project_id: int, job_type: str | None = None) -> Job | None:
         statement = select(Job).where(Job.project_id == project_id)
