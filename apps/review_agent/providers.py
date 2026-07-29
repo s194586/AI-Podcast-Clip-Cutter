@@ -53,6 +53,10 @@ class ReviewProviderQuotaError(ReviewProviderError):
     """Raised when Gemini rejects a request because quota or rate limits were reached."""
 
 
+class ReviewProviderCredentialError(ReviewProviderError):
+    """Raised when Gemini rejects the configured API credentials."""
+
+
 class ReviewProviderCompatibilityError(ReviewProviderError):
     """Raised when the installed provider contract is incompatible with the API."""
 
@@ -382,6 +386,7 @@ def _run_gemini_request_in_process(
         "ReviewProviderTimeoutError": ReviewProviderTimeoutError,
         "ReviewProviderRequestCancelledError": ReviewProviderRequestCancelledError,
         "ReviewProviderQuotaError": ReviewProviderQuotaError,
+        "ReviewProviderCredentialError": ReviewProviderCredentialError,
         "ReviewProviderCompatibilityError": ReviewProviderCompatibilityError,
         "ReviewProviderExtractionError": ReviewProviderExtractionError,
         "ReviewProviderOutputError": ReviewProviderOutputError,
@@ -517,6 +522,10 @@ def _provider_error_from_exception(exc: Exception) -> ReviewProviderError:
     if 499 in status_values or re.search(r"\b499\b", message):
         return ReviewProviderRequestCancelledError(
             "Gemini request was cancelled by the upstream service (HTTP 499)."
+        )
+    if 401 in status_values or 403 in status_values or re.search(r"\b(?:401|403)\b", message):
+        return ReviewProviderCredentialError(
+            "Gemini rejected GEMINI_API_KEY credentials. Update GEMINI_API_KEY and retry review."
         )
     class_name = exc.__class__.__name__.casefold()
     if isinstance(exc, TimeoutError) or "timeout" in class_name or "timed out" in message.casefold():

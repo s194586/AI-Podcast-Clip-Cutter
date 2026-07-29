@@ -27,13 +27,7 @@ The full transcript, local scores, heatmap data, filesystem paths, database obje
 
 ## Modes
 
-Offline/test mode:
-
-```powershell
-$env:CLIP_REVIEW_MODE = "local_stub"
-```
-
-Real Gemini mode:
+Product mode:
 
 ```powershell
 $env:CLIP_REVIEW_MODE = "gemini"
@@ -42,7 +36,13 @@ $env:GEMINI_MODEL = "gemini-3.5-flash"
 $env:CLIP_REVIEW_CONTEXT_SECONDS = "20.0"
 ```
 
-`GEMINI_API_KEY` is required in `gemini` mode. The service returns a clear configuration error if it is missing and never silently falls back to `local_stub`.
+`GEMINI_API_KEY` is required in product mode. The service returns a clear configuration error if it is missing or rejected and never silently falls back to `local_stub`.
+
+Deterministic development/test mode (never a production fallback):
+
+```powershell
+$env:CLIP_REVIEW_MODE = "local_stub"
+```
 
 The implementation uses the official `google-genai==2.11.0` SDK with:
 

@@ -72,6 +72,13 @@ def _log_review_configuration(project_root: Path) -> None:
         logger.warning("Clip review provider configuration warning: %s", warning)
 
 
+def _require_auto_review_configuration(*, project_root: Path) -> None:
+    try:
+        load_review_config(project_root=project_root, require_api_key=True)
+    except ReviewConfigError as exc:
+        raise ProjectOrchestratorConfigurationError(str(exc)) from exc
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     project_root = api_project_root()
@@ -200,6 +207,8 @@ def project() -> dict:
 def create_project_endpoint(payload: ProjectCreatePayload) -> dict[str, Any]:
     try:
         project_root = api_project_root()
+        if payload.auto_start and payload.auto_review:
+            _require_auto_review_configuration(project_root=project_root)
         project = create_project(
             source_url=payload.source_url,
             title=payload.title,
@@ -226,6 +235,9 @@ def create_project_endpoint(payload: ProjectCreatePayload) -> dict[str, Any]:
 def start_project_endpoint(project_id: int) -> dict[str, Any]:
     try:
         project_root = api_project_root()
+        project = get_project(project_id)
+        if project["auto_review"]:
+            _require_auto_review_configuration(project_root=project_root)
         job = get_pipeline_orchestrator(project_root=project_root).start_project(project_id)
         return {
             "job": job.to_dict(),
@@ -234,6 +246,8 @@ def start_project_endpoint(project_id: int) -> dict[str, Any]:
     except ProjectAlreadyRunningError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ProjectOrchestratorNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ProjectNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ProjectOrchestratorConfigurationError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc

@@ -96,7 +96,7 @@ flowchart LR
   F --> G[final render]
 ```
 
-Default mode is `local_stub`, which requires no API keys and is intended for offline development and tests. `CLIP_REVIEW_MODE=gemini` uses the official `google-genai` SDK. In Gemini mode, `GEMINI_API_KEY` is required and missing configuration fails clearly without falling back.
+Default mode is Gemini, using the official `google-genai` SDK. `GEMINI_API_KEY` is required; a missing or rejected key produces a clear configuration error without falling back. `CLIP_REVIEW_MODE=local_stub` is an explicit deterministic development/test mode only.
 
 Gemini calls use a configured per-attempt HTTP timeout (`GEMINI_REQUEST_TIMEOUT_SECONDS`, default 300 seconds), one SDK attempt, and a killable child-process deadline. The project batch has a separate deadline (`GEMINI_BATCH_TIMEOUT_SECONDS`, default 1800 seconds). Review emits safe per-clip events and coarse progress from 85 through 95 percent. HTTP 499 is treated as a controlled upstream-cancelled request for that clip, not success and not an infinite retry.
 

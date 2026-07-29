@@ -28,6 +28,7 @@ from apps.review_agent.providers import (
     GeminiBoundaryReviewer,
     ReviewProviderCancelledError,
     ReviewProviderCompatibilityError,
+    ReviewProviderCredentialError,
     ReviewProviderError,
     ReviewProviderOutputError,
     ReviewProviderQuotaError,
@@ -39,6 +40,7 @@ from apps.review_agent.providers import (
 from apps.review_agent.schemas import GeminiBoundaryDecision
 from apps.review_agent.service import (
     ClipReviewCancelledError,
+    ClipReviewConfigurationError,
     ReviewAgentService,
     ReviewBatchTimeoutError,
 )
@@ -122,6 +124,13 @@ class GeminiProviderTimeoutTests(unittest.TestCase):
         controlled = _provider_error_from_exception(error)
         self.assertIsInstance(controlled, ReviewProviderQuotaError)
         self.assertIn("Retry review later", str(controlled))
+        self.assertNotIn("should-not-survive", str(controlled))
+
+    def test_http_401_is_a_sanitized_credential_configuration_failure(self):
+        error = RuntimeError("request failed with HTTP 401; api_key=should-not-survive")
+        controlled = _provider_error_from_exception(error)
+        self.assertIsInstance(controlled, ReviewProviderCredentialError)
+        self.assertIn("GEMINI_API_KEY", str(controlled))
         self.assertNotIn("should-not-survive", str(controlled))
 
     def test_http_400_schema_incompatibility_is_sanitized_and_non_output_failure(self):
@@ -318,6 +327,33 @@ class ReviewTimeoutFlowTests(unittest.TestCase):
             clip = ClipRepository(session).get_by_external_id(self.project_id, "clip_001")
         self.assertIsNone(clip.reviewed_start)
         self.assertEqual(clip.edited_start, clip.ai_start)
+
+    def test_rejected_gemini_credentials_raise_configuration_error_without_local_stub(self):
+        os.environ["CLIP_REVIEW_MODE"] = "gemini"
+        os.environ["GEMINI_API_KEY"] = "invalid-placeholder"
+        calls = []
+
+        class CredentialReviewer:
+            provider = "gemini"
+
+            def __init__(self, *, api_key, model, request_timeout_seconds):
+                self.model = model
+
+            def review(self, context, **kwargs):
+                calls.append(context["clip_id"])
+                raise ReviewProviderCredentialError("Gemini rejected credentials")
+
+        with patch("apps.review_agent.service.GeminiBoundaryReviewer", CredentialReviewer), patch(
+            "apps.review_agent.service.LocalStubBoundaryReviewer"
+        ) as local_stub:
+            with self.assertRaisesRegex(ClipReviewConfigurationError, "GEMINI_API_KEY"):
+                ReviewAgentService(project_root=self.root, mode="gemini").review_clip(
+                    project_id=self.project_id,
+                    clip_id="clip_001",
+                )
+
+        self.assertEqual(calls, ["clip_001"])
+        local_stub.assert_not_called()
 
     def test_transport_auth_and_quota_failures_do_not_use_corrective_retry(self):
         os.environ["CLIP_REVIEW_MODE"] = "gemini"

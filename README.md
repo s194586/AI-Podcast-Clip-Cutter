@@ -214,10 +214,10 @@ py -3.14 -m venv .venv
 Copy-Item .env.example .env
 ```
 
-Keep `PIPELINE_ORCHESTRATOR=local`. The safe default
-`CLIP_REVIEW_MODE=local_stub` is deterministic and intended for offline
-development/testing; it is not a production fallback. Real semantic review
-requires explicitly selecting `gemini` and configuring `GEMINI_API_KEY`.
+Keep `PIPELINE_ORCHESTRATOR=local`. Gemini is the default semantic reviewer;
+set `GEMINI_API_KEY` before starting automatic review. `local_stub` is a
+deterministic development/test double that must be selected explicitly and is
+not a production fallback.
 
 Start the API on the verified development port:
 
@@ -298,7 +298,7 @@ before resetting anything.
 | `AIRFLOW_API_USERNAME` | Airflow Simple Auth user | runtime-defined | No |
 | `AIRFLOW_API_PASSWORD` | Airflow REST password | unique random value | Yes |
 | `AIRFLOW_JWT_SECRET` | Airflow execution JWT signing secret | unique random value | Yes |
-| `CLIP_REVIEW_MODE` | `local_stub` or explicit `gemini` | `local_stub` | No |
+| `CLIP_REVIEW_MODE` | `gemini` (product default) or explicit development/test `local_stub` | `gemini` | No |
 | `GEMINI_API_KEY` | Google Gen AI credential | unset | Yes |
 | `GEMINI_MODEL` | Configured review model | `gemini-3.5-flash` | No |
 | `CLIP_REVIEW_CONTEXT_SECONDS` | Context before/after candidate | `20.0` | No |

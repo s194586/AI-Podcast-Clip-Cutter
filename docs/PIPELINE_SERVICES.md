@@ -102,7 +102,7 @@ FastAPI remains responsive because heavy media work stays in a subprocess. `Loca
 
 Candidate import targets only the supplied existing project. Stable clip ids make retry idempotent; candidate/source/transcript artifacts are replaced by type rather than duplicated. New clips initialize `edited_start`/`edited_end` from `ai_start`/`ai_end` and leave reviewed boundaries unset. Re-import updates candidate data while preserving prior reviewed or user-edited boundaries.
 
-Automatic review is omitted when `auto_review=false`. When enabled, the stage calls `ReviewAgentService.review_project_clips()` directly and lets `ReviewConfig` select `local_stub` or Gemini. Missing Gemini configuration, provider failures, and failed review summaries produce a controlled `ReviewStageError`. The pipeline never reports Gemini merely because auto-review was requested.
+Automatic review is omitted when `auto_review=false`. When enabled, the stage calls `ReviewAgentService.review_project_clips()` directly and uses Gemini in the product configuration; `local_stub` is available only when explicitly selected for deterministic development/tests. Missing Gemini configuration, provider failures, and failed review summaries produce a controlled `ReviewStageError`. The pipeline never reports Gemini merely because auto-review was requested.
 
 `GEMINI_REQUEST_TIMEOUT_SECONDS` defaults to 300 seconds. It configures the installed `google-genai` client's millisecond HTTP timeout, explicitly limits SDK attempts, and bounds the same call in a killable child process so a blocked client cannot leave an abandoned thread. Corrective retries use the same remaining deadline. `GEMINI_BATCH_TIMEOUT_SECONDS` defaults to 1800 seconds and bounds the complete clip loop.
 

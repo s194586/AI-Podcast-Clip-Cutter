@@ -36,6 +36,7 @@ from .providers import (
     REVIEW_RESPONSE_CONTRACT_VERSION,
     ReviewProviderCancelledError,
     ReviewProviderCompatibilityError,
+    ReviewProviderCredentialError,
     ReviewProviderError,
     ReviewProviderExtractionError,
     ReviewProviderOutputError,
@@ -198,6 +199,10 @@ class ReviewAgentService:
                     ),
                     cancellation_check=cancellation_check,
                 )
+            except ReviewProviderCredentialError as exc:
+                raise ClipReviewConfigurationError(
+                    "Gemini rejected GEMINI_API_KEY credentials. Update GEMINI_API_KEY and retry review."
+                ) from exc
             except ReviewProviderCancelledError as exc:
                 raise ClipReviewCancelledError("Boundary review cancelled by user.") from exc
 
