@@ -36,6 +36,7 @@ from apps.review_agent.providers import (
     ReviewProviderTimeoutError,
     _provider_error_from_exception,
     _run_bounded_process,
+    preflight_gemini_credentials,
 )
 from apps.review_agent.schemas import GeminiBoundaryDecision
 from apps.review_agent.service import (
@@ -81,6 +82,28 @@ class GeminiProviderTimeoutTests(unittest.TestCase):
 
         http_options = captured["http_options"]
         self.assertEqual(http_options.timeout, 300000)
+        self.assertEqual(http_options.retry_options.attempts, 1)
+
+    def test_credential_preflight_uses_one_short_non_generating_request(self):
+        captured = {}
+
+        class FakeModels:
+            def list(self):
+                return iter(())
+
+        class FakeClient:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+                self.models = FakeModels()
+
+            def close(self):
+                pass
+
+        with patch("google.genai.Client", FakeClient):
+            self.assertTrue(preflight_gemini_credentials(api_key="offline-placeholder"))
+
+        http_options = captured["http_options"]
+        self.assertEqual(http_options.timeout, 10000)
         self.assertEqual(http_options.retry_options.attempts, 1)
 
     def test_child_process_receives_default_request_deadline(self):
@@ -132,6 +155,46 @@ class GeminiProviderTimeoutTests(unittest.TestCase):
         self.assertIsInstance(controlled, ReviewProviderCredentialError)
         self.assertIn("GEMINI_API_KEY", str(controlled))
         self.assertNotIn("should-not-survive", str(controlled))
+
+    def test_http_403_and_explicit_invalid_key_400_are_credential_failures(self):
+        errors = (
+            RuntimeError("request failed with HTTP 403; api_key=should-not-survive"),
+            RuntimeError("HTTP 400: API key not valid; api_key=should-not-survive"),
+        )
+        for error in errors:
+            with self.subTest(error=str(error)):
+                controlled = _provider_error_from_exception(error)
+                self.assertIsInstance(controlled, ReviewProviderCredentialError)
+                self.assertNotIn("should-not-survive", str(controlled))
+
+    def test_preflight_allows_transient_failures_without_creating_local_stub(self):
+        failures = (
+            ReviewProviderTimeoutError("offline timeout"),
+            ReviewProviderQuotaError("offline HTTP 429"),
+            ReviewProviderError("offline HTTP 503"),
+        )
+
+        for failure in failures:
+            class FakeModels:
+                def list(self):
+                    raise failure
+
+            class FakeClient:
+                models = FakeModels()
+
+                def close(self):
+                    pass
+
+            with self.subTest(failure=str(failure)), patch(
+                "apps.review_agent.providers.LocalStubBoundaryReviewer"
+            ) as local_stub:
+                self.assertFalse(
+                    preflight_gemini_credentials(
+                        api_key="offline-placeholder",
+                        client_factory=lambda _api_key: FakeClient(),
+                    )
+                )
+                local_stub.assert_not_called()
 
     def test_http_400_schema_incompatibility_is_sanitized_and_non_output_failure(self):
         error = RuntimeError(

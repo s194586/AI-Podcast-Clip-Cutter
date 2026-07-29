@@ -20,6 +20,7 @@ from .schemas import GeminiBoundaryDecision
 
 DEFAULT_GEMINI_MODEL = "gemini-3.5-flash"
 DEFAULT_GEMINI_REQUEST_TIMEOUT_SECONDS = 300
+DEFAULT_GEMINI_CREDENTIAL_PREFLIGHT_TIMEOUT_SECONDS = 10
 LOCAL_STUB_MODEL = "local_stub"
 COMPACT_REVIEW_REQUEST_CONTRACT_VERSION = 3
 REVIEW_RESPONSE_CONTRACT_VERSION = 2
@@ -210,6 +211,48 @@ class GeminiBoundaryReviewer:
             if client is not None and hasattr(client, "close"):
                 client.close()
 
+
+def preflight_gemini_credentials(
+    *,
+    api_key: str,
+    timeout_seconds: float = DEFAULT_GEMINI_CREDENTIAL_PREFLIGHT_TIMEOUT_SECONDS,
+    client_factory: Callable[[str], Any] | None = None,
+) -> bool:
+    """Check Gemini credentials with one non-generative request.
+
+    Transient provider failures deliberately return ``False`` so the existing
+    review flow can record manual review; confirmed credential failures are the
+    sole preflight errors that block automatic job creation.
+    """
+
+    if not str(api_key or "").strip():
+        raise ReviewProviderCredentialError(
+            "Gemini review requires a non-empty GEMINI_API_KEY. Set GEMINI_API_KEY before starting AI review."
+        )
+
+    client = None
+    try:
+        client = (
+            client_factory(api_key)
+            if client_factory is not None
+            else _create_genai_client(api_key, timeout_seconds=max(0.001, float(timeout_seconds)))
+        )
+        models = getattr(client, "models", None)
+        list_models = getattr(models, "list", None)
+        if not callable(list_models):
+            raise ReviewProviderError("Gemini credential preflight is unavailable in the installed SDK.")
+        # The SDK returns a pager; consume no more than its first item so the
+        # request verifies authorization without generating any model content.
+        next(iter(list_models()), None)
+        return True
+    except Exception as exc:
+        error = _provider_error_from_exception(exc)
+        if isinstance(error, ReviewProviderCredentialError):
+            raise error from exc
+        return False
+    finally:
+        if client is not None and hasattr(client, "close"):
+            client.close()
 
 def _request_structured_response(
     client: Any,
@@ -527,6 +570,10 @@ def _provider_error_from_exception(exc: Exception) -> ReviewProviderError:
         return ReviewProviderCredentialError(
             "Gemini rejected GEMINI_API_KEY credentials. Update GEMINI_API_KEY and retry review."
         )
+    if _is_invalid_api_key_error(status_values, message):
+        return ReviewProviderCredentialError(
+            "Gemini rejected GEMINI_API_KEY credentials. Update GEMINI_API_KEY and retry review."
+        )
     class_name = exc.__class__.__name__.casefold()
     if isinstance(exc, TimeoutError) or "timeout" in class_name or "timed out" in message.casefold():
         return ReviewProviderTimeoutError("Gemini boundary review request timed out.")
@@ -553,6 +600,22 @@ def _is_provider_compatibility_error(status_values: list[Any], message: str) -> 
     return bool(
         (400 in status_values or re.search(r"\b400\b", normalized))
         and ("invalid_request" in normalized or any(marker in normalized for marker in compatibility_markers))
+    )
+
+
+def _is_invalid_api_key_error(status_values: list[Any], message: str) -> bool:
+    normalized = message.casefold()
+    invalid_key_markers = (
+        "api key not valid",
+        "invalid api key",
+        "invalid api_key",
+        "api key is invalid",
+        "invalid_api_key",
+        "api_key_invalid",
+    )
+    return bool(
+        (400 in status_values or re.search(r"\b400\b", normalized))
+        and any(marker in normalized for marker in invalid_key_markers)
     )
 
 

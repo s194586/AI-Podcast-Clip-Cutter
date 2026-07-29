@@ -356,7 +356,7 @@ class ClipEvaluationRepository:
         warnings_json: list[Any],
         raw_result_json: dict[str, Any],
         clip_id: int | None = None,
-        provider: str = "local_stub",
+        provider: str = "unknown",
         model: str | None = None,
         selected_start_segment_id: str | None = None,
         selected_end_segment_id: str | None = None,

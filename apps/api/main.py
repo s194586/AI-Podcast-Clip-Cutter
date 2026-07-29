@@ -43,6 +43,7 @@ from .services.export_service import ExportAccessError, ExportNotFoundError, get
 from .services.project_state import PROJECT_ROOT
 from .services.render import RenderError, locate_input_video, render_adjusted_clip
 from apps.review_agent.config import ReviewConfigError, load_review_config, safe_review_config_summary
+from apps.review_agent.providers import ReviewProviderCredentialError, preflight_gemini_credentials
 from apps.review_agent.service import ClipReviewConfigurationError, ClipReviewError, ClipReviewNotFoundError, ReviewAgentService
 
 
@@ -74,8 +75,10 @@ def _log_review_configuration(project_root: Path) -> None:
 
 def _require_auto_review_configuration(*, project_root: Path) -> None:
     try:
-        load_review_config(project_root=project_root, require_api_key=True)
-    except ReviewConfigError as exc:
+        config = load_review_config(project_root=project_root, require_api_key=True)
+        if config.mode == "gemini":
+            preflight_gemini_credentials(api_key=str(config.api_key or ""))
+    except (ReviewConfigError, ReviewProviderCredentialError) as exc:
         raise ProjectOrchestratorConfigurationError(str(exc)) from exc
 
 

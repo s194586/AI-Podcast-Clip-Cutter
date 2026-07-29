@@ -138,7 +138,7 @@ def check_sensitive_patterns(text: str) -> dict[str, Any]:
 
 def evaluation_to_dict(evaluation: ClipEvaluation) -> dict[str, Any]:
     raw_result = dict(evaluation.raw_result_json or {})
-    provider = str(getattr(evaluation, "provider", None) or raw_result.get("provider") or "local_stub")
+    provider = str(getattr(evaluation, "provider", None) or raw_result.get("provider") or "unknown")
     reviewed_start = getattr(evaluation, "reviewed_start", None)
     reviewed_end = getattr(evaluation, "reviewed_end", None)
     if reviewed_start is None:
@@ -151,7 +151,7 @@ def evaluation_to_dict(evaluation: ClipEvaluation) -> dict[str, Any]:
         "database_clip_id": evaluation.clip_id,
         "evaluation_id": evaluation.id,
         "provider": provider,
-        "model": getattr(evaluation, "model", None) or raw_result.get("model") or "local_stub",
+        "model": getattr(evaluation, "model", None) or raw_result.get("model") or "unknown",
         "decision": evaluation.decision,
         "recommended_action": evaluation.recommended_action,
         "needs_more_context": evaluation.needs_more_context,
@@ -217,7 +217,7 @@ def save_evaluation(result: dict[str, Any]) -> dict[str, Any]:
         clip = ClipRepository(session).get_by_external_id(project_id, external_clip_id)
         raw_result = dict(result.get("raw_result") or result)
         raw_result.setdefault("context_expansions", result.get("context_expansions", 0))
-        provider = str(result.get("provider") or raw_result.get("provider") or "local_stub")
+        provider = str(result.get("provider") or raw_result.get("provider") or "unknown")
         model = str(result.get("model") or raw_result.get("model") or provider)
         raw_result.setdefault("provider", provider)
         raw_result.setdefault("model", model)

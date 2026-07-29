@@ -1342,6 +1342,24 @@ class ReviewAgentTests(unittest.TestCase):
         self.assertEqual(updated["edited_end"], 139.0)
         self.assertEqual(updated["boundary_source"], "user")
 
+    def test_missing_review_provenance_is_saved_and_serialized_as_unknown(self):
+        project_id = self._seed_project()
+
+        saved = save_evaluation(
+            {
+                "project_id": project_id,
+                "clip_id": "clip_001",
+                "decision": "manual_review",
+                "recommended_action": "manual_review",
+            }
+        )
+
+        self.assertEqual(saved["provider"], "unknown")
+        self.assertEqual(saved["model"], "unknown")
+        with session_scope() as session:
+            evaluation = session.scalars(select(ClipEvaluation)).one()
+        self.assertEqual(evaluation.provider, "unknown")
+
     def test_reject_and_manual_review_do_not_auto_apply_boundaries(self):
         project_id = self._seed_project()
 

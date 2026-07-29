@@ -169,16 +169,11 @@ def load_review_config(
 
 def normalize_review_mode_value(value: str | None) -> ReviewMode:
     raw_value = str(value or DEFAULT_REVIEW_MODE).strip().lower()
-    aliases = {
-        "local_only": "local_stub",
-        "stub": "local_stub",
-    }
-    normalized = aliases.get(raw_value, raw_value)
-    if normalized not in {"local_stub", "gemini"}:
+    if raw_value not in {"local_stub", "gemini"}:
         raise ReviewConfigError(
             f"Unsupported CLIP_REVIEW_MODE={raw_value!r}. Use 'local_stub' or 'gemini'."
         )
-    return normalized  # type: ignore[return-value]
+    return raw_value  # type: ignore[return-value]
 
 
 def safe_review_config_summary(*, project_root: Path | str | None = None) -> dict[str, Any]:

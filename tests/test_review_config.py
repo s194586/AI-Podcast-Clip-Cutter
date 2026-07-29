@@ -7,9 +7,11 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from apps.api.db.database import configure_database, init_database
+from apps.api.db.database import configure_database, init_database, session_scope
+from apps.api.db.repositories import JobRepository
 from apps.api.main import app
 from apps.review_agent.config import ReviewConfigError, load_review_config
+from apps.review_agent.providers import ReviewProviderCredentialError
 from apps.review_agent.service import ClipReviewConfigurationError, ReviewAgentService
 
 
@@ -43,6 +45,16 @@ class ReviewConfigTests(unittest.TestCase):
         self.assertEqual(config.provider, "local_stub")
         self.assertEqual(config.mode_source, "environment")
         self.assertEqual(provider.provider, "local_stub")
+
+    def test_local_stub_aliases_are_rejected(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            for mode in ("local_only", "stub"):
+                with self.subTest(mode=mode), patch.dict(
+                    os.environ, {"CLIP_REVIEW_MODE": mode}, clear=True
+                ):
+                    with self.assertRaisesRegex(ReviewConfigError, "Unsupported CLIP_REVIEW_MODE"):
+                        load_review_config(project_root=root, require_api_key=False)
 
     def test_dotenv_gemini_selects_gemini_provider_without_process_env(self):
         with tempfile.TemporaryDirectory() as tempdir:
@@ -167,6 +179,59 @@ class ReviewConfigTests(unittest.TestCase):
         self.assertIn("GEMINI_API_KEY", health_response.json()["review_config"]["configuration_error"])
         self.assertEqual(start_response.status_code, 503)
         self.assertIn("GEMINI_API_KEY", start_response.json()["detail"])
+
+    def test_rejected_preflight_credentials_do_not_create_projects_or_jobs(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            db_url = _sqlite_url(root / "test.db")
+            with patch.dict(
+                os.environ,
+                {
+                    "PODCAST_CUTTER_DB_URL": db_url,
+                    "PODCAST_CUTTER_PROJECT_ROOT": str(root),
+                    "PIPELINE_ORCHESTRATOR": "local",
+                    "GEMINI_API_KEY": "rejected-key",
+                },
+                clear=True,
+            ):
+                try:
+                    configure_database(db_url)
+                    init_database()
+                    from apps.api.services.project_service import create_project, list_projects
+
+                    project = create_project(
+                        source_url="https://www.youtube.com/watch?v=existing",
+                        auto_review=True,
+                        project_root=root,
+                    )
+                    rejected = ReviewProviderCredentialError(
+                        "Gemini rejected GEMINI_API_KEY credentials. Update GEMINI_API_KEY and retry review."
+                    )
+                    with TestClient(app) as client, patch(
+                        "apps.api.main.preflight_gemini_credentials", side_effect=rejected
+                    ) as preflight:
+                        start_response = client.post(f"/projects/{project['id']}/start")
+                        create_response = client.post(
+                            "/projects",
+                            json={
+                                "source_url": "https://www.youtube.com/watch?v=new",
+                                "auto_review": True,
+                                "auto_start": True,
+                            },
+                        )
+                    with session_scope() as session:
+                        job = JobRepository(session).latest_for_project(int(project["id"]))
+                    project_count = len(list_projects())
+                finally:
+                    configure_database("sqlite:///:memory:")
+
+        self.assertEqual(start_response.status_code, 503)
+        self.assertEqual(create_response.status_code, 503)
+        self.assertIn("GEMINI_API_KEY", start_response.json()["detail"])
+        self.assertIn("GEMINI_API_KEY", create_response.json()["detail"])
+        self.assertEqual(preflight.call_count, 2)
+        self.assertIsNone(job)
+        self.assertEqual(project_count, 1)
 
 
 if __name__ == "__main__":

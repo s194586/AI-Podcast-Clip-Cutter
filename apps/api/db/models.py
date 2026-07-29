@@ -109,7 +109,7 @@ class ClipEvaluation(Base):
     clip_id: Mapped[int | None] = mapped_column(ForeignKey("clips.id", ondelete="SET NULL"), nullable=True, index=True)
     external_clip_id: Mapped[str] = mapped_column(String(128), index=True)
 
-    provider: Mapped[str] = mapped_column(String(64), default="local_stub", index=True)
+    provider: Mapped[str] = mapped_column(String(64), default="unknown", index=True)
     model: Mapped[str | None] = mapped_column(String(256), nullable=True)
     decision: Mapped[str] = mapped_column(String(64), index=True)
     quality_score: Mapped[float] = mapped_column(Float, default=0.0)

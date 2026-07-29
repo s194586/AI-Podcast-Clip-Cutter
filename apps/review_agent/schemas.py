@@ -138,8 +138,8 @@ class ClipReviewEvaluation(BaseModel):
     clip_id: str
     database_clip_id: int | None = None
     evaluation_id: int | None = None
-    provider: str = "local_stub"
-    model: str = "local_stub"
+    provider: str = "unknown"
+    model: str = "unknown"
     decision: str
     recommended_action: RecommendedAction
     quality_score: float | None = None
