@@ -5,12 +5,27 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
-from sqlalchemy import create_engine, event, inspect, text
+from sqlalchemy import MetaData, create_engine, event, inspect, text
 from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.schema import CreateTable
 
 
 DEFAULT_DATABASE_URL = "sqlite:///data/podcast_cutter.db"
+
+_LEGACY_NULLABLE_CLIP_EVALUATION_COLUMNS = frozenset(
+    {
+        "quality_score",
+        "context_score",
+        "hook_score",
+        "payoff_score",
+        "boundary_score",
+        "privacy_risk",
+        "crop_advice",
+        "needs_more_context",
+    }
+)
+_CLIP_EVALUATIONS_REBUILD_TABLE = "__clip_evaluations_nullable_legacy_fields"
 
 _engine: Engine | None = None
 _session_factory: sessionmaker[Session] | None = None
@@ -80,6 +95,7 @@ def init_database() -> None:
     _ensure_sqlite_project_flow_columns(engine)
     _ensure_sqlite_clip_boundary_columns(engine)
     _ensure_sqlite_clip_evaluation_columns(engine)
+    _ensure_sqlite_clip_evaluation_legacy_fields_nullable(engine)
     _ensure_sqlite_job_flow_columns(engine)
 
 
@@ -154,6 +170,128 @@ def _ensure_sqlite_clip_evaluation_columns(engine: Engine) -> None:
     with engine.begin() as connection:
         for column_name in missing:
             connection.execute(text(column_sql[column_name]))
+
+
+def _ensure_sqlite_clip_evaluation_legacy_fields_nullable(engine: Engine) -> bool:
+    """Make historical review fields nullable without altering their values.
+
+    SQLite cannot drop a NOT NULL constraint in place.  We therefore rebuild
+    only the affected table in one explicit transaction, retaining its rows,
+    foreign keys, and explicitly-created indexes.  A database already using
+    the nullable contract is left untouched.
+    """
+    from .models import Base
+
+    if not engine.dialect.name.startswith("sqlite"):
+        return False
+
+    with engine.connect() as connection:
+        # This is deliberately only a cheap preflight.  Every schema snapshot
+        # used by a rebuild is fetched again after BEGIN IMMEDIATE below.
+        column_rows = _sqlite_table_info(connection, "clip_evaluations")
+        if not column_rows:
+            return False
+        nullable_by_name = {str(row["name"]): not bool(row["notnull"]) for row in column_rows}
+        if all(nullable_by_name.get(column_name, False) for column_name in _LEGACY_NULLABLE_CLIP_EVALUATION_COLUMNS):
+            return False
+
+        connection.commit()
+        connection.exec_driver_sql("BEGIN IMMEDIATE")
+        try:
+            # Re-read the contract while holding the write gate.  Another
+            # process may have migrated or altered this table after preflight.
+            column_rows = _sqlite_table_info(connection, "clip_evaluations")
+            if not column_rows:
+                connection.commit()
+                return False
+            nullable_by_name = {str(row["name"]): not bool(row["notnull"]) for row in column_rows}
+            if all(nullable_by_name.get(column_name, False) for column_name in _LEGACY_NULLABLE_CLIP_EVALUATION_COLUMNS):
+                connection.commit()
+                return False
+
+            expected_columns = tuple(Base.metadata.tables["clip_evaluations"].columns.keys())
+            existing_columns = tuple(str(row["name"]) for row in column_rows)
+            unknown_columns = sorted(set(existing_columns) - set(expected_columns))
+            missing_columns = sorted(set(expected_columns) - set(existing_columns))
+            if unknown_columns or missing_columns:
+                raise RuntimeError(
+                    "Cannot safely rebuild clip_evaluations with an unexpected column set "
+                    f"(missing={missing_columns}, unknown={unknown_columns})."
+                )
+
+            existing_foreign_keys = _sqlite_foreign_keys(connection, "clip_evaluations")
+            schema_objects = connection.exec_driver_sql(
+                """
+                SELECT type, name, sql
+                FROM sqlite_master
+                WHERE tbl_name = ?
+                  AND type IN ('index', 'trigger')
+                  AND sql IS NOT NULL
+                ORDER BY type, name
+                """,
+                ("clip_evaluations",),
+            ).all()
+
+            temporary_metadata = MetaData()
+            # The copied table keeps its original foreign-key targets.  Copy those
+            # parent tables into the temporary metadata so SQLAlchemy can compile
+            # the FK constraints without creating or modifying the parent tables.
+            for parent_table_name in ("projects", "clips"):
+                Base.metadata.tables[parent_table_name].to_metadata(temporary_metadata)
+            temporary_table = Base.metadata.tables["clip_evaluations"].to_metadata(
+                temporary_metadata,
+                name=_CLIP_EVALUATIONS_REBUILD_TABLE,
+            )
+            create_table_sql = str(CreateTable(temporary_table).compile(dialect=engine.dialect))
+            quoted_columns = ", ".join(f'"{column_name}"' for column_name in existing_columns)
+
+            existing_tables = {
+                str(row[0])
+                for row in connection.exec_driver_sql(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                ).all()
+            }
+            if _CLIP_EVALUATIONS_REBUILD_TABLE in existing_tables:
+                raise RuntimeError(
+                    f"Refusing to reuse leftover migration table {_CLIP_EVALUATIONS_REBUILD_TABLE!r}."
+                )
+
+            connection.exec_driver_sql(create_table_sql)
+            connection.exec_driver_sql(
+                f'INSERT INTO "{_CLIP_EVALUATIONS_REBUILD_TABLE}" ({quoted_columns}) '
+                f'SELECT {quoted_columns} FROM "clip_evaluations"'
+            )
+            connection.exec_driver_sql('DROP TABLE "clip_evaluations"')
+            connection.exec_driver_sql(
+                f'ALTER TABLE "{_CLIP_EVALUATIONS_REBUILD_TABLE}" RENAME TO "clip_evaluations"'
+            )
+            for _object_type, _object_name, object_sql in schema_objects:
+                connection.exec_driver_sql(str(object_sql))
+
+            if _sqlite_foreign_keys(connection, "clip_evaluations") != existing_foreign_keys:
+                raise RuntimeError("clip_evaluations foreign key definitions changed during nullable-field migration.")
+            foreign_key_errors = connection.exec_driver_sql("PRAGMA foreign_key_check").all()
+            if foreign_key_errors:
+                raise RuntimeError(f"Foreign key check failed after clip_evaluations migration: {foreign_key_errors!r}")
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+    return True
+
+
+def _sqlite_foreign_keys(connection, table_name: str) -> tuple[tuple[object, ...], ...]:
+    # SQLite assigns FK ids from declaration order, which may legitimately
+    # differ after rebuilding an equivalent table.  Compare the definition,
+    # not that implementation-specific ordinal.
+    return tuple(sorted(
+        tuple(row)[1:]
+        for row in connection.exec_driver_sql(f'PRAGMA foreign_key_list("{table_name}")').all()
+    ))
+
+
+def _sqlite_table_info(connection, table_name: str):
+    return connection.exec_driver_sql(f'PRAGMA table_info("{table_name}")').mappings().all()
 
 
 def _ensure_sqlite_job_flow_columns(engine: Engine) -> None:

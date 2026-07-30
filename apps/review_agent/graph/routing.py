@@ -15,7 +15,12 @@ def route_review_result(state: ReviewGraphState) -> ReviewRoute:
         return "provider_failure"
     if state.get("validation_category"):
         return "manual" if state.get("retry_used") else "retry"
-    return "apply"
+    if (
+        isinstance(state.get("validated_result"), dict)
+        and state.get("validated_attempt_number") == state.get("attempt_number")
+    ):
+        return "apply"
+    return "manual"
 
 
 def route_after_apply(state: ReviewGraphState) -> Literal["end", "cancelled"]:

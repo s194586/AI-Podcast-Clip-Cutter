@@ -7,8 +7,9 @@ from typing import Any
 
 from apps.api.db.database import init_database, session_scope
 from apps.api.db.models import ClipEvaluation
-from apps.api.db.repositories import ClipEvaluationRepository, ClipRepository, ProjectRepository
+from apps.api.db.repositories import ClipEvaluationRepository, ClipRepository, JobRepository, ProjectRepository
 from apps.api.services.clips import validate_adjusted_bounds
+from apps.review_agent.schemas import ReviewProvenance
 from apps.review_agent.transcript_segments import normalize_transcript_segments
 
 
@@ -138,7 +139,7 @@ def check_sensitive_patterns(text: str) -> dict[str, Any]:
 
 def evaluation_to_dict(evaluation: ClipEvaluation) -> dict[str, Any]:
     raw_result = dict(evaluation.raw_result_json or {})
-    provider = str(getattr(evaluation, "provider", None) or raw_result.get("provider") or "local_stub")
+    provider = str(getattr(evaluation, "provider", None) or raw_result.get("provider") or "unknown")
     reviewed_start = getattr(evaluation, "reviewed_start", None)
     reviewed_end = getattr(evaluation, "reviewed_end", None)
     if reviewed_start is None:
@@ -151,9 +152,10 @@ def evaluation_to_dict(evaluation: ClipEvaluation) -> dict[str, Any]:
         "database_clip_id": evaluation.clip_id,
         "evaluation_id": evaluation.id,
         "provider": provider,
-        "model": getattr(evaluation, "model", None) or raw_result.get("model") or "local_stub",
+        "model": getattr(evaluation, "model", None) or raw_result.get("model") or "unknown",
         "decision": evaluation.decision,
         "recommended_action": evaluation.recommended_action,
+        "review_provenance": _review_provenance(evaluation, provider),
         "needs_more_context": evaluation.needs_more_context,
         "selected_start_option_index": raw_result.get("selected_start_option_index"),
         "selected_end_option_index": raw_result.get("selected_end_option_index"),
@@ -183,6 +185,11 @@ def evaluation_to_dict(evaluation: ClipEvaluation) -> dict[str, Any]:
         "provider_attempt_count": int(raw_result.get("provider_attempt_count") or 1),
         "first_attempt_validation_error": raw_result.get("first_attempt_validation_error"),
         "final_validation_error": raw_result.get("final_validation_error"),
+        "review_workflow": raw_result.get("review_workflow"),
+        "review_workflow_version": raw_result.get("review_workflow_version"),
+        "review_request_contract_version": raw_result.get("review_request_contract_version"),
+        "review_response_contract_version": raw_result.get("review_response_contract_version"),
+        "review_workflow_route": raw_result.get("review_workflow_route"),
         "raw_result": raw_result,
         "created_at": evaluation.created_at.isoformat() if evaluation.created_at else None,
     }
@@ -201,21 +208,58 @@ def evaluation_to_dict(evaluation: ClipEvaluation) -> dict[str, Any]:
     return result
 
 
-def save_evaluation(result: dict[str, Any]) -> dict[str, Any]:
+class ReviewPersistenceCancelledError(RuntimeError):
+    """Raised before a review write when its owning pipeline job was cancelled."""
+
+
+def save_evaluation(result: dict[str, Any], *, job_id: int | None = None) -> dict[str, Any]:
     init_database()
     with session_scope() as session:
         project_id = int(result["project_id"])
         external_clip_id = str(result["clip_id"])
+        if job_id is not None:
+            # This write is the SQLite-safe cancellation fence.  It must be
+            # first in the transaction before evaluation, clip, or provenance
+            # writes; SELECT ... FOR UPDATE is not sufficient on SQLite.
+            if JobRepository(session).touch_running_review(int(job_id), project_id) != 1:
+                raise ReviewPersistenceCancelledError("Boundary review cancelled by user.")
         project = ProjectRepository(session).get(project_id)
         if project is None:
             raise ValueError(f"Unknown project_id: {project_id}")
         clip = ClipRepository(session).get_by_external_id(project_id, external_clip_id)
         raw_result = dict(result.get("raw_result") or result)
         raw_result.setdefault("context_expansions", result.get("context_expansions", 0))
-        provider = str(result.get("provider") or raw_result.get("provider") or "local_stub")
+        provider = str(result.get("provider") or raw_result.get("provider") or "unknown")
         model = str(result.get("model") or raw_result.get("model") or provider)
         raw_result.setdefault("provider", provider)
         raw_result.setdefault("model", model)
+        decision = str(result.get("decision") or "reviewed")
+        if provider == "gemini":
+            decision = _canonical_gemini_decision(result.get("decision"))
+            # Gemini's canonical editorial output is decision.  The retained
+            # recommended_action column is only its compatibility mirror.
+            recommended_action = decision
+            raw_result["decision"] = decision
+            raw_result["recommended_action"] = decision
+            quality_score = _optional_legacy_float(_explicit_result_value(result, raw_result, "quality_score"))
+            context_score = _optional_legacy_float(_explicit_result_value(result, raw_result, "context_score"))
+            hook_score = _optional_legacy_float(_explicit_result_value(result, raw_result, "hook_score"))
+            payoff_score = _optional_legacy_float(_explicit_result_value(result, raw_result, "payoff_score"))
+            boundary_score = _optional_legacy_float(_explicit_result_value(result, raw_result, "boundary_score"))
+            privacy_risk = _optional_text(_explicit_result_value(result, raw_result, "privacy_risk"))
+            crop_advice = _optional_text(_explicit_result_value(result, raw_result, "crop_advice"))
+            needs_more_context = _optional_bool(result, raw_result, "needs_more_context")
+        else:
+            # Preserve the historical write contract for non-Gemini records.
+            recommended_action = str(result.get("recommended_action") or "manual_review")
+            quality_score = _parse_float(result.get("quality_score"))
+            context_score = _parse_float(result.get("context_score"))
+            hook_score = _parse_float(result.get("hook_score"))
+            payoff_score = _parse_float(result.get("payoff_score"))
+            boundary_score = _parse_float(result.get("boundary_score"))
+            privacy_risk = str(result.get("privacy_risk") or "low")
+            crop_advice = str(result.get("crop_advice") or "")
+            needs_more_context = bool(result.get("needs_more_context"))
         reviewed_start = result.get("reviewed_start", result.get("suggested_start"))
         reviewed_end = result.get("reviewed_end", result.get("suggested_end"))
         evaluation = ClipEvaluationRepository(session).create(
@@ -224,14 +268,14 @@ def save_evaluation(result: dict[str, Any]) -> dict[str, Any]:
             external_clip_id=external_clip_id,
             provider=provider,
             model=model,
-            decision=str(result.get("decision") or "reviewed"),
-            quality_score=_parse_float(result.get("quality_score")),
-            context_score=_parse_float(result.get("context_score")),
-            hook_score=_parse_float(result.get("hook_score")),
-            payoff_score=_parse_float(result.get("payoff_score")),
-            boundary_score=_parse_float(result.get("boundary_score")),
-            privacy_risk=str(result.get("privacy_risk") or "low"),
-            recommended_action=str(result.get("recommended_action") or "manual_review"),
+            decision=decision,
+            quality_score=quality_score,
+            context_score=context_score,
+            hook_score=hook_score,
+            payoff_score=payoff_score,
+            boundary_score=boundary_score,
+            privacy_risk=privacy_risk,
+            recommended_action=recommended_action,
             selected_start_segment_id=_optional_text(result.get("selected_start_segment_id")),
             selected_end_segment_id=_optional_text(result.get("selected_end_segment_id")),
             suggested_start=reviewed_start,
@@ -244,8 +288,8 @@ def save_evaluation(result: dict[str, Any]) -> dict[str, Any]:
             start_reason=str(result.get("start_reason") or ""),
             end_reason=str(result.get("end_reason") or ""),
             context_seconds=_parse_optional_float(result.get("context_seconds")),
-            crop_advice=str(result.get("crop_advice") or ""),
-            needs_more_context=bool(result.get("needs_more_context")),
+            crop_advice=crop_advice,
+            needs_more_context=needs_more_context,
             reasons_json=list(result.get("reasons") or []),
             warnings_json=list(result.get("warnings") or []),
             raw_result_json=raw_result,
@@ -255,7 +299,7 @@ def save_evaluation(result: dict[str, Any]) -> dict[str, Any]:
                 session=session,
                 clip=clip,
                 project=project,
-                result=result,
+                result={**result, "recommended_action": recommended_action},
                 reviewed_start=reviewed_start,
                 reviewed_end=reviewed_end,
             )
@@ -268,9 +312,83 @@ def _parse_optional_float(value: Any) -> float | None:
     return _parse_float(value)
 
 
+def _optional_legacy_float(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _explicit_result_value(result: dict[str, Any], raw_result: dict[str, Any], field: str) -> Any:
+    if field in result:
+        return result[field]
+    return raw_result.get(field)
+
+
+def _optional_bool(result: dict[str, Any], raw_result: dict[str, Any], field: str) -> bool | None:
+    value = _explicit_result_value(result, raw_result, field)
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized == "true":
+            return True
+        if normalized == "false":
+            return False
+    raise ValueError(f"{field} must be a boolean or the string 'true'/'false'.")
+
+
 def _optional_text(value: Any) -> str | None:
     text = str(value).strip() if value not in (None, "") else ""
     return text or None
+
+
+def _canonical_gemini_decision(value: Any) -> str:
+    if value in (None, ""):
+        return "manual_review"
+    decision = str(value).strip()
+    if decision not in {"render_ready", "adjust_boundaries", "reject", "manual_review"}:
+        raise ValueError(f"Invalid Gemini decision: {decision!r}.")
+    return decision
+
+
+def _review_provenance(evaluation: ClipEvaluation, provider: str) -> dict[str, str]:
+    if evaluation.decision == "manual_review":
+        return ReviewProvenance(
+            review_kind="manual_review",
+            numeric_score_provenance="not_available",
+        ).model_dump()
+    if provider == "gemini" and evaluation.decision in {"render_ready", "adjust_boundaries", "reject"}:
+        return ReviewProvenance(
+            review_kind="gemini_boundary_decision",
+            numeric_score_provenance="not_available",
+        ).model_dump()
+    if _has_legacy_numeric_scores(evaluation):
+        return ReviewProvenance(
+            review_kind="legacy_heuristic",
+            numeric_score_provenance="legacy_heuristic",
+        ).model_dump()
+    return ReviewProvenance(
+        review_kind="unknown",
+        numeric_score_provenance="not_available",
+    ).model_dump()
+
+
+def _has_legacy_numeric_scores(evaluation: ClipEvaluation) -> bool:
+    return any(
+        value is not None
+        for value in (
+            evaluation.quality_score,
+            evaluation.context_score,
+            evaluation.hook_score,
+            evaluation.payoff_score,
+            evaluation.boundary_score,
+        )
+    )
 
 
 def _first_reason(reasons: list[Any]) -> str:

@@ -44,6 +44,7 @@ class ReviewCandidatesStage:
             summary = _call_batch_review(
                 service,
                 project_id=context.project_id,
+                job_id=context.job_id,
                 cancellation_check=lambda: context.is_cancelled,
                 progress_callback=self._emit_review_progress,
             )
@@ -128,6 +129,7 @@ def _call_batch_review(
     service: Any,
     *,
     project_id: int,
+    job_id: int | None,
     cancellation_check: Callable[[], bool],
     progress_callback: Callable[[str, dict[str, Any]], None],
 ) -> dict[str, Any]:
@@ -148,6 +150,7 @@ def _call_batch_review(
         "cancellation_check": cancellation_check,
         "progress_callback": progress_callback,
         "skip_completed": True,
+        "job_id": job_id,
     }
     for key, value in optional.items():
         if supports_kwargs or (signature is not None and key in signature.parameters):

@@ -15,7 +15,7 @@ from .providers import (
 from .schemas import ReviewMode
 
 
-DEFAULT_REVIEW_MODE: ReviewMode = "local_stub"
+DEFAULT_REVIEW_MODE: ReviewMode = "gemini"
 DEFAULT_PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_GEMINI_BATCH_TIMEOUT_SECONDS = 1800
 
@@ -56,7 +56,7 @@ class ReviewConfig:
     def require_ready(self) -> None:
         if self.mode == "gemini" and not self.api_key_configured:
             raise ReviewConfigError(
-                "CLIP_REVIEW_MODE=gemini requires GEMINI_API_KEY. Set GEMINI_API_KEY to enable real Gemini review."
+                "Gemini review requires a non-empty GEMINI_API_KEY. Set GEMINI_API_KEY before starting AI review."
             )
 
     def safe_summary(self) -> dict[str, Any]:
@@ -169,21 +169,22 @@ def load_review_config(
 
 def normalize_review_mode_value(value: str | None) -> ReviewMode:
     raw_value = str(value or DEFAULT_REVIEW_MODE).strip().lower()
-    aliases = {
-        "local_only": "local_stub",
-        "stub": "local_stub",
-    }
-    normalized = aliases.get(raw_value, raw_value)
-    if normalized not in {"local_stub", "gemini"}:
+    if raw_value not in {"local_stub", "gemini"}:
         raise ReviewConfigError(
             f"Unsupported CLIP_REVIEW_MODE={raw_value!r}. Use 'local_stub' or 'gemini'."
         )
-    return normalized  # type: ignore[return-value]
+    return raw_value  # type: ignore[return-value]
 
 
 def safe_review_config_summary(*, project_root: Path | str | None = None) -> dict[str, Any]:
     try:
-        return load_review_config(project_root=project_root, require_api_key=False).safe_summary()
+        config = load_review_config(project_root=project_root, require_api_key=False)
+        summary = config.safe_summary()
+        try:
+            config.require_ready()
+        except ReviewConfigError as exc:
+            summary["configuration_error"] = str(exc)
+        return summary
     except ReviewConfigError as exc:
         return {
             "provider": "invalid",

@@ -5,6 +5,8 @@ from typing import Any
 
 from langgraph.graph import END, START, StateGraph
 
+from apps.review_agent.providers import COMPACT_REVIEW_REQUEST_CONTRACT_VERSION
+
 from .nodes import (
     apply_review,
     build_review_context,
@@ -21,7 +23,7 @@ from .state import ReviewGraphState
 
 
 GRAPH_WORKFLOW_NAME = "langgraph_boundary_review"
-GRAPH_WORKFLOW_VERSION = "1"
+GRAPH_WORKFLOW_VERSION = "2"
 
 
 def build_review_graph():
@@ -72,11 +74,14 @@ def run_review_workflow(
     state: dict[str, Any] = {
         **initial_state,
         "attempt_number": 1,
+        "provider_attempt_count": 0,
         "retry_used": False,
         "cancelled": False,
         "terminal_route": None,
         "workflow_name": GRAPH_WORKFLOW_NAME,
         "workflow_version": GRAPH_WORKFLOW_VERSION,
+        "review_request_contract_version": COMPACT_REVIEW_REQUEST_CONTRACT_VERSION,
+        "review_response_contract_version": None,
         "started_ns": time.monotonic_ns(),
     }
     return REVIEW_GRAPH.invoke(state, context=runtime)

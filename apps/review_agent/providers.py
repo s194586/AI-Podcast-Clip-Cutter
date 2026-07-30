@@ -4,21 +4,37 @@ import json
 import multiprocessing
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any, Protocol
 
 from pydantic import ValidationError
 
+from .context import (
+    allowed_boundary_pair_indexes,
+    boundary_options_by_segment_id,
+    current_aligned_boundary_options,
+    segment_map,
+)
 from .schemas import GeminiBoundaryDecision
 
 
 DEFAULT_GEMINI_MODEL = "gemini-3.5-flash"
 DEFAULT_GEMINI_REQUEST_TIMEOUT_SECONDS = 300
+DEFAULT_GEMINI_CREDENTIAL_PREFLIGHT_TIMEOUT_SECONDS = 10
 LOCAL_STUB_MODEL = "local_stub"
+COMPACT_REVIEW_REQUEST_CONTRACT_VERSION = 3
+REVIEW_RESPONSE_CONTRACT_VERSION = 2
 
 
 class ReviewProviderError(RuntimeError):
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        diagnostics: Mapping[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.diagnostics = sanitize_provider_failure_diagnostics(diagnostics)
 
 
 class ReviewProviderOutputError(ReviewProviderError):
@@ -43,6 +59,10 @@ class ReviewProviderRequestCancelledError(ReviewProviderError):
 
 class ReviewProviderQuotaError(ReviewProviderError):
     """Raised when Gemini rejects a request because quota or rate limits were reached."""
+
+
+class ReviewProviderCredentialError(ReviewProviderError):
+    """Raised when Gemini rejects the configured API credentials."""
 
 
 class ReviewProviderCompatibilityError(ReviewProviderError):
@@ -120,9 +140,10 @@ class LocalStubBoundaryReviewer:
         )
         decision = "adjust_boundaries" if changed else "render_ready"
         return GeminiBoundaryDecision(
+            review_response_contract_version=REVIEW_RESPONSE_CONTRACT_VERSION,
             decision=decision,
-            selected_start_option_index=int(selected_start["option_index"]),
-            selected_end_option_index=int(selected_end["option_index"]),
+            start_segment_id=str(selected_start["segment_id"]),
+            end_segment_id=str(selected_end["segment_id"]),
             reasoning_summary=(
                 "Local stub selected transcript-aligned boundaries for offline development and tests."
             ),
@@ -198,6 +219,48 @@ class GeminiBoundaryReviewer:
                 client.close()
 
 
+def preflight_gemini_credentials(
+    *,
+    api_key: str,
+    timeout_seconds: float = DEFAULT_GEMINI_CREDENTIAL_PREFLIGHT_TIMEOUT_SECONDS,
+    client_factory: Callable[[str], Any] | None = None,
+) -> bool:
+    """Check Gemini credentials with one non-generative request.
+
+    Transient provider failures deliberately return ``False`` so the existing
+    review flow can record manual review; confirmed credential failures are the
+    sole preflight errors that block automatic job creation.
+    """
+
+    if not str(api_key or "").strip():
+        raise ReviewProviderCredentialError(
+            "Gemini review requires a non-empty GEMINI_API_KEY. Set GEMINI_API_KEY before starting AI review."
+        )
+
+    client = None
+    try:
+        client = (
+            client_factory(api_key)
+            if client_factory is not None
+            else _create_genai_client(api_key, timeout_seconds=max(0.001, float(timeout_seconds)))
+        )
+        models = getattr(client, "models", None)
+        list_models = getattr(models, "list", None)
+        if not callable(list_models):
+            raise ReviewProviderError("Gemini credential preflight is unavailable in the installed SDK.")
+        # The SDK returns a pager; consume no more than its first item so the
+        # request verifies authorization without generating any model content.
+        next(iter(list_models()), None)
+        return True
+    except Exception as exc:
+        error = _provider_error_from_exception(exc)
+        if isinstance(error, ReviewProviderCredentialError):
+            raise error from exc
+        return False
+    finally:
+        if client is not None and hasattr(client, "close"):
+            client.close()
+
 def _request_structured_response(
     client: Any,
     *,
@@ -223,56 +286,100 @@ def _request_structured_response(
 
 
 def build_gemini_prompt_payload(context: dict[str, Any]) -> dict[str, Any]:
+    """Build the compact, provider-facing Gemini request without mutating context."""
+    return build_compact_review_request(context)
+
+
+def build_compact_review_request(context: dict[str, Any]) -> dict[str, Any]:
+    """Project internal review context into the versioned Gemini request contract.
+
+    Internal boundary options and allowed pairs remain available to backend
+    validation, but segment text is sent to Gemini exactly once.
+    """
+    canonical_segments = segment_map(context)
+    segments = _compact_segments(context)
+    compact_segment_ids = {segment["segment_id"] for segment in segments}
+    if compact_segment_ids != set(canonical_segments):
+        raise ValueError("Compact review request segments do not match canonical transcript segments.")
+    start_options = boundary_options_by_segment_id(
+        context,
+        option_list_name="start_boundary_options",
+        canonical_segments=canonical_segments,
+    )
+    end_options = boundary_options_by_segment_id(
+        context,
+        option_list_name="end_boundary_options",
+        canonical_segments=canonical_segments,
+    )
+    allowed_pairs = allowed_boundary_pair_indexes(
+        context, start_options=start_options, end_options=end_options
+    )
+    current_start, current_end = current_aligned_boundary_options(
+        context,
+        start_options=start_options,
+        end_options=end_options,
+        allowed_pairs=allowed_pairs,
+    )
+    for segment in segments:
+        segment["start_eligible"] = segment["segment_id"] in start_options
+        segment["end_eligible"] = segment["segment_id"] in end_options
     return {
-        "clip_id": context.get("clip_id"),
-        "candidate_start": context.get("candidate_start"),
-        "candidate_end": context.get("candidate_end"),
-        "context_seconds": context.get("context_seconds"),
-        "earliest_allowed_start": context.get("earliest_allowed_start"),
-        "latest_allowed_end": context.get("latest_allowed_end"),
-        "current_aligned_start_option_index": context.get("current_aligned_start_option_index"),
-        "current_aligned_end_option_index": context.get("current_aligned_end_option_index"),
-        "context_before": _segments_for_prompt(context.get("context_before") or []),
-        "candidate_segments": _segments_for_prompt(context.get("candidate_segments") or []),
-        "context_after": _segments_for_prompt(context.get("context_after") or []),
-        "start_boundary_options": _boundary_options_for_prompt(context.get("start_boundary_options") or []),
-        "end_boundary_options": _boundary_options_for_prompt(context.get("end_boundary_options") or []),
-        "allowed_boundary_pairs": _boundary_pairs_for_prompt(context.get("allowed_boundary_pairs") or []),
+        "review_request_contract_version": COMPACT_REVIEW_REQUEST_CONTRACT_VERSION,
+        "candidate": {
+            "clip_id": context.get("clip_id"),
+            "candidate_id": context.get("candidate_id"),
+            "current_start": _float_or_none(context.get("candidate_start")),
+            "current_end": _float_or_none(context.get("candidate_end")),
+            "minimum_duration_seconds": _float_or_none(
+                context.get("minimum_duration_seconds", 10.0)
+            ),
+            "maximum_duration_seconds": _float_or_none(
+                context.get("maximum_duration_seconds", 90.0)
+            ),
+            "current_aligned_start_segment_id": (
+                current_start["segment_id"] if current_start is not None else None
+            ),
+            "current_aligned_end_segment_id": (
+                current_end["segment_id"] if current_end is not None else None
+            ),
+        },
+        "segments": segments,
     }
 
 
 def build_gemini_prompt(payload: dict[str, Any], corrective_message: str | None = None) -> str:
     instruction = (
         "You are an editor of short-form podcast clips.\n\n"
-        "You receive a candidate transcript and nearby transcript context.\n\n"
+        "You receive one chronologically ordered transcript window.\n\n"
         "You do not rank clips.\n"
         "You do not calculate engagement metrics.\n"
         "You do not analyze video.\n"
         "You only decide whether the clip forms a coherent standalone excerpt and which supplied transcript "
         "segment boundaries should be used.\n\n"
-        "Choose boundaries only from the supplied START OPTIONS and END OPTIONS.\n"
-        "The selected start and end option indexes must match one entry in ALLOWED BOUNDARY PAIRS.\n"
-        "The current_aligned_start_option_index and current_aligned_end_option_index identify the transcript "
-        "boundary options nearest to the original candidate start and end.\n\n"
+        "Each segment relation is before, candidate, or after. Boolean start_eligible and "
+        "end_eligible identify whether that segment is eligible for each respective boundary.\n"
+        "The current aligned segment IDs in candidate metadata identify the transcript boundaries nearest to the "
+        "original candidate start and end. The backend resolves IDs to timestamps and performs final validation.\n\n"
         "You must make the editorial decision yourself.\n"
         "You are not allowed to defer the decision to a human.\n\n"
         "Choose exactly one action:\n"
         "- render_ready\n"
         "- adjust_boundaries\n"
         "- reject\n\n"
-        "You must always return one valid start option index and one valid end option index.\n"
+        "You must always return exactly one valid start_segment_id and one valid end_segment_id.\n"
         "Do not return null.\n"
-        "For render_ready, select the option indexes representing the best current coherent boundaries.\n"
+        "For render_ready, select the segment IDs representing the best current coherent boundaries.\n"
         "Use adjust_boundaries when another supplied start or end segment creates a better standalone clip by "
         "improving the setup, opening sentence, question, answer completeness, payoff, or ending.\n"
         "Use reject when the candidate cannot be turned into a coherent useful short using the supplied "
         "transcript context.\n"
-        "For adjust_boundaries, select the option indexes that improve the beginning or ending.\n"
-        "For reject, return the current aligned option indexes; the backend will ignore them.\n\n"
-        "The start index refers to START OPTIONS.\n"
-        "The end index refers to END OPTIONS.\n"
-        "Do not invent an index.\n"
-        "Choose only indexes present in the supplied options.\n\n"
+        "For adjust_boundaries, select the segment IDs that improve the beginning or ending.\n"
+        "For reject, return current_aligned_start_segment_id and current_aligned_end_segment_id; the backend will "
+        "ignore the boundaries.\n\n"
+        "The start segment must have start_eligible=true.\n"
+        "The end segment must have end_eligible=true.\n"
+        "Choose IDs only from the supplied chronological transcript window.\n"
+        "Do not return option indexes. Do not invent segment IDs or timestamps.\n\n"
         "You are evaluating a podcast / talking-head transcript. Visual framing is not part of your task. "
         "Phrases such as \"jak widzisz\", \"na tym wykresie\", or \"spojrz tutaj\" may be mentioned in warnings, "
         "but you must still choose render_ready, adjust_boundaries, or reject based on semantic transcript "
@@ -285,24 +392,7 @@ def build_gemini_prompt(payload: dict[str, Any], corrective_message: str | None 
     )
     sections = [
         instruction,
-        "CANDIDATE METADATA\n" + _json_for_prompt(
-            {
-                "clip_id": payload.get("clip_id"),
-                "candidate_start": payload.get("candidate_start"),
-                "candidate_end": payload.get("candidate_end"),
-                    "context_seconds": payload.get("context_seconds"),
-                    "earliest_allowed_start": payload.get("earliest_allowed_start"),
-                    "latest_allowed_end": payload.get("latest_allowed_end"),
-                    "current_aligned_start_option_index": payload.get("current_aligned_start_option_index"),
-                    "current_aligned_end_option_index": payload.get("current_aligned_end_option_index"),
-                }
-            ),
-        "CONTEXT BEFORE\n" + _json_for_prompt(payload.get("context_before") or []),
-        "CANDIDATE\n" + _json_for_prompt(payload.get("candidate_segments") or []),
-        "CONTEXT AFTER\n" + _json_for_prompt(payload.get("context_after") or []),
-        "ALLOWED START OPTIONS\n" + _json_for_prompt(payload.get("start_boundary_options") or []),
-        "ALLOWED END OPTIONS\n" + _json_for_prompt(payload.get("end_boundary_options") or []),
-        "ALLOWED BOUNDARY PAIRS\n" + _json_for_prompt(payload.get("allowed_boundary_pairs") or []),
+        "COMPACT REVIEW REQUEST\n" + _json_for_prompt(payload),
     ]
     if corrective_message:
         sections.append("CORRECTION\n" + str(corrective_message).strip())
@@ -311,15 +401,24 @@ def build_gemini_prompt(payload: dict[str, Any], corrective_message: str | None 
 
 def _create_genai_client(api_key: str, *, timeout_seconds: float) -> Any:
     try:
+        import ssl
+
         from google import genai  # type: ignore
         from google.genai import types  # type: ignore
+        import truststore
     except Exception as exc:  # pragma: no cover - depends on environment
         raise ReviewProviderError("google-genai is not installed. Install the google-genai package.") from exc
+
+    # This factory runs in both the API process and the spawned Windows review
+    # worker. Keep the SSL context process-local so every Gemini client uses
+    # the Windows certificate store without relaxing certificate validation.
+    tls_context = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     return genai.Client(
         api_key=api_key,
         http_options=types.HttpOptions(
             timeout=_timeout_milliseconds(timeout_seconds),
             retry_options=types.HttpRetryOptions(attempts=1),
+            client_args={"verify": tls_context},
         ),
     )
 
@@ -340,17 +439,28 @@ def _run_gemini_request_in_process(
     )
     if bool(payload.get("ok")):
         return _validate_decision(dict(payload.get("decision") or {}))
-    category = str(payload.get("category") or "ReviewProviderError")
-    message = str(payload.get("message") or "Gemini boundary review failed.")
+    diagnostics = sanitize_provider_failure_diagnostics(payload.get("diagnostics"))
+    category = str(
+        diagnostics.get("mapped_error_type")
+        or diagnostics.get("category")
+        or payload.get("category")
+        or "ReviewProviderError"
+    )
+    message = str(
+        diagnostics.get("safe_message")
+        or payload.get("message")
+        or "Gemini boundary review failed."
+    )
     error_types = {
         "ReviewProviderTimeoutError": ReviewProviderTimeoutError,
         "ReviewProviderRequestCancelledError": ReviewProviderRequestCancelledError,
         "ReviewProviderQuotaError": ReviewProviderQuotaError,
+        "ReviewProviderCredentialError": ReviewProviderCredentialError,
         "ReviewProviderCompatibilityError": ReviewProviderCompatibilityError,
         "ReviewProviderExtractionError": ReviewProviderExtractionError,
         "ReviewProviderOutputError": ReviewProviderOutputError,
     }
-    raise error_types.get(category, ReviewProviderError)(message)
+    raise error_types.get(category, ReviewProviderError)(message, diagnostics=diagnostics)
 
 
 def _run_bounded_process(
@@ -438,8 +548,7 @@ def _gemini_request_worker(
         send_connection.send(
             {
                 "ok": False,
-                "category": error.__class__.__name__,
-                "message": str(error),
+                "diagnostics": safe_provider_failure_diagnostics(error),
             }
         )
     finally:
@@ -467,32 +576,59 @@ def _timeout_milliseconds(timeout_seconds: float) -> int:
 
 def _provider_error_from_exception(exc: Exception) -> ReviewProviderError:
     if isinstance(exc, ReviewProviderError):
+        if not exc.diagnostics:
+            exc.diagnostics = _provider_failure_diagnostics(exc, exc)
         return exc
-    status_values = [
-        getattr(exc, "status_code", None),
-        getattr(exc, "code", None),
-        getattr(getattr(exc, "response", None), "status_code", None),
-    ]
+    status_values = _provider_status_values(exc)
     message = _safe_provider_error_message(exc)
     if 429 in status_values or re.search(r"\b429\b", message):
-        return ReviewProviderQuotaError(
-            "Gemini quota or rate limit was exceeded (HTTP 429). Retry review later."
+        return _with_provider_failure_diagnostics(
+            ReviewProviderQuotaError(
+                "Gemini quota or rate limit was exceeded (HTTP 429). Retry review later."
+            ),
+            exc,
         )
     if 499 in status_values or re.search(r"\b499\b", message):
-        return ReviewProviderRequestCancelledError(
-            "Gemini request was cancelled by the upstream service (HTTP 499)."
+        return _with_provider_failure_diagnostics(
+            ReviewProviderRequestCancelledError(
+                "Gemini request was cancelled by the upstream service (HTTP 499)."
+            ),
+            exc,
+        )
+    if 401 in status_values or 403 in status_values or re.search(r"\b(?:401|403)\b", message):
+        return _with_provider_failure_diagnostics(
+            ReviewProviderCredentialError(
+                "Gemini rejected GEMINI_API_KEY credentials. Update GEMINI_API_KEY and retry review."
+            ),
+            exc,
+        )
+    if _is_invalid_api_key_error(status_values, message):
+        return _with_provider_failure_diagnostics(
+            ReviewProviderCredentialError(
+                "Gemini rejected GEMINI_API_KEY credentials. Update GEMINI_API_KEY and retry review."
+            ),
+            exc,
         )
     class_name = exc.__class__.__name__.casefold()
     if isinstance(exc, TimeoutError) or "timeout" in class_name or "timed out" in message.casefold():
-        return ReviewProviderTimeoutError("Gemini boundary review request timed out.")
+        return _with_provider_failure_diagnostics(
+            ReviewProviderTimeoutError("Gemini boundary review request timed out."),
+            exc,
+        )
     if _is_provider_compatibility_error(status_values, message):
         status = "HTTP 400" if 400 in status_values or re.search(r"\b400\b", message) else "unsupported API"
-        return ReviewProviderCompatibilityError(
-            f"Gemini provider compatibility error ({status})."
+        return _with_provider_failure_diagnostics(
+            ReviewProviderCompatibilityError(
+                f"Gemini provider compatibility error ({status})."
+            ),
+            exc,
         )
-    status = next((value for value in status_values if isinstance(value, int)), None)
+    status = _safe_http_status(exc)
     status_suffix = f" (HTTP {status})" if status is not None else ""
-    return ReviewProviderError(f"Gemini provider request failed{status_suffix}.")
+    return _with_provider_failure_diagnostics(
+        ReviewProviderError(f"Gemini provider request failed{status_suffix}."),
+        exc,
+    )
 
 
 def _is_provider_compatibility_error(status_values: list[Any], message: str) -> bool:
@@ -511,8 +647,118 @@ def _is_provider_compatibility_error(status_values: list[Any], message: str) -> 
     )
 
 
+def _is_invalid_api_key_error(status_values: list[Any], message: str) -> bool:
+    normalized = message.casefold()
+    invalid_key_markers = (
+        "api key not valid",
+        "invalid api key",
+        "invalid api_key",
+        "api key is invalid",
+        "invalid_api_key",
+        "api_key_invalid",
+    )
+    return bool(
+        (400 in status_values or re.search(r"\b400\b", normalized))
+        and any(marker in normalized for marker in invalid_key_markers)
+    )
+
+
+def safe_provider_failure_diagnostics(error: Exception) -> dict[str, Any]:
+    existing = getattr(error, "diagnostics", None)
+    if existing:
+        return sanitize_provider_failure_diagnostics(existing)
+    mapped = error if isinstance(error, ReviewProviderError) else _provider_error_from_exception(error)
+    return _provider_failure_diagnostics(error, mapped)
+
+
+def sanitize_provider_failure_diagnostics(value: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Return the only diagnostic fields allowed across the process boundary."""
+    if not isinstance(value, Mapping):
+        return {}
+    diagnostics: dict[str, Any] = {}
+    for key in ("category", "mapped_error_type", "original_error_type", "cause_type", "context_type"):
+        candidate = value.get(key)
+        if isinstance(candidate, str) and candidate and len(candidate) <= 160:
+            diagnostics[key] = candidate
+    status = value.get("http_status")
+    if isinstance(status, int) and not isinstance(status, bool) and 100 <= status <= 599:
+        diagnostics["http_status"] = status
+    message = value.get("safe_message")
+    if isinstance(message, str) and message.strip():
+        diagnostics["safe_message"] = _sanitize_provider_error_message(message, "Gemini provider request failed.")
+    return diagnostics
+
+
+def _with_provider_failure_diagnostics(
+    mapped_error: ReviewProviderError,
+    original_error: Exception,
+) -> ReviewProviderError:
+    mapped_error.diagnostics = _provider_failure_diagnostics(original_error, mapped_error)
+    return mapped_error
+
+
+def _provider_failure_diagnostics(
+    original_error: Exception,
+    mapped_error: ReviewProviderError,
+) -> dict[str, Any]:
+    diagnostics: dict[str, Any] = {
+        "category": mapped_error.__class__.__name__,
+        "mapped_error_type": mapped_error.__class__.__name__,
+        "original_error_type": _exception_type_name(original_error),
+        "safe_message": _safe_provider_error_message(original_error),
+    }
+    cause = original_error.__cause__
+    context = original_error.__context__
+    if cause is not None:
+        diagnostics["cause_type"] = _exception_type_name(cause)
+    elif context is not None:
+        diagnostics["context_type"] = _exception_type_name(context)
+    status = _safe_http_status(original_error)
+    if status is not None:
+        diagnostics["http_status"] = status
+    return sanitize_provider_failure_diagnostics(diagnostics)
+
+
+def _provider_status_values(exc: Exception) -> list[Any]:
+    return [
+        getattr(exc, "status_code", None),
+        getattr(exc, "code", None),
+        getattr(getattr(exc, "response", None), "status_code", None),
+    ]
+
+
+def _safe_http_status(exc: Exception) -> int | None:
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        for value in _provider_status_values(current):
+            if isinstance(value, int) and not isinstance(value, bool) and 100 <= value <= 599:
+                return value
+        current = current.__cause__ or current.__context__
+    return None
+
+
 def _safe_provider_error_message(exc: Exception) -> str:
-    message = " ".join(str(exc).split()) or exc.__class__.__name__
+    return _sanitize_provider_error_message(str(exc), exc.__class__.__name__)
+
+
+def _exception_type_name(exc: BaseException) -> str:
+    module = exc.__class__.__module__
+    name = exc.__class__.__name__
+    return name if module == "builtins" else f"{module}.{name}"
+
+
+def _sanitize_provider_error_message(message: str, fallback: str) -> str:
+    message = str(message or "")
+    message = re.sub(r"(?is)\b(?:response\s+)?(?:body|content|headers?)\s*[:=]\s*(?:\{.*?\}|\[.*?\]|[^\n]+)", "<redacted>", message)
+    message = re.sub(r"(?i)\bBearer\s+[^\s,;]+", "Bearer <redacted>", message)
+    message = re.sub(
+        r"(?i)\b(?:authorization|x-goog-api-key|x-api-key)\s*[:=]\s*[^\s,;]+",
+        "authorization=<redacted>",
+        message,
+    )
+    message = re.sub(r"(?i)https?://[^\s\"']+", "<redacted-url>", message)
     message = re.sub(
         r"(?i)([?&](?:key|api[_-]?key|token|access_token|authorization)=)([^&\s\"']+)",
         r"\1<redacted>",
@@ -523,6 +769,7 @@ def _safe_provider_error_message(exc: Exception) -> str:
         r"\1=<redacted>",
         message,
     )
+    message = " ".join(message.split()) or fallback
     return message[:500]
 
 
@@ -531,9 +778,12 @@ def _parse_boundary_decision(response: Any) -> GeminiBoundaryDecision:
     if not text:
         raise ReviewProviderError("Gemini response did not contain structured output text.")
     try:
+        _reject_legacy_response_fields(str(text))
         if hasattr(GeminiBoundaryDecision, "model_validate_json"):
             return GeminiBoundaryDecision.model_validate_json(str(text))
         return GeminiBoundaryDecision.parse_raw(str(text))
+    except ReviewProviderOutputError:
+        raise
     except ValidationError as exc:
         raise ReviewProviderOutputError(
             "Gemini response did not match the boundary decision schema."
@@ -604,48 +854,70 @@ def _object_field(value: Any, name: str) -> Any:
 
 
 def _validate_decision(value: dict[str, Any]) -> GeminiBoundaryDecision:
+    if "selected_start_option_index" in value or "selected_end_option_index" in value:
+        raise ReviewProviderOutputError(
+            "Gemini response used deprecated option-index boundary fields."
+        )
     if hasattr(GeminiBoundaryDecision, "model_validate"):
         return GeminiBoundaryDecision.model_validate(value)
     return GeminiBoundaryDecision.parse_obj(value)
 
 
-def _segments_for_prompt(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    sanitized: list[dict[str, Any]] = []
-    for segment in segments:
-        item = {
-            "segment_id": str(segment.get("segment_id") or ""),
-            "start": float(segment.get("start") or 0.0),
-            "end": float(segment.get("end") or 0.0),
-            "text": str(segment.get("text") or ""),
-        }
-        speaker = segment.get("speaker")
-        if speaker not in (None, ""):
-            item["speaker"] = str(speaker)
-        sanitized.append(item)
-    return sanitized
+def _reject_legacy_response_fields(text: str) -> None:
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError:
+        return
+    if isinstance(value, dict) and (
+        "selected_start_option_index" in value or "selected_end_option_index" in value
+    ):
+        raise ReviewProviderOutputError(
+            "Gemini response used deprecated option-index boundary fields."
+        )
 
 
-def _boundary_options_for_prompt(options: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [
-        {
-            "segment_id": str(option.get("segment_id") or ""),
-            "option_index": int(option.get("option_index") or 0),
-            "start": float(option.get("start") or 0.0),
-            "end": float(option.get("end") or 0.0),
-            "text": str(option.get("text") or ""),
-        }
-        for option in options
-    ]
+def _compact_segments(
+    context: dict[str, Any],
+) -> list[dict[str, Any]]:
+    ordered: list[tuple[float, float, int, dict[str, Any]]] = []
+    seen_ids: set[str] = set()
+    position = 0
+    for relation, key in (
+        ("before", "context_before"),
+        ("candidate", "candidate_segments"),
+        ("after", "context_after"),
+    ):
+        for segment in context.get(key) or []:
+            segment_id = _required_segment_id(
+                segment.get("segment_id"),
+                location=f"{key} compact segment",
+            )
+            if segment_id in seen_ids:
+                raise ValueError(f"Duplicate segment_id in compact review request: {segment_id}")
+            seen_ids.add(segment_id)
+            item = {
+                "segment_id": segment_id,
+                "start": float(segment.get("start") or 0.0),
+                "end": float(segment.get("end") or 0.0),
+                "text": str(segment.get("text") or ""),
+                "relation": relation,
+            }
+            speaker = str(segment.get("speaker") or "").strip()
+            if speaker:
+                item["speaker"] = speaker
+            ordered.append((item["start"], item["end"], position, item))
+            position += 1
+    return [item for _, _, _, item in sorted(ordered)]
 
 
-def _boundary_pairs_for_prompt(pairs: list[dict[str, Any]]) -> list[dict[str, int]]:
-    return [
-        {
-            "start_option_index": int(pair.get("start_option_index") or 0),
-            "end_option_index": int(pair.get("end_option_index") or 0),
-        }
-        for pair in pairs
-    ]
+def _required_segment_id(value: Any, *, location: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{location} segment_id must be a non-empty string.")
+    return value
+
+
+def _float_or_none(value: Any) -> float | None:
+    return None if value is None else float(value)
 
 
 def _coerce_local_stub_to_allowed_pair(
@@ -653,34 +925,42 @@ def _coerce_local_stub_to_allowed_pair(
     selected_start: dict[str, Any],
     selected_end: dict[str, Any],
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    allowed_pairs = [dict(pair) for pair in context.get("allowed_boundary_pairs") or []]
+    canonical_segments = segment_map(context)
+    starts_by_id = boundary_options_by_segment_id(
+        context,
+        option_list_name="start_boundary_options",
+        canonical_segments=canonical_segments,
+    )
+    ends_by_id = boundary_options_by_segment_id(
+        context,
+        option_list_name="end_boundary_options",
+        canonical_segments=canonical_segments,
+    )
+    allowed_indexes = allowed_boundary_pair_indexes(
+        context, start_options=starts_by_id, end_options=ends_by_id
+    )
+    current_start, current_end = current_aligned_boundary_options(
+        context,
+        start_options=starts_by_id,
+        end_options=ends_by_id,
+        allowed_pairs=allowed_indexes,
+    )
     selected_pair = (
         int(selected_start["option_index"]),
         int(selected_end["option_index"]),
     )
-    allowed_indexes = {
-        (int(pair["start_option_index"]), int(pair["end_option_index"]))
-        for pair in allowed_pairs
-    }
-    if selected_pair in allowed_indexes or not allowed_pairs:
+    if selected_pair in allowed_indexes or not allowed_indexes:
         return selected_start, selected_end
 
-    current_pair = (
-        int(context.get("current_aligned_start_option_index") or 0),
-        int(context.get("current_aligned_end_option_index") or 0),
-    )
-    first_allowed = allowed_pairs[0]
-    fallback_pair = current_pair if current_pair in allowed_indexes else (
-        int(first_allowed["start_option_index"]),
-        int(first_allowed["end_option_index"]),
-    )
+    current_pair = (current_start["option_index"], current_end["option_index"])
+    fallback_pair = current_pair if current_pair in allowed_indexes else min(allowed_indexes)
     starts = {
         int(option["option_index"]): option
-        for option in context.get("start_boundary_options") or []
+        for option in starts_by_id.values()
     }
     ends = {
         int(option["option_index"]): option
-        for option in context.get("end_boundary_options") or []
+        for option in ends_by_id.values()
     }
     return starts[fallback_pair[0]], ends[fallback_pair[1]]
 

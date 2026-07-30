@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, StrictInt
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator
 
 
 ReviewMode = Literal["local_stub", "gemini"]
@@ -18,6 +18,8 @@ RecommendedAction = Literal[
     "manual_review",
 ]
 CropAdvice = Literal["speaker_focus", "wider_context", "keep_current", "manual_review"]
+ReviewKind = Literal["gemini_boundary_decision", "manual_review", "legacy_heuristic", "unknown"]
+NumericScoreProvenance = Literal["legacy_heuristic", "not_available"]
 
 
 class ClipReviewRequest(BaseModel):
@@ -48,8 +50,11 @@ class BoundaryOptionPair(BaseModel):
 
 class ClipTranscriptContext(BaseModel):
     clip_id: str | None = None
+    candidate_id: str | None = None
     candidate_start: float
     candidate_end: float
+    minimum_duration_seconds: float = 10.0
+    maximum_duration_seconds: float = 90.0
     context_seconds: float = 20.0
     context_before: list[TranscriptSegment] = Field(default_factory=list)
     candidate_segments: list[TranscriptSegment] = Field(default_factory=list)
@@ -66,13 +71,24 @@ class ClipTranscriptContext(BaseModel):
 
 
 class GeminiBoundaryDecision(BaseModel):
+    """Versioned provider response: Gemini chooses stable transcript segment IDs."""
+
+    model_config = ConfigDict(extra="forbid")
+    review_response_contract_version: Literal[2]
     decision: GeminiReviewDecision
-    selected_start_option_index: StrictInt
-    selected_end_option_index: StrictInt
+    start_segment_id: str = Field(min_length=1)
+    end_segment_id: str = Field(min_length=1)
     reasoning_summary: str
     start_reason: str
     end_reason: str
     warnings: list[str] = Field(default_factory=list)
+
+    @field_validator("start_segment_id", "end_segment_id")
+    @classmethod
+    def _require_non_blank_segment_id(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("segment_id must be a non-empty string")
+        return value
 
 
 class TranscriptContext(BaseModel):
@@ -119,13 +135,20 @@ class CropSuggestion(BaseModel):
     reason: str
 
 
+class ReviewProvenance(BaseModel):
+    """Non-breaking API metadata for the origin of review and score fields."""
+
+    review_kind: ReviewKind
+    numeric_score_provenance: NumericScoreProvenance
+
+
 class ClipReviewEvaluation(BaseModel):
     project_id: int
     clip_id: str
     database_clip_id: int | None = None
     evaluation_id: int | None = None
-    provider: str = "local_stub"
-    model: str = "local_stub"
+    provider: str = "unknown"
+    model: str = "unknown"
     decision: str
     recommended_action: RecommendedAction
     quality_score: float | None = None
@@ -134,7 +157,8 @@ class ClipReviewEvaluation(BaseModel):
     payoff_score: float | None = None
     boundary_score: float | None = None
     privacy_risk: PrivacyRisk | None = None
-    needs_more_context: bool = False
+    needs_more_context: bool | None = None
+    review_provenance: ReviewProvenance | None = None
     selected_start_option_index: int | None = None
     selected_end_option_index: int | None = None
     selected_start_segment_id: str | None = None

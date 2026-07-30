@@ -1,5 +1,6 @@
 import json
 import os
+import ssl
 import tempfile
 import time
 import unittest
@@ -28,17 +29,23 @@ from apps.review_agent.providers import (
     GeminiBoundaryReviewer,
     ReviewProviderCancelledError,
     ReviewProviderCompatibilityError,
+    ReviewProviderCredentialError,
     ReviewProviderError,
     ReviewProviderOutputError,
     ReviewProviderQuotaError,
     ReviewProviderRequestCancelledError,
     ReviewProviderTimeoutError,
     _provider_error_from_exception,
+    _gemini_request_worker,
+    _run_gemini_request_in_process,
     _run_bounded_process,
+    _create_genai_client,
+    preflight_gemini_credentials,
 )
 from apps.review_agent.schemas import GeminiBoundaryDecision
 from apps.review_agent.service import (
     ClipReviewCancelledError,
+    ClipReviewConfigurationError,
     ReviewAgentService,
     ReviewBatchTimeoutError,
 )
@@ -53,9 +60,10 @@ def _hanging_worker(send_connection, sleep_seconds):
 
 def _aligned_decision(context):
     return GeminiBoundaryDecision(
+        review_response_contract_version=2,
         decision="render_ready",
-        selected_start_option_index=context["current_aligned_start_option_index"],
-        selected_end_option_index=context["current_aligned_end_option_index"],
+        start_segment_id=context["current_aligned_start_segment_id"],
+        end_segment_id=context["current_aligned_end_segment_id"],
         reasoning_summary="Offline aligned decision.",
         start_reason="Aligned start.",
         end_reason="Aligned end.",
@@ -72,19 +80,170 @@ class GeminiProviderTimeoutTests(unittest.TestCase):
                 captured.update(kwargs)
 
         with patch("google.genai.Client", FakeClient):
-            from apps.review_agent.providers import _create_genai_client
-
             _create_genai_client("offline-placeholder", timeout_seconds=300)
 
         http_options = captured["http_options"]
         self.assertEqual(http_options.timeout, 300000)
         self.assertEqual(http_options.retry_options.attempts, 1)
+        self.assertIsInstance(http_options.client_args["verify"], ssl.SSLContext)
+
+    def test_spawned_worker_uses_the_shared_client_factory(self):
+        class CapturingConnection:
+            def __init__(self):
+                self.messages = []
+
+            def send(self, payload):
+                self.messages.append(payload)
+
+            def close(self):
+                pass
+
+        decision = GeminiBoundaryDecision(
+            review_response_contract_version=2,
+            decision="render_ready",
+            start_segment_id="seg_v1_start",
+            end_segment_id="seg_v1_end",
+            reasoning_summary="Offline decision.",
+            start_reason="Offline start.",
+            end_reason="Offline end.",
+            warnings=[],
+        )
+        connection = CapturingConnection()
+        with patch(
+            "apps.review_agent.providers._create_genai_client", return_value=object()
+        ) as create_client, patch(
+            "apps.review_agent.providers._request_structured_response", return_value=object()
+        ), patch("apps.review_agent.providers._parse_boundary_decision", return_value=decision):
+            _gemini_request_worker(connection, "offline-placeholder", "gemini-test", "prompt", 300)
+
+        create_client.assert_called_once_with("offline-placeholder", timeout_seconds=300)
+        self.assertTrue(connection.messages[0]["ok"])
+
+    def test_worker_serializes_only_safe_provider_failure_diagnostics(self):
+        class CapturingConnection:
+            def __init__(self):
+                self.messages = []
+
+            def send(self, payload):
+                self.messages.append(payload)
+
+            def close(self):
+                pass
+
+        class FakeTransportError(RuntimeError):
+            status_code = 503
+
+            def __str__(self):
+                return (
+                    "upstream failed; Bearer secret-bearer; api_key=secret-api-key; "
+                    "https://example.invalid/v1?key=secret-url-key; response body=private payload"
+                )
+
+        connection = CapturingConnection()
+        with patch(
+            "apps.review_agent.providers._create_genai_client",
+            side_effect=FakeTransportError(),
+        ):
+            _gemini_request_worker(connection, "offline-placeholder", "gemini-test", "prompt", 300)
+
+        payload = connection.messages[0]
+        diagnostics = payload["diagnostics"]
+        serialized = json.dumps(payload)
+        self.assertEqual(set(payload), {"ok", "diagnostics"})
+        self.assertFalse(payload["ok"])
+        self.assertTrue(diagnostics["original_error_type"].endswith(".FakeTransportError"))
+        self.assertEqual(diagnostics["mapped_error_type"], "ReviewProviderError")
+        self.assertEqual(diagnostics["http_status"], 503)
+        self.assertNotIn("secret-bearer", serialized)
+        self.assertNotIn("secret-api-key", serialized)
+        self.assertNotIn("secret-url-key", serialized)
+        self.assertNotIn("private payload", serialized)
+
+    def test_parent_restores_provider_error_category_and_diagnostics(self):
+        diagnostics = {
+            "category": "ReviewProviderTimeoutError",
+            "mapped_error_type": "ReviewProviderTimeoutError",
+            "original_error_type": "ReadTimeout",
+            "cause_type": "ConnectError",
+            "safe_message": "timed out while connecting to <redacted-url>",
+        }
+        with patch(
+            "apps.review_agent.providers._run_bounded_process",
+            return_value={"ok": False, "diagnostics": diagnostics},
+        ):
+            with self.assertRaises(ReviewProviderTimeoutError) as raised:
+                _run_gemini_request_in_process(
+                    api_key="offline-placeholder",
+                    model="gemini-test",
+                    prompt="prompt",
+                    timeout_seconds=300,
+                    cancellation_check=None,
+                )
+
+        self.assertEqual(str(raised.exception), diagnostics["safe_message"])
+        self.assertEqual(raised.exception.diagnostics, diagnostics)
+
+    def test_final_manual_review_keeps_safe_provider_detail(self):
+        diagnostics = {
+            "category": "ReviewProviderError",
+            "mapped_error_type": "ReviewProviderError",
+            "original_error_type": "ReadTimeout",
+            "safe_message": (
+                "ReadTimeout: Bearer secret-bearer; api_key=secret-api-key; "
+                "https://example.invalid/v1?key=secret-url-key; response body=private payload"
+            ),
+        }
+        result = ReviewAgentService(project_root=Path.cwd())._failed_result(
+            project_id=1,
+            clip={"id": "clip_001"},
+            context={},
+            provider="gemini",
+            model="unit",
+            warning="Gemini provider request failed.",
+            apply_safe_suggestions=True,
+            failure_category="provider",
+            debug_metadata={"provider_failure_diagnostics": diagnostics},
+        )
+
+        serialized = json.dumps(result)
+        self.assertEqual(result["decision"], "manual_review")
+        self.assertIn("ReadTimeout", result["failure_reason"])
+        self.assertEqual(result["warnings"], [result["failure_reason"]])
+        self.assertEqual(
+            result["raw_result"]["provider_failure_diagnostics"]["original_error_type"],
+            "ReadTimeout",
+        )
+        self.assertNotIn("secret", serialized.casefold())
+        self.assertNotIn("private payload", serialized)
+
+    def test_credential_preflight_uses_one_short_non_generating_request(self):
+        captured = {}
+
+        class FakeModels:
+            def list(self):
+                return iter(())
+
+        class FakeClient:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+                self.models = FakeModels()
+
+            def close(self):
+                pass
+
+        with patch("google.genai.Client", FakeClient):
+            self.assertTrue(preflight_gemini_credentials(api_key="offline-placeholder"))
+
+        http_options = captured["http_options"]
+        self.assertEqual(http_options.timeout, 10000)
+        self.assertEqual(http_options.retry_options.attempts, 1)
 
     def test_child_process_receives_default_request_deadline(self):
         decision = {
+            "review_response_contract_version": 2,
             "decision": "render_ready",
-            "selected_start_option_index": 1,
-            "selected_end_option_index": 1,
+            "start_segment_id": "seg_v1_start",
+            "end_segment_id": "seg_v1_end",
             "reasoning_summary": "Offline decision.",
             "start_reason": "Offline start.",
             "end_reason": "Offline end.",
@@ -121,6 +280,53 @@ class GeminiProviderTimeoutTests(unittest.TestCase):
         self.assertIsInstance(controlled, ReviewProviderQuotaError)
         self.assertIn("Retry review later", str(controlled))
         self.assertNotIn("should-not-survive", str(controlled))
+
+    def test_http_401_is_a_sanitized_credential_configuration_failure(self):
+        error = RuntimeError("request failed with HTTP 401; api_key=should-not-survive")
+        controlled = _provider_error_from_exception(error)
+        self.assertIsInstance(controlled, ReviewProviderCredentialError)
+        self.assertIn("GEMINI_API_KEY", str(controlled))
+        self.assertNotIn("should-not-survive", str(controlled))
+
+    def test_http_403_and_explicit_invalid_key_400_are_credential_failures(self):
+        errors = (
+            RuntimeError("request failed with HTTP 403; api_key=should-not-survive"),
+            RuntimeError("HTTP 400: API key not valid; api_key=should-not-survive"),
+        )
+        for error in errors:
+            with self.subTest(error=str(error)):
+                controlled = _provider_error_from_exception(error)
+                self.assertIsInstance(controlled, ReviewProviderCredentialError)
+                self.assertNotIn("should-not-survive", str(controlled))
+
+    def test_preflight_allows_transient_failures_without_creating_local_stub(self):
+        failures = (
+            ReviewProviderTimeoutError("offline timeout"),
+            ReviewProviderQuotaError("offline HTTP 429"),
+            ReviewProviderError("offline HTTP 503"),
+        )
+
+        for failure in failures:
+            class FakeModels:
+                def list(self):
+                    raise failure
+
+            class FakeClient:
+                models = FakeModels()
+
+                def close(self):
+                    pass
+
+            with self.subTest(failure=str(failure)), patch(
+                "apps.review_agent.providers.LocalStubBoundaryReviewer"
+            ) as local_stub:
+                self.assertFalse(
+                    preflight_gemini_credentials(
+                        api_key="offline-placeholder",
+                        client_factory=lambda _api_key: FakeClient(),
+                    )
+                )
+                local_stub.assert_not_called()
 
     def test_http_400_schema_incompatibility_is_sanitized_and_non_output_failure(self):
         error = RuntimeError(
@@ -316,6 +522,33 @@ class ReviewTimeoutFlowTests(unittest.TestCase):
             clip = ClipRepository(session).get_by_external_id(self.project_id, "clip_001")
         self.assertIsNone(clip.reviewed_start)
         self.assertEqual(clip.edited_start, clip.ai_start)
+
+    def test_rejected_gemini_credentials_raise_configuration_error_without_local_stub(self):
+        os.environ["CLIP_REVIEW_MODE"] = "gemini"
+        os.environ["GEMINI_API_KEY"] = "invalid-placeholder"
+        calls = []
+
+        class CredentialReviewer:
+            provider = "gemini"
+
+            def __init__(self, *, api_key, model, request_timeout_seconds):
+                self.model = model
+
+            def review(self, context, **kwargs):
+                calls.append(context["clip_id"])
+                raise ReviewProviderCredentialError("Gemini rejected credentials")
+
+        with patch("apps.review_agent.service.GeminiBoundaryReviewer", CredentialReviewer), patch(
+            "apps.review_agent.service.LocalStubBoundaryReviewer"
+        ) as local_stub:
+            with self.assertRaisesRegex(ClipReviewConfigurationError, "GEMINI_API_KEY"):
+                ReviewAgentService(project_root=self.root, mode="gemini").review_clip(
+                    project_id=self.project_id,
+                    clip_id="clip_001",
+                )
+
+        self.assertEqual(calls, ["clip_001"])
+        local_stub.assert_not_called()
 
     def test_transport_auth_and_quota_failures_do_not_use_corrective_retry(self):
         os.environ["CLIP_REVIEW_MODE"] = "gemini"

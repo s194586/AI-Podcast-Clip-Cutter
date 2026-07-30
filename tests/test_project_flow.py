@@ -3,6 +3,7 @@ import json
 import os
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -21,6 +22,7 @@ from apps.api.orchestration.stage_parser import parse_manager_stage, progress_fo
 from apps.api.services import project_service
 from apps.pipeline.config import PipelineConfig
 from apps.pipeline.context import PipelineContext
+from apps.pipeline.entrypoint import _database_cancellation_check
 from apps.pipeline.events import PipelineEvent
 from apps.pipeline.persistence import ProjectStateEventSink
 from apps.pipeline.profiles import project_pipeline_stages
@@ -377,6 +379,7 @@ class ProjectFlowTests(unittest.TestCase):
         self.assertFalse(kwargs["shell"])
         self.assertIn("--workspace-dir", command)
         self.assertIn("--project-id", command)
+        self.assertIn("--job-id", command)
         self.assertIn("--no-auto-review", command)
         self.assertFalse((self.root / "input" / "source.mp4").exists())
         self.assertFalse((self.root / "top_windows.json").exists())
@@ -499,9 +502,10 @@ class ProjectFlowTests(unittest.TestCase):
 
             def review(self, context, corrective_message=None):
                 return GeminiBoundaryDecision(
+                    review_response_contract_version=2,
                     decision="render_ready",
-                    selected_start_option_index=context["current_aligned_start_option_index"],
-                    selected_end_option_index=context["current_aligned_end_option_index"],
+                    start_segment_id=context["current_aligned_start_segment_id"],
+                    end_segment_id=context["current_aligned_end_segment_id"],
                     reasoning_summary="Ready from Project Flow Gemini config.",
                     start_reason="Aligned start.",
                     end_reason="Aligned end.",
@@ -634,6 +638,247 @@ class ProjectFlowTests(unittest.TestCase):
             job = session.scalars(select(Job)).one()
         self.assertEqual(project.status, "cancelled")
         self.assertEqual(job.status, "cancelled")
+        self.assertTrue(job.cancel_requested)
+
+    def test_cancellation_before_worker_start_is_a_durable_noop(self):
+        project_id = self._create_project(auto_review=False)
+        orchestrator = LocalPipelineOrchestrator(
+            project_root=self.root,
+            popen_factory=FakeSuccessfulPopen,
+        )
+
+        with patch("apps.api.orchestration.local.threading.Thread.start", return_value=None):
+            started = orchestrator.start_project(project_id)
+        cancelled = orchestrator.cancel_project(project_id)
+        orchestrator._run_job(project_id, int(started.job_id))
+
+        self.assertEqual(cancelled.status, "cancelled")
+        self.assertEqual(FakeSuccessfulPopen.calls, [])
+        with session_scope() as session:
+            project = session.get(Project, project_id)
+            job = session.get(Job, int(started.job_id))
+        self.assertEqual(project.status, "cancelled")
+        self.assertEqual(job.status, "cancelled")
+        self.assertTrue(job.cancel_requested)
+
+    def test_cancellation_before_final_launch_gate_never_starts_subprocess(self):
+        project_id = self._create_project(auto_review=False)
+        orchestrator = LocalPipelineOrchestrator(
+            project_root=self.root,
+            popen_factory=FakeSuccessfulPopen,
+        )
+        with patch("apps.api.orchestration.local.threading.Thread.start", return_value=None):
+            started = orchestrator.start_project(project_id)
+
+        launch_gate_entered = threading.Event()
+        release_launch_gate = threading.Event()
+        original_launch = orchestrator._launch_process_under_cancellation_gate
+
+        def pause_before_final_gate(*args, **kwargs):
+            launch_gate_entered.set()
+            self.assertTrue(release_launch_gate.wait(5), "test did not release launch gate")
+            return original_launch(*args, **kwargs)
+
+        with patch.object(orchestrator, "_launch_process_under_cancellation_gate", pause_before_final_gate):
+            worker_thread = threading.Thread(
+                target=orchestrator._run_job,
+                args=(project_id, int(started.job_id)),
+            )
+            worker_thread.start()
+            self.assertTrue(launch_gate_entered.wait(5), "worker did not pass its earlier cancellation check")
+
+            self.assertEqual(orchestrator.cancel_project(project_id).status, "cancelled")
+            release_launch_gate.set()
+            worker_thread.join(5)
+
+        self.assertFalse(worker_thread.is_alive())
+        self.assertEqual(FakeSuccessfulPopen.calls, [])
+        with session_scope() as session:
+            project = session.get(Project, project_id)
+            job = session.get(Job, int(started.job_id))
+        self.assertEqual(project.status, "cancelled")
+        self.assertEqual(job.status, "cancelled")
+        self.assertTrue(job.cancel_requested)
+
+    def test_database_cancellation_check_survives_worker_state_reset(self):
+        project_id = self._create_project(auto_review=False)
+        orchestrator = LocalPipelineOrchestrator(project_root=self.root)
+        with patch("apps.api.orchestration.local.threading.Thread.start", return_value=None):
+            started = orchestrator.start_project(project_id)
+        orchestrator.cancel_project(project_id)
+        LocalPipelineOrchestrator.reset_for_tests()
+
+        self.assertTrue(_database_cancellation_check(int(started.job_id))())
+
+    def test_cancel_endpoint_is_idempotent_and_rejects_non_active_jobs(self):
+        project_id = self._create_project(auto_review=False)
+        orchestrator = LocalPipelineOrchestrator(project_root=self.root)
+        with patch("apps.api.orchestration.local.threading.Thread.start", return_value=None):
+            orchestrator.start_project(project_id)
+
+        with TestClient(app) as client:
+            first = client.post(f"/projects/{project_id}/cancel")
+            second = client.post(f"/projects/{project_id}/cancel")
+            missing = client.post("/projects/999999/cancel")
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(first.json(), second.json())
+        self.assertEqual(missing.status_code, 404)
+
+        inactive_project_id = self._create_project(auto_review=False)
+        with TestClient(app) as client:
+            inactive = client.post(f"/projects/{inactive_project_id}/cancel")
+        self.assertEqual(inactive.status_code, 409)
+
+        for terminal_status, project_status in (("completed", "ready"), ("failed", "failed")):
+            terminal_project_id = self._create_project(auto_review=False)
+            with session_scope() as session:
+                project = session.get(Project, terminal_project_id)
+                ProjectRepository(session).update_flow_state(
+                    project,
+                    status=project_status,
+                    current_stage="ready" if project_status == "ready" else "failed",
+                )
+                JobRepository(session).create(
+                    project_id=terminal_project_id,
+                    job_type="local_pipeline",
+                    status=terminal_status,
+                    current_stage="ready" if terminal_status == "completed" else "failed",
+                )
+            with TestClient(app) as client:
+                response = client.post(f"/projects/{terminal_project_id}/cancel")
+            self.assertEqual(response.status_code, 409)
+
+    def test_repeated_cancellation_preserves_finished_at_and_does_not_kill_twice(self):
+        project_id = self._create_project(auto_review=False)
+        orchestrator = LocalPipelineOrchestrator(project_root=self.root)
+        with patch("apps.api.orchestration.local.threading.Thread.start", return_value=None):
+            started = orchestrator.start_project(project_id)
+        fake_process = SimpleNamespace(poll=lambda: None, pid=9876)
+        LocalPipelineOrchestrator._workers[project_id].process = fake_process
+
+        with patch.object(orchestrator, "_terminate_process_tree") as terminate:
+            self.assertEqual(orchestrator.cancel_project(project_id).status, "cancelled")
+            with session_scope() as session:
+                first_finished_at = session.get(Job, int(started.job_id)).finished_at
+            self.assertEqual(orchestrator.cancel_project(project_id).status, "cancelled")
+
+        self.assertEqual(terminate.call_count, 1)
+        with session_scope() as session:
+            job = session.get(Job, int(started.job_id))
+        self.assertEqual(job.status, "cancelled")
+        self.assertEqual(job.finished_at, first_finished_at)
+
+    def _assert_cancellation_loses_to_terminal_worker(self, terminal_status: str, project_status: str) -> None:
+        project_id = self._create_project(auto_review=False)
+        orchestrator = LocalPipelineOrchestrator(project_root=self.root)
+        with patch("apps.api.orchestration.local.threading.Thread.start", return_value=None):
+            started = orchestrator.start_project(project_id)
+        with session_scope() as session:
+            project = session.get(Project, project_id)
+            job = session.get(Job, int(started.job_id))
+            ProjectRepository(session).update_flow_state(project, status="running", current_stage="transcribing")
+            JobRepository(session).update_state(job, status="running", current_stage="transcribing")
+
+        original_transition = JobRepository.transition_if_active
+        worker_finished = False
+
+        def let_worker_win(repo, job_id, *args, **kwargs):
+            nonlocal worker_finished
+            if kwargs.get("status") == "cancelled" and not worker_finished:
+                worker_finished = True
+                with session_scope() as worker_session:
+                    worker_job = worker_session.get(Job, int(job_id))
+                    self.assertEqual(worker_job.status, "running")
+                    self.assertEqual(
+                        original_transition(
+                            JobRepository(worker_session),
+                            int(job_id),
+                            expected_statuses=("running",),
+                            status=terminal_status,
+                            current_stage="ready" if terminal_status == "completed" else "failed",
+                            finished_at=worker_job.updated_at,
+                            error_message="Worker terminal result." if terminal_status == "failed" else None,
+                        ),
+                        1,
+                    )
+                    worker_project = worker_session.get(Project, project_id)
+                    ProjectRepository(worker_session).update_flow_state(
+                        worker_project,
+                        status=project_status,
+                        current_stage="ready" if project_status == "ready" else "failed",
+                        error_message="Worker terminal result." if project_status == "failed" else None,
+                    )
+            return original_transition(repo, job_id, *args, **kwargs)
+
+        with patch.object(JobRepository, "transition_if_active", let_worker_win):
+            with TestClient(app) as client:
+                response = client.post(f"/projects/{project_id}/cancel")
+
+        self.assertTrue(worker_finished)
+        self.assertEqual(response.status_code, 409)
+        with session_scope() as session:
+            project = session.get(Project, project_id)
+            job = session.get(Job, int(started.job_id))
+        self.assertEqual(job.status, terminal_status)
+        self.assertEqual(project.status, project_status)
+        self.assertNotEqual(project.status, "cancelled")
+
+    def test_cancellation_race_returns_conflict_when_worker_completed(self):
+        self._assert_cancellation_loses_to_terminal_worker("completed", "ready")
+
+    def test_cancellation_race_returns_conflict_when_worker_failed(self):
+        self._assert_cancellation_loses_to_terminal_worker("failed", "failed")
+
+    def test_late_worker_finalizers_cannot_overwrite_cancelled_state(self):
+        project_id = self._create_project(auto_review=False)
+        orchestrator = LocalPipelineOrchestrator(project_root=self.root)
+        with patch("apps.api.orchestration.local.threading.Thread.start", return_value=None):
+            started = orchestrator.start_project(project_id)
+        orchestrator.cancel_project(project_id)
+
+        orchestrator._mark_running_stage(project_id, int(started.job_id), "reviewing_with_ai")
+        orchestrator._mark_failed(project_id, int(started.job_id), "late failure")
+        orchestrator._mark_ready(project_id, int(started.job_id), exit_code=0)
+
+        with session_scope() as session:
+            project = session.get(Project, project_id)
+            job = session.get(Job, int(started.job_id))
+        self.assertEqual((project.status, project.current_stage), ("cancelled", "cancelled"))
+        self.assertEqual((job.status, job.current_stage), ("cancelled", "cancelled"))
+
+    def test_late_second_mark_failed_preserves_terminal_details(self):
+        project_id = self._create_project(auto_review=False)
+        orchestrator = LocalPipelineOrchestrator(project_root=self.root)
+        with patch("apps.api.orchestration.local.threading.Thread.start", return_value=None):
+            started = orchestrator.start_project(project_id)
+
+        orchestrator._mark_failed(
+            project_id,
+            int(started.job_id),
+            "Original terminal error.",
+            exit_code=7,
+            error_code="original_error",
+        )
+        with session_scope() as session:
+            first = session.get(Job, int(started.job_id))
+            first_terminal = (first.finished_at, first.error_message, first.error_code, first.exit_code)
+
+        orchestrator._mark_failed(
+            project_id,
+            int(started.job_id),
+            "Late callback must not overwrite this.",
+            exit_code=9,
+            error_code="late_error",
+        )
+        with session_scope() as session:
+            job = session.get(Job, int(started.job_id))
+        self.assertEqual(job.status, "failed")
+        self.assertEqual(
+            (job.finished_at, job.error_message, job.error_code, job.exit_code),
+            first_terminal,
+        )
 
     def test_subprocess_launch_failure_marks_job_and_project_failed(self):
         project_id = self._create_project(auto_review=False)

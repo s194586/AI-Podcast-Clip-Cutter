@@ -3,6 +3,7 @@ from .base import (
     PipelineOrchestrator,
     PipelineStatus,
     ProjectAlreadyRunningError,
+    ProjectNotCancellableError,
     ProjectOrchestratorConfigurationError,
     ProjectOrchestratorNotFoundError,
 )
@@ -15,6 +16,7 @@ __all__ = [
     "PipelineOrchestrator",
     "PipelineStatus",
     "ProjectAlreadyRunningError",
+    "ProjectNotCancellableError",
     "ProjectOrchestratorConfigurationError",
     "ProjectOrchestratorNotFoundError",
     "configured_orchestrator_name",

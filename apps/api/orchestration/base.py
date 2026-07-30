@@ -21,6 +21,10 @@ class ProjectOrchestratorNotFoundError(LookupError):
     pass
 
 
+class ProjectNotCancellableError(RuntimeError):
+    pass
+
+
 @dataclass(frozen=True)
 class JobResult:
     project_id: int

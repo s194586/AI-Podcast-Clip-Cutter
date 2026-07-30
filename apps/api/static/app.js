@@ -419,7 +419,7 @@ function selectClip(clipId) {
   els.selectedStatus.textContent = `Status: ${clip.status || "draft"} | Render: ${clip.render_status || "not_rendered"}`;
   els.selectedSummary.textContent = clip.summary || "No summary available.";
   els.selectedTranscript.textContent = clip.text || "No transcript excerpt available.";
-  els.selectedScore.textContent = clip.local_score ? `Local score: ${clip.local_score}` : "Local score unavailable.";
+  els.selectedScore.textContent = clip.local_score ? `Legacy heuristic score: ${clip.local_score}` : "Legacy heuristic score unavailable.";
   els.selectedReasons.textContent = "";
   (clip.selection_reasons || []).forEach((reason) => {
     const item = document.createElement("li");

@@ -20,22 +20,32 @@ from apps.api.services.project_service import project_to_dict
 from apps.api.services.project_state import PROJECT_ROOT
 
 from .config import ReviewConfig, ReviewConfigError, load_review_config, normalize_review_mode_value
-from .context import build_clip_transcript_context
+from .context import (
+    allowed_boundary_pair_indexes,
+    boundary_options_by_segment_id,
+    build_clip_transcript_context,
+    current_aligned_boundary_options,
+    segment_map,
+)
 from .graph import GRAPH_WORKFLOW_NAME, GRAPH_WORKFLOW_VERSION, run_review_workflow
 from .graph.runtime import ReviewGraphRuntime
 from .providers import (
     GeminiBoundaryReviewer,
     LocalStubBoundaryReviewer,
+    COMPACT_REVIEW_REQUEST_CONTRACT_VERSION,
+    REVIEW_RESPONSE_CONTRACT_VERSION,
     ReviewProviderCancelledError,
     ReviewProviderCompatibilityError,
+    ReviewProviderCredentialError,
     ReviewProviderError,
     ReviewProviderExtractionError,
     ReviewProviderOutputError,
     ReviewProviderQuotaError,
     ReviewProviderTimeoutError,
+    sanitize_provider_failure_diagnostics,
 )
 from .schemas import GeminiBoundaryDecision, ReviewMode
-from .tools import get_latest_evaluation, save_evaluation
+from .tools import ReviewPersistenceCancelledError, get_latest_evaluation, save_evaluation
 
 
 class ClipReviewError(RuntimeError):
@@ -133,6 +143,7 @@ class ReviewAgentService:
         clip_id: str,
         project_id: int | None = None,
         apply_safe_suggestions: bool = True,
+        job_id: int | None = None,
         cancellation_check: Callable[[], bool] | None = None,
         deadline: float | None = None,
     ) -> dict[str, Any]:
@@ -155,6 +166,7 @@ class ReviewAgentService:
                 float(clip["ai_end"]),
                 context_seconds=self.config.context_seconds,
                 clip_id=str(clip["id"]),
+                candidate_id=clip.get("candidate_id"),
                 allowed_start_min=float(clip["min_start"]),
                 allowed_start_max=float(clip["max_start"]),
                 allowed_end_min=float(clip["min_end"]),
@@ -189,6 +201,10 @@ class ReviewAgentService:
                     ),
                     cancellation_check=cancellation_check,
                 )
+            except ReviewProviderCredentialError as exc:
+                raise ClipReviewConfigurationError(
+                    "Gemini rejected GEMINI_API_KEY credentials. Update GEMINI_API_KEY and retry review."
+                ) from exc
             except ReviewProviderCancelledError as exc:
                 raise ClipReviewCancelledError("Boundary review cancelled by user.") from exc
 
@@ -263,6 +279,8 @@ class ReviewAgentService:
             raise ClipReviewError("Boundary review graph ended without a terminal result.")
         result["review_workflow"] = GRAPH_WORKFLOW_NAME
         result["review_workflow_version"] = GRAPH_WORKFLOW_VERSION
+        result["review_request_contract_version"] = COMPACT_REVIEW_REQUEST_CONTRACT_VERSION
+        result["review_response_contract_version"] = REVIEW_RESPONSE_CONTRACT_VERSION
         result["review_workflow_route"] = graph_state.get("terminal_route")
         result["review_workflow_duration_ms"] = int(graph_state.get("duration_ms") or 0)
         raw_result = dict(result.get("raw_result") or {})
@@ -270,6 +288,8 @@ class ReviewAgentService:
             {
                 "review_workflow": GRAPH_WORKFLOW_NAME,
                 "review_workflow_version": GRAPH_WORKFLOW_VERSION,
+                "review_request_contract_version": COMPACT_REVIEW_REQUEST_CONTRACT_VERSION,
+                "review_response_contract_version": REVIEW_RESPONSE_CONTRACT_VERSION,
                 "review_workflow_route": graph_state.get("terminal_route"),
                 "review_workflow_duration_ms": int(graph_state.get("duration_ms") or 0),
             }
@@ -277,7 +297,10 @@ class ReviewAgentService:
         result["raw_result"] = raw_result
         _raise_if_cancelled(cancellation_check)
         _raise_if_deadline_expired(deadline)
-        saved = save_evaluation(result)
+        try:
+            saved = save_evaluation(result, job_id=job_id)
+        except ReviewPersistenceCancelledError as exc:
+            raise ClipReviewCancelledError("Boundary review cancelled by user.") from exc
         return saved
 
     def review_project_clips(
@@ -286,6 +309,7 @@ class ReviewAgentService:
         project_id: int,
         apply_safe_suggestions: bool = True,
         progress_callback: Callable[[str, dict[str, Any]], None] | None = None,
+        job_id: int | None = None,
         cancellation_check: Callable[[], bool] | None = None,
         skip_completed: bool = False,
     ) -> dict[str, Any]:
@@ -324,6 +348,7 @@ class ReviewAgentService:
                     project_id=project_id,
                     clip_id=clip_id,
                     apply_safe_suggestions=apply_safe_suggestions,
+                    job_id=job_id,
                     cancellation_check=cancellation_check,
                     deadline=deadline,
                 )
@@ -432,7 +457,7 @@ class ReviewAgentService:
         debug_metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if decision.decision in {"render_ready", "adjust_boundaries"}:
-            reviewed_start, reviewed_end, selected_start_id, selected_end_id = _validated_reviewed_bounds(
+            reviewed_start, reviewed_end, selected_start_id, selected_end_id, start_option_index, end_option_index = _validated_reviewed_bounds(
                 context=context,
                 clip=clip,
                 decision=decision,
@@ -440,7 +465,7 @@ class ReviewAgentService:
         else:
             reviewed_start = None
             reviewed_end = None
-            selected_start_id, selected_end_id = _derive_segment_ids_for_reject(context, decision)
+            selected_start_id, selected_end_id, start_option_index, end_option_index = _derive_segment_ids_for_reject(context, decision)
 
         start_delta = _delta(reviewed_start, clip.get("ai_start"))
         end_delta = _delta(reviewed_end, clip.get("ai_end"))
@@ -454,8 +479,8 @@ class ReviewAgentService:
             "model": model,
             "decision": decision.decision,
             "recommended_action": decision.decision,
-            "selected_start_option_index": int(decision.selected_start_option_index),
-            "selected_end_option_index": int(decision.selected_end_option_index),
+            "selected_start_option_index": start_option_index,
+            "selected_end_option_index": end_option_index,
             "selected_start_segment_id": selected_start_id,
             "selected_end_segment_id": selected_end_id,
             "suggested_start": reviewed_start,
@@ -467,7 +492,6 @@ class ReviewAgentService:
             "reasoning_summary": reasoning_summary,
             "start_reason": str(decision.start_reason or "").strip(),
             "end_reason": str(decision.end_reason or "").strip(),
-            "needs_more_context": False,
             "reasons": [reasoning_summary] if reasoning_summary else [],
             "warnings": [str(item) for item in decision.warnings or [] if str(item).strip()],
             "retry_used": bool(debug["retry_used"]),
@@ -487,6 +511,8 @@ class ReviewAgentService:
                 end_delta=end_delta,
                 selected_start_segment_id=selected_start_id,
                 selected_end_segment_id=selected_end_id,
+                selected_start_option_index=start_option_index,
+                selected_end_option_index=end_option_index,
                 failed=False,
                 debug_metadata=debug,
             ),
@@ -506,9 +532,12 @@ class ReviewAgentService:
         debug_metadata: dict[str, Any] | None = None,
         failure_category: str | None = None,
     ) -> dict[str, Any]:
-        safe_warning = _safe_failure_detail(failure_category)
-        warnings = [safe_warning]
         debug = _debug_metadata(debug_metadata)
+        failure_diagnostics = sanitize_provider_failure_diagnostics(
+            debug.get("provider_failure_diagnostics")
+        )
+        safe_warning = str(failure_diagnostics.get("safe_message") or _safe_failure_detail(failure_category))
+        warnings = [safe_warning]
         reasoning_summary = _failure_product_message(failure_category)
         return {
             "project_id": project_id,
@@ -529,7 +558,6 @@ class ReviewAgentService:
             "reasoning_summary": reasoning_summary,
             "start_reason": "The model result was invalid or unavailable.",
             "end_reason": "The model result was invalid or unavailable.",
-            "needs_more_context": False,
             "reasons": [reasoning_summary],
             "warnings": warnings,
             "failure_reason": safe_warning,
@@ -543,6 +571,8 @@ class ReviewAgentService:
             "raw_result": {
                 "provider": provider,
                 "model": model,
+                "review_request_contract_version": COMPACT_REVIEW_REQUEST_CONTRACT_VERSION,
+                "review_response_contract_version": REVIEW_RESPONSE_CONTRACT_VERSION,
                 "decision": "manual_review",
                 "failed": True,
                 "failure_reason": safe_warning,
@@ -551,6 +581,7 @@ class ReviewAgentService:
                 "provider_attempt_count": int(debug["provider_attempt_count"]),
                 "first_attempt_validation_error": debug.get("first_attempt_validation_error"),
                 "final_validation_error": safe_warning,
+                "provider_failure_diagnostics": failure_diagnostics,
                 "context_seconds": float(context.get("context_seconds") or 0.0),
                 "context_summary": _context_summary(context),
             },
@@ -590,12 +621,14 @@ def _validated_reviewed_bounds(
     context: dict[str, Any],
     clip: dict[str, Any],
     decision: GeminiBoundaryDecision,
-) -> tuple[float, float, str, str]:
-    start_option, end_option = _selected_options(context, decision)
-    selected_start_id = str(start_option["segment_id"])
-    selected_end_id = str(end_option["segment_id"])
-    reviewed_start = round(float(start_option["start"]), 2)
-    reviewed_end = round(float(end_option["end"]), 2)
+) -> tuple[float, float, str, str, int, int]:
+    selected_start, selected_end, start_option, end_option = _selected_options(context, decision)
+    selected_start_id = str(selected_start["segment_id"])
+    selected_end_id = str(selected_end["segment_id"])
+    # Boundary options convey eligibility and the transitional persistence
+    # index only.  Canonical transcript segments are the sole timestamp source.
+    reviewed_start = round(float(selected_start["start"]), 2)
+    reviewed_end = round(float(selected_end["end"]), 2)
     if reviewed_start >= reviewed_end:
         raise BoundaryOptionSelectionError("Gemini returned reversed or zero-length boundaries.")
     if reviewed_start < float(context.get("earliest_allowed_start", reviewed_start)):
@@ -610,64 +643,99 @@ def _validated_reviewed_bounds(
     duration = reviewed_end - reviewed_start
     if duration < MIN_EDITED_DURATION_SECONDS or duration > MAX_EDITED_DURATION_SECONDS:
         raise BoundaryOptionSelectionError("Gemini returned boundaries outside the editor duration limits.")
-    _ensure_allowed_pair(context, decision)
-    return reviewed_start, reviewed_end, selected_start_id, selected_end_id
+    _ensure_allowed_pair(context, start_option, end_option)
+    return (
+        reviewed_start,
+        reviewed_end,
+        selected_start_id,
+        selected_end_id,
+        int(start_option["option_index"]),
+        int(end_option["option_index"]),
+    )
 
 
 def _selected_options(
     context: dict[str, Any],
     decision: GeminiBoundaryDecision,
-) -> tuple[dict[str, Any], dict[str, Any]]:
-    start_options = _option_map(context.get("start_boundary_options") or [])
-    end_options = _option_map(context.get("end_boundary_options") or [])
-    start_index = int(decision.selected_start_option_index)
-    end_index = int(decision.selected_end_option_index)
-    if start_index not in start_options:
-        raise BoundaryOptionSelectionError(
-            f"Gemini selected unknown start option index {start_index}. "
-            f"Valid start option indexes: {_format_option_indexes(start_options)}."
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
+    try:
+        canonical_segments = segment_map(context)
+        start_options = boundary_options_by_segment_id(
+            context,
+            option_list_name="start_boundary_options",
+            canonical_segments=canonical_segments,
         )
-    if end_index not in end_options:
-        raise BoundaryOptionSelectionError(
-            f"Gemini selected unknown end option index {end_index}. "
-            f"Valid end option indexes: {_format_option_indexes(end_options)}."
+        end_options = boundary_options_by_segment_id(
+            context,
+            option_list_name="end_boundary_options",
+            canonical_segments=canonical_segments,
         )
-    start_option = start_options[start_index]
-    end_option = end_options[end_index]
-    segments = {
-        str(segment["segment_id"]): segment
-        for key in ("context_before", "candidate_segments", "context_after")
-        for segment in context.get(key) or []
-    }
-    for option, boundary in ((start_option, "start"), (end_option, "end")):
-        segment = segments.get(str(option.get("segment_id") or ""))
-        if segment is None:
-            raise BoundaryOptionSelectionError(
-                f"Gemini selected a {boundary} option that does not map to a transcript segment."
-            )
-        if abs(float(option[boundary]) - float(segment[boundary])) > 0.01:
-            raise BoundaryOptionSelectionError(
-                f"Gemini selected a {boundary} option that does not match its transcript segment boundary."
-            )
-    return start_option, end_option
+        allowed_pairs = allowed_boundary_pair_indexes(
+            context,
+            start_options=start_options,
+            end_options=end_options,
+        )
+        current_aligned_boundary_options(
+            context,
+            start_options=start_options,
+            end_options=end_options,
+            allowed_pairs=allowed_pairs,
+        )
+    except ValueError as exc:
+        raise BoundaryOptionSelectionError(f"Invalid internal review context: {exc}") from exc
+    start_segment_id = str(decision.start_segment_id)
+    end_segment_id = str(decision.end_segment_id)
+    if start_segment_id not in start_options:
+        raise BoundaryOptionSelectionError(
+            f"Gemini selected unknown or start-ineligible segment_id {start_segment_id!r}. "
+            f"Valid start segment IDs: {_format_segment_ids(start_options)}."
+        )
+    if end_segment_id not in end_options:
+        raise BoundaryOptionSelectionError(
+            f"Gemini selected unknown or end-ineligible segment_id {end_segment_id!r}. "
+            f"Valid end segment IDs: {_format_segment_ids(end_options)}."
+        )
+    start_option = start_options[start_segment_id]
+    end_option = end_options[end_segment_id]
+    return (
+        canonical_segments[start_segment_id],
+        canonical_segments[end_segment_id],
+        start_option,
+        end_option,
+    )
 
 
 def _derive_segment_ids_for_reject(
     context: dict[str, Any],
     decision: GeminiBoundaryDecision,
-) -> tuple[str | None, str | None]:
-    start_option, end_option = _selected_options(context, decision)
-    _ensure_allowed_pair(context, decision)
-    return str(start_option["segment_id"]), str(end_option["segment_id"])
+) -> tuple[str, str, int, int]:
+    start_segment, end_segment, start_option, end_option = _selected_options(context, decision)
+    _ensure_allowed_pair(context, start_option, end_option)
+    expected_start_id = context.get("current_aligned_start_segment_id")
+    expected_end_id = context.get("current_aligned_end_segment_id")
+    if (
+        str(start_segment["segment_id"]) != str(expected_start_id)
+        or str(end_segment["segment_id"]) != str(expected_end_id)
+    ):
+        raise BoundaryOptionSelectionError(
+            "Gemini reject responses must use the current aligned segment IDs."
+        )
+    return (
+        str(start_segment["segment_id"]),
+        str(end_segment["segment_id"]),
+        int(start_option["option_index"]),
+        int(end_option["option_index"]),
+    )
 
 
 def _ensure_allowed_pair(
     context: dict[str, Any],
-    decision: GeminiBoundaryDecision,
+    start_option: dict[str, Any],
+    end_option: dict[str, Any],
 ) -> None:
     selected_pair = (
-        int(decision.selected_start_option_index),
-        int(decision.selected_end_option_index),
+        int(start_option["option_index"]),
+        int(end_option["option_index"]),
     )
     if selected_pair not in _allowed_pair_indexes(context):
         raise BoundaryOptionSelectionError(
@@ -676,18 +744,23 @@ def _ensure_allowed_pair(
 
 
 def _allowed_pair_indexes(context: dict[str, Any]) -> set[tuple[int, int]]:
-    indexes: set[tuple[int, int]] = set()
-    for pair in context.get("allowed_boundary_pairs") or []:
-        try:
-            indexes.add(
-                (
-                    int(pair["start_option_index"]),
-                    int(pair["end_option_index"]),
-                )
-            )
-        except (KeyError, TypeError, ValueError):
-            continue
-    return indexes
+    try:
+        canonical_segments = segment_map(context)
+        start_options = boundary_options_by_segment_id(
+            context,
+            option_list_name="start_boundary_options",
+            canonical_segments=canonical_segments,
+        )
+        end_options = boundary_options_by_segment_id(
+            context,
+            option_list_name="end_boundary_options",
+            canonical_segments=canonical_segments,
+        )
+        return allowed_boundary_pair_indexes(
+            context, start_options=start_options, end_options=end_options
+        )
+    except ValueError as exc:
+        raise BoundaryOptionSelectionError(f"Invalid internal review context: {exc}") from exc
 
 
 def _option_map(options: list[dict[str, Any]]) -> dict[int, dict[str, Any]]:
@@ -698,6 +771,19 @@ def _option_map(options: list[dict[str, Any]]) -> dict[int, dict[str, Any]]:
         except (KeyError, TypeError, ValueError):
             continue
     return mapped
+
+
+def _option_map_by_segment_id(options: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    mapped: dict[str, dict[str, Any]] = {}
+    for option in options:
+        segment_id = str(option.get("segment_id") or "")
+        if segment_id:
+            mapped[segment_id] = option
+    return mapped
+
+
+def _format_segment_ids(options: dict[str, dict[str, Any]]) -> str:
+    return ", ".join(sorted(options)) or "none"
 
 
 def _format_option_indexes(options: dict[int, dict[str, Any]]) -> str:
@@ -782,14 +868,10 @@ def _boundary_retry_message(
     error: Exception | str,
 ) -> str:
     return (
-        f"{_concise_boundary_correction(error)} You must return selected_start_option_index and "
-        "selected_end_option_index as non-null "
-        "integers. Choose the start index only from START OPTIONS and the end index only from END OPTIONS. "
-        "Choose one exact pair from allowed_boundary_pairs. "
-        f"Valid start option indexes: {_format_option_indexes(_option_map(context.get('start_boundary_options') or []))}. "
-        f"Valid end option indexes: {_format_option_indexes(_option_map(context.get('end_boundary_options') or []))}. "
-        f"For reject, use current_aligned_start_option_index={context.get('current_aligned_start_option_index')} "
-        f"and current_aligned_end_option_index={context.get('current_aligned_end_option_index')}."
+        f"{_concise_boundary_correction(error)} Return non-empty start_segment_id and end_segment_id only; "
+        "no timestamps or indexes. "
+        f"Start IDs: {_format_segment_ids(_option_map_by_segment_id(context.get('start_boundary_options') or []))}. "
+        f"End IDs: {_format_segment_ids(_option_map_by_segment_id(context.get('end_boundary_options') or []))}."
     )
 
 
@@ -805,8 +887,8 @@ def _concise_boundary_correction(error: Exception | str) -> str:
         return "The selected boundary pair is invalid because the end must be after the start."
     if "allowed_boundary_pairs" in message or "boundary pair" in message:
         return "The selected boundary pair is not allowed."
-    if "unknown start option" in message or "unknown end option" in message:
-        return "The selected boundary option index is not available."
+    if "unknown" in message or "ineligible" in message:
+        return "The selected boundary segment ID is not available."
     return "The prior structured boundary response was invalid."
 
 
@@ -866,6 +948,8 @@ def _raw_result(
     end_delta: float | None,
     selected_start_segment_id: str | None,
     selected_end_segment_id: str | None,
+    selected_start_option_index: int | None,
+    selected_end_option_index: int | None,
     failed: bool,
     debug_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -873,9 +957,11 @@ def _raw_result(
     return {
         "provider": provider,
         "model": model,
+        "review_request_contract_version": COMPACT_REVIEW_REQUEST_CONTRACT_VERSION,
+        "review_response_contract_version": decision.review_response_contract_version,
         "decision": decision.decision,
-        "selected_start_option_index": int(decision.selected_start_option_index),
-        "selected_end_option_index": int(decision.selected_end_option_index),
+        "selected_start_option_index": selected_start_option_index,
+        "selected_end_option_index": selected_end_option_index,
         "selected_start_segment_id": selected_start_segment_id,
         "selected_end_segment_id": selected_end_segment_id,
         "reviewed_start": reviewed_start,
@@ -902,6 +988,7 @@ def _debug_metadata(value: dict[str, Any] | None = None) -> dict[str, Any]:
         "provider_attempt_count": 1,
         "first_attempt_validation_error": None,
         "final_validation_error": None,
+        "provider_failure_diagnostics": {},
     }
     if value:
         base.update(value)

@@ -13,6 +13,7 @@ from pydantic import BaseModel
 
 from .orchestration import (
     ProjectAlreadyRunningError,
+    ProjectNotCancellableError,
     ProjectOrchestratorConfigurationError,
     ProjectOrchestratorNotFoundError,
     configured_orchestrator_name,
@@ -43,6 +44,7 @@ from .services.export_service import ExportAccessError, ExportNotFoundError, get
 from .services.project_state import PROJECT_ROOT
 from .services.render import RenderError, locate_input_video, render_adjusted_clip
 from apps.review_agent.config import ReviewConfigError, load_review_config, safe_review_config_summary
+from apps.review_agent.providers import ReviewProviderCredentialError, preflight_gemini_credentials
 from apps.review_agent.service import ClipReviewConfigurationError, ClipReviewError, ClipReviewNotFoundError, ReviewAgentService
 
 
@@ -70,6 +72,15 @@ def _log_review_configuration(project_root: Path) -> None:
     )
     for warning in config.warnings:
         logger.warning("Clip review provider configuration warning: %s", warning)
+
+
+def _require_auto_review_configuration(*, project_root: Path) -> None:
+    try:
+        config = load_review_config(project_root=project_root, require_api_key=True)
+        if config.mode == "gemini":
+            preflight_gemini_credentials(api_key=str(config.api_key or ""))
+    except (ReviewConfigError, ReviewProviderCredentialError) as exc:
+        raise ProjectOrchestratorConfigurationError(str(exc)) from exc
 
 
 @asynccontextmanager
@@ -200,6 +211,8 @@ def project() -> dict:
 def create_project_endpoint(payload: ProjectCreatePayload) -> dict[str, Any]:
     try:
         project_root = api_project_root()
+        if payload.auto_start and payload.auto_review:
+            _require_auto_review_configuration(project_root=project_root)
         project = create_project(
             source_url=payload.source_url,
             title=payload.title,
@@ -226,6 +239,9 @@ def create_project_endpoint(payload: ProjectCreatePayload) -> dict[str, Any]:
 def start_project_endpoint(project_id: int) -> dict[str, Any]:
     try:
         project_root = api_project_root()
+        project = get_project(project_id)
+        if project["auto_review"]:
+            _require_auto_review_configuration(project_root=project_root)
         job = get_pipeline_orchestrator(project_root=project_root).start_project(project_id)
         return {
             "job": job.to_dict(),
@@ -234,6 +250,8 @@ def start_project_endpoint(project_id: int) -> dict[str, Any]:
     except ProjectAlreadyRunningError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ProjectOrchestratorNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ProjectNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ProjectOrchestratorConfigurationError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
@@ -289,6 +307,8 @@ def cancel_project_endpoint(project_id: int) -> dict[str, Any]:
         return get_pipeline_orchestrator(project_root=api_project_root()).cancel_project(project_id).to_dict()
     except ProjectOrchestratorNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ProjectNotCancellableError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ProjectOrchestratorConfigurationError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 

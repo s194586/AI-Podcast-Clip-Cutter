@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -12,8 +13,9 @@ from sqlalchemy import select
 
 from apps.api.db.database import configure_database, init_database, session_scope
 from apps.api.db.models import ClipEvaluation, Project
-from apps.api.db.repositories import ClipRepository, ProjectRepository
+from apps.api.db.repositories import ClipRepository, JobRepository, ProjectRepository
 from apps.api.main import app
+from apps.api.orchestration.local import LocalPipelineOrchestrator
 from apps.api.services.clip_service import load_clips
 from apps.review_agent.providers import (
     ReviewProviderCompatibilityError,
@@ -22,6 +24,7 @@ from apps.review_agent.providers import (
 )
 from apps.review_agent.schemas import GeminiBoundaryDecision
 from apps.review_agent.service import ClipReviewCancelledError, ReviewAgentService
+from apps.review_agent.tools import ReviewPersistenceCancelledError, save_evaluation
 
 
 def _sqlite_url(path: Path) -> str:
@@ -107,13 +110,38 @@ class LangGraphReleaseSmokeTests(unittest.TestCase):
                 )
             return project.id
 
+    def _create_running_review_job(self, project_id: int) -> int:
+        with session_scope() as session:
+            project = ProjectRepository(session).get(project_id)
+            project.status = "running"
+            project.current_stage = "reviewing_with_ai"
+            job = JobRepository(session).create(
+                project_id=project_id,
+                job_type="local_pipeline",
+                status="running",
+                current_stage="reviewing_with_ai",
+                orchestrator_type="local",
+            )
+            return int(job.id)
+
     @staticmethod
     def _valid_decision(context: dict) -> GeminiBoundaryDecision:
         pair = context["allowed_boundary_pairs"][0]
+        start_id = next(
+            option["segment_id"]
+            for option in context["start_boundary_options"]
+            if option["option_index"] == pair["start_option_index"]
+        )
+        end_id = next(
+            option["segment_id"]
+            for option in context["end_boundary_options"]
+            if option["option_index"] == pair["end_option_index"]
+        )
         return GeminiBoundaryDecision(
+            review_response_contract_version=2,
             decision="adjust_boundaries",
-            selected_start_option_index=pair["start_option_index"],
-            selected_end_option_index=pair["end_option_index"],
+            start_segment_id=start_id,
+            end_segment_id=end_id,
             reasoning_summary="Mocked semantic decision.",
             start_reason="Mocked complete start.",
             end_reason="Mocked complete end.",
@@ -125,6 +153,19 @@ class LangGraphReleaseSmokeTests(unittest.TestCase):
             evaluations = len(list(session.scalars(select(ClipEvaluation)).all()))
         clips = len(load_clips(project_id=project_id, project_root=self.root))
         return projects, clips, evaluations
+
+    @staticmethod
+    def _review_result(project_id: int) -> dict:
+        return {
+            "project_id": project_id,
+            "clip_id": "clip_001",
+            "provider": "gemini",
+            "model": "mock-gemini",
+            "decision": "adjust_boundaries",
+            "recommended_action": "adjust_boundaries",
+            "reviewed_start": 102.0,
+            "reviewed_end": 138.0,
+        }
 
     def test_valid_first_response_persists_once_through_api(self):
         project_id = self._seed_project()
@@ -151,6 +192,14 @@ class LangGraphReleaseSmokeTests(unittest.TestCase):
         payload = response.json()
         self.assertEqual(calls, 1)
         self.assertEqual(payload["raw_result"]["review_workflow"], "langgraph_boundary_review")
+        self.assertEqual(payload["raw_result"]["review_workflow_version"], "2")
+        self.assertEqual(payload["raw_result"]["review_request_contract_version"], 3)
+        self.assertEqual(payload["raw_result"]["review_response_contract_version"], 2)
+        self.assertEqual(payload["review_workflow_version"], "2")
+        self.assertEqual(payload["review_request_contract_version"], 3)
+        self.assertEqual(payload["review_response_contract_version"], 2)
+        self.assertFalse(payload["retry_used"])
+        self.assertEqual(payload["provider_attempt_count"], 1)
         self.assertEqual(payload["raw_result"]["review_workflow_route"], "applied")
         self.assertNotIn("transcript", json.dumps(payload).casefold())
         self.assertNotIn("prompt", json.dumps(payload).casefold())
@@ -176,9 +225,10 @@ class LangGraphReleaseSmokeTests(unittest.TestCase):
                 feedback.append(corrective_message)
                 if len(feedback) == 1:
                     return GeminiBoundaryDecision(
+                        review_response_contract_version=2,
                         decision="adjust_boundaries",
-                        selected_start_option_index=999,
-                        selected_end_option_index=999,
+                        start_segment_id="seg_v1_unknown_start",
+                        end_segment_id="seg_v1_unknown_end",
                         reasoning_summary="Invalid mocked pair.",
                         start_reason="Invalid.",
                         end_reason="Invalid.",
@@ -198,6 +248,10 @@ class LangGraphReleaseSmokeTests(unittest.TestCase):
         self.assertNotIn(str(self.root), feedback[1] or "")
         self.assertTrue(result["retry_used"])
         self.assertEqual(result["provider_attempt_count"], 2)
+        self.assertEqual(result["raw_result"]["review_workflow_version"], "2")
+        self.assertEqual(result["raw_result"]["review_request_contract_version"], 3)
+        self.assertEqual(result["raw_result"]["review_response_contract_version"], 2)
+        self.assertEqual(result["review_workflow_version"], "2")
         self.assertEqual(result["raw_result"]["review_workflow_route"], "applied")
         self.assertEqual(self._counts(project_id), (1, 1, 1))
 
@@ -216,9 +270,10 @@ class LangGraphReleaseSmokeTests(unittest.TestCase):
                 nonlocal calls
                 calls += 1
                 return GeminiBoundaryDecision(
+                    review_response_contract_version=2,
                     decision="adjust_boundaries",
-                    selected_start_option_index=999,
-                    selected_end_option_index=999,
+                    start_segment_id="seg_v1_unknown_start",
+                    end_segment_id="seg_v1_unknown_end",
                     reasoning_summary="Invalid mocked pair.",
                     start_reason="Invalid.",
                     end_reason="Invalid.",
@@ -234,6 +289,9 @@ class LangGraphReleaseSmokeTests(unittest.TestCase):
         self.assertEqual(calls, 2)
         self.assertEqual(result["decision"], "manual_review")
         self.assertEqual(result["raw_result"]["review_workflow_route"], "manual_review")
+        self.assertEqual(result["raw_result"]["review_workflow_version"], "2")
+        self.assertIsNone(result["raw_result"].get("reviewed_start"))
+        self.assertIsNone(result["raw_result"].get("reviewed_end"))
         self.assertEqual((clip["ai_start"], clip["ai_end"]), (100.0, 140.0))
         self.assertEqual((clip["edited_start"], clip["edited_end"]), (101.0, 139.0))
         self.assertIsNone(clip["reviewed_start"])
@@ -272,6 +330,7 @@ class LangGraphReleaseSmokeTests(unittest.TestCase):
             "Gemini quota is temporarily unavailable. Retry this review later.",
         )
         self.assertEqual(result["raw_result"]["review_workflow_route"], "provider_failure")
+        self.assertEqual(result["raw_result"]["review_workflow_version"], "2")
         self.assertEqual((clip["edited_start"], clip["edited_end"]), (101.0, 139.0))
 
     def test_provider_compatibility_failure_uses_one_call_and_preserves_boundaries(self):
@@ -375,6 +434,181 @@ class LangGraphReleaseSmokeTests(unittest.TestCase):
         clip = load_clips(project_id=project_id, project_root=self.root)[0]
         self.assertEqual((clip["edited_start"], clip["edited_end"]), (101.0, 139.0))
 
+    def test_durable_job_cancellation_after_provider_rolls_back_review_write(self):
+        project_id = self._seed_project()
+        job_id = self._create_running_review_job(project_id)
+        calls = 0
+
+        class Provider:
+            provider = "gemini"
+            model = "mock-gemini"
+
+            def __init__(self, **_kwargs):
+                pass
+
+            def review(inner_self, context, **_kwargs):
+                nonlocal calls
+                calls += 1
+                with session_scope() as session:
+                    job = JobRepository(session).get(job_id)
+                    JobRepository(session).update_state(
+                        job,
+                        status="cancelled",
+                        current_stage="cancelled",
+                        cancel_requested=True,
+                    )
+                return self._valid_decision(context)
+
+        with patch("apps.review_agent.service.GeminiBoundaryReviewer", Provider), patch(
+            "apps.review_agent.service.LocalStubBoundaryReviewer"
+        ) as local_stub:
+            with self.assertRaises(ClipReviewCancelledError):
+                ReviewAgentService(project_root=self.root, mode="gemini").review_clip(
+                    project_id=project_id,
+                    clip_id="clip_001",
+                    job_id=job_id,
+                )
+
+        self.assertEqual(calls, 1)
+        local_stub.assert_not_called()
+        self.assertEqual(self._counts(project_id), (1, 1, 0))
+        clip = load_clips(project_id=project_id, project_root=self.root)[0]
+        self.assertEqual((clip["edited_start"], clip["edited_end"]), (101.0, 139.0))
+
+    def test_cancel_first_rejects_later_review_persistence_without_clip_changes(self):
+        project_id = self._seed_project()
+        job_id = self._create_running_review_job(project_id)
+        orchestrator = LocalPipelineOrchestrator(project_root=self.root)
+
+        self.assertEqual(orchestrator.cancel_project(project_id).status, "cancelled")
+        with self.assertRaises(ReviewPersistenceCancelledError):
+            save_evaluation(self._review_result(project_id), job_id=job_id)
+
+        self.assertEqual(self._counts(project_id), (1, 1, 0))
+        clip = load_clips(project_id=project_id, project_root=self.root)[0]
+        self.assertEqual((clip["edited_start"], clip["edited_end"]), (101.0, 139.0))
+
+    def test_save_fence_commits_atomically_before_parallel_cancellation(self):
+        project_id = self._seed_project()
+        job_id = self._create_running_review_job(project_id)
+        orchestrator = LocalPipelineOrchestrator(project_root=self.root)
+        fence_acquired = threading.Event()
+        release_save = threading.Event()
+        cancellation_attempted = threading.Event()
+        save_errors: list[BaseException] = []
+        cancellation_result: list[object] = []
+        original_touch = JobRepository.touch_running_review
+        original_transition = JobRepository.transition_if_active
+
+        def hold_after_fence(repo, *args, **kwargs):
+            result = original_touch(repo, *args, **kwargs)
+            if result:
+                fence_acquired.set()
+                self.assertTrue(release_save.wait(5), "test did not release review transaction")
+            return result
+
+        def observe_cancellation(repo, *args, **kwargs):
+            if kwargs.get("status") == "cancelled":
+                cancellation_attempted.set()
+            return original_transition(repo, *args, **kwargs)
+
+        def save_in_second_connection():
+            try:
+                save_evaluation(self._review_result(project_id), job_id=job_id)
+            except BaseException as exc:  # Propagate thread failures to this test.
+                save_errors.append(exc)
+
+        def cancel_in_third_connection():
+            cancellation_result.append(orchestrator.cancel_project(project_id))
+
+        with patch.object(JobRepository, "touch_running_review", hold_after_fence), patch.object(
+            JobRepository, "transition_if_active", observe_cancellation
+        ):
+            save_thread = threading.Thread(target=save_in_second_connection)
+            save_thread.start()
+            self.assertTrue(fence_acquired.wait(5), "review did not acquire its write fence")
+
+            cancellation_thread = threading.Thread(target=cancel_in_third_connection)
+            cancellation_thread.start()
+            self.assertTrue(cancellation_attempted.wait(5), "cancellation did not reach its conditional update")
+            self.assertEqual(cancellation_result, [])
+
+            release_save.set()
+            save_thread.join(5)
+            cancellation_thread.join(5)
+
+        self.assertFalse(save_thread.is_alive())
+        self.assertFalse(cancellation_thread.is_alive())
+        self.assertEqual(save_errors, [])
+        self.assertEqual(len(cancellation_result), 1)
+        self.assertEqual(cancellation_result[0].status, "cancelled")
+        self.assertEqual(self._counts(project_id), (1, 1, 1))
+        clip = load_clips(project_id=project_id, project_root=self.root)[0]
+        self.assertEqual((clip["edited_start"], clip["edited_end"]), (102.0, 138.0))
+
+    def test_batch_cancellation_keeps_completed_clip_and_discards_current_write(self):
+        project_id = self._seed_project(clip_count=2)
+        job_id = self._create_running_review_job(project_id)
+        calls: list[str] = []
+
+        class Provider:
+            provider = "gemini"
+            model = "mock-gemini"
+
+            def __init__(self, **_kwargs):
+                pass
+
+            def review(inner_self, context, **_kwargs):
+                clip_id = str(context["clip_id"])
+                calls.append(clip_id)
+                if clip_id == "clip_002":
+                    with session_scope() as session:
+                        job = JobRepository(session).get(job_id)
+                        JobRepository(session).update_state(
+                            job,
+                            status="cancelled",
+                            current_stage="cancelled",
+                            cancel_requested=True,
+                        )
+                return self._valid_decision(context)
+
+        with patch("apps.review_agent.service.GeminiBoundaryReviewer", Provider):
+            with self.assertRaises(ClipReviewCancelledError):
+                ReviewAgentService(project_root=self.root, mode="gemini").review_project_clips(
+                    project_id=project_id,
+                    job_id=job_id,
+                )
+
+        self.assertEqual(calls, ["clip_001", "clip_002"])
+        with session_scope() as session:
+            evaluations = list(session.scalars(select(ClipEvaluation)).all())
+        self.assertEqual([evaluation.external_clip_id for evaluation in evaluations], ["clip_001"])
+
+    def test_save_first_remains_atomic_before_later_cancellation_is_accepted(self):
+        project_id = self._seed_project()
+        job_id = self._create_running_review_job(project_id)
+
+        class Provider:
+            provider = "gemini"
+            model = "mock-gemini"
+
+            def __init__(self, **_kwargs):
+                pass
+
+            def review(inner_self, context, **_kwargs):
+                return self._valid_decision(context)
+
+        with patch("apps.review_agent.service.GeminiBoundaryReviewer", Provider):
+            ReviewAgentService(project_root=self.root, mode="gemini").review_clip(
+                project_id=project_id,
+                clip_id="clip_001",
+                job_id=job_id,
+            )
+
+        status = LocalPipelineOrchestrator(project_root=self.root).cancel_project(project_id)
+        self.assertEqual(status.status, "cancelled")
+        self.assertEqual(self._counts(project_id), (1, 1, 1))
+
     def test_batch_isolates_three_graph_invocations_and_counts_outcomes(self):
         project_id = self._seed_project(clip_count=3)
         calls = {"clip_001": 0, "clip_002": 0, "clip_003": 0}
@@ -392,9 +626,10 @@ class LangGraphReleaseSmokeTests(unittest.TestCase):
                 calls[clip_id] += 1
                 if clip_id == "clip_002":
                     return GeminiBoundaryDecision(
+                        review_response_contract_version=2,
                         decision="adjust_boundaries",
-                        selected_start_option_index=999,
-                        selected_end_option_index=999,
+                        start_segment_id="seg_v1_unknown_start",
+                        end_segment_id="seg_v1_unknown_end",
                         reasoning_summary="Invalid mocked pair.",
                         start_reason="Invalid.",
                         end_reason="Invalid.",

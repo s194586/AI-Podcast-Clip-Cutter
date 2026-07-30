@@ -14,6 +14,7 @@ class PipelineContext:
     source_url: str | None
     workspace_path: Path
     repository_root: Path
+    job_id: int | None = None
     auto_review: bool = True
     analysis_only: bool = False
     config: PipelineConfig = field(default_factory=PipelineConfig)
@@ -30,6 +31,8 @@ class PipelineContext:
                 raise ValueError(
                     f"Project {self.project_id} must use its isolated workspace: {expected}"
                 )
+        if self.job_id is not None:
+            self.job_id = int(self.job_id)
 
     @classmethod
     def for_legacy_cli(
@@ -133,6 +136,7 @@ class PipelineContext:
     def safe_summary(self) -> dict[str, Any]:
         return {
             "project_id": self.project_id,
+            "job_id": self.job_id,
             "workspace": self.workspace_path.name,
             "auto_review": bool(self.auto_review),
             "analysis_only": bool(self.analysis_only),
@@ -143,6 +147,7 @@ class PipelineContext:
         return (
             "PipelineContext("
             f"project_id={self.project_id!r}, "
+            f"job_id={self.job_id!r}, "
             f"workspace_path={self.workspace_path!r}, "
             f"repository_root={self.repository_root!r}, "
             f"auto_review={self.auto_review!r}, "
