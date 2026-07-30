@@ -308,9 +308,21 @@ class AirflowSettingsAndInfrastructureTests(unittest.TestCase):
         services = compose["services"]
         self.assertEqual(
             set(services),
-            {"postgres", "airflow-init", "airflow-api-server", "airflow-scheduler", "airflow-dag-processor", "app-api"},
+            {
+                "postgres",
+                "airflow-init",
+                "airflow-api-server",
+                "airflow-scheduler",
+                "airflow-dag-processor",
+                "app-api",
+                "frontend",
+            },
         )
         self.assertEqual(compose["x-airflow-environment"]["AIRFLOW__CORE__EXECUTOR"], "LocalExecutor")
+        self.assertEqual(
+            compose["x-airflow-environment"]["CLIP_REVIEW_MODE"],
+            "${CLIP_REVIEW_MODE:-gemini}",
+        )
         self.assertNotIn("redis", services)
         self.assertNotIn("airflow-worker", services)
 
@@ -320,8 +332,69 @@ class AirflowSettingsAndInfrastructureTests(unittest.TestCase):
         compose = yaml.safe_load(compose_text)
         self.assertIn("postgres:16.14-bookworm", compose_text)
         self.assertIn("apache/airflow:3.3.0-python3.12", (root / "orchestration/airflow/Dockerfile").read_text(encoding="utf-8"))
-        for service in ("postgres", "airflow-api-server", "airflow-scheduler", "airflow-dag-processor", "app-api"):
+        for service in (
+            "postgres",
+            "airflow-api-server",
+            "airflow-scheduler",
+            "airflow-dag-processor",
+            "app-api",
+            "frontend",
+        ):
             self.assertIn("healthcheck", compose["services"][service])
+        dag_processor_healthcheck = compose["services"]["airflow-dag-processor"]["healthcheck"]["test"]
+        self.assertIn("setpriv --reuid=airflow --regid=0 --init-groups", dag_processor_healthcheck[1])
+
+    def test_frontend_image_serves_spa_and_proxies_api_without_secrets(self):
+        root = Path(__file__).resolve().parents[1]
+        compose = yaml.safe_load((root / "docker-compose.yml").read_text(encoding="utf-8"))
+        frontend = compose["services"]["frontend"]
+        dockerfile = (root / "apps/web/Dockerfile").read_text(encoding="utf-8")
+        nginx = (root / "apps/web/nginx.conf").read_text(encoding="utf-8")
+
+        self.assertEqual(frontend["build"]["args"]["VITE_API_BASE_URL"], "/api")
+        self.assertEqual(frontend["depends_on"]["app-api"]["condition"], "service_healthy")
+        self.assertIn("http://127.0.0.1:8080/healthz", frontend["healthcheck"]["test"])
+        self.assertIn("FROM node:24-alpine AS build", dockerfile)
+        self.assertIn("FROM nginxinc/nginx-unprivileged:1.29-alpine", dockerfile)
+        self.assertIn("npm ci", dockerfile)
+        self.assertIn("npm run build", dockerfile)
+        self.assertIn("proxy_pass http://app-api:8010/;", nginx)
+        self.assertIn("proxy_read_timeout 1800s;", nginx)
+        self.assertIn("proxy_send_timeout 1800s;", nginx)
+        self.assertIn("try_files $uri $uri/ /index.html;", nginx)
+        self.assertNotIn("GEMINI", dockerfile + nginx)
+
+    def test_docker_smoke_preflights_compose_resources_before_owning_cleanup(self):
+        root = Path(__file__).resolve().parents[1]
+        script = (root / "scripts/smoke_docker.ps1").read_text(encoding="utf-8")
+        example_env = (root / "orchestration/airflow/airflow.env.example").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("com.docker.compose.project=$ProjectName", script)
+        self.assertIn('"container", "network", "volume"', script)
+        self.assertIn("Smoke preflight collision", script)
+        self.assertIn('"CLIP_REVIEW_MODE=local_stub"', script)
+        self.assertIn("SMOKE_REVIEW_CONFIG_OK mode=local_stub gemini_key=empty", script)
+        self.assertIn("CLIP_REVIEW_MODE=gemini", example_env)
+        self.assertIn("$runOwnsResources = $true", script)
+        self.assertIn("if ($runOwnsResources -and $composeAttempted)", script)
+        self.assertIn("-not $smokeParentExisted", script)
+        self.assertLess(
+            script.index("Smoke preflight collision"),
+            script.index("$runOwnsResources = $true"),
+        )
+        self.assertLess(
+            script.index("$runOwnsResources = $true"),
+            script.index("New-Item -ItemType Directory"),
+        )
+
+    def test_default_compose_build_does_not_require_optional_custom_ca_file(self):
+        root = Path(__file__).resolve().parents[1]
+        compose = yaml.safe_load((root / "docker-compose.yml").read_text(encoding="utf-8"))
+
+        self.assertNotIn("secrets", compose["x-airflow-common"]["build"])
+        self.assertNotIn("secrets", compose)
 
     def test_docker_build_context_excludes_runtime_secrets_and_data(self):
         root = Path(__file__).resolve().parents[1]
@@ -340,6 +413,7 @@ class AirflowSettingsAndInfrastructureTests(unittest.TestCase):
 
         self.assertIn("ca-certificates", dockerfile)
         self.assertIn("update-ca-certificates", dockerfile)
+        self.assertIn("sed -i 's/\\r$//'", dockerfile)
         self.assertIn("type=secret,id=custom_ca", dockerfile)
         self.assertNotIn("--trusted-host", dockerfile)
         for name in (

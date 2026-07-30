@@ -32,7 +32,9 @@ a fallback provider.
 
 ```mermaid
 flowchart LR
-  U[React editor] --> A[FastAPI API]
+  U[React editor / Nginx] --> A[FastAPI API]
+  A --> O[Airflow scheduler + DAG processor]
+  O --> M[(PostgreSQL Airflow metadata)]
   A --> P[Local pipeline services]
   P --> T[Transcript + replay-interest peaks]
   T --> C[Canonical candidate windows]
@@ -45,9 +47,11 @@ flowchart LR
   E --> F[FFmpeg 9:16 render + subtitles]
 ```
 
-The API, pipeline stages, and review service are reusable by the optional
-Airflow integration, but local mode is the normal development path. Application
-state is stored in SQLite; Airflow, when used, has separate scheduler metadata.
+The Docker demo uses Airflow orchestration. Nginx serves the React SPA and
+proxies `/api/*` to FastAPI, so browser routes and API routes remain separate.
+FastAPI and all Airflow components share the same application `data/` mount.
+Application state is stored in SQLite; Airflow has separate PostgreSQL scheduler
+metadata. Native local development can still use `LocalPipelineOrchestrator`.
 
 ## Technology
 
@@ -78,32 +82,113 @@ The React editor remains authoritative for human-in-the-loop work. A user can
 move the boundaries after review; rendering uses the edited boundaries, never
 an automatic render triggered by the model.
 
-## Run locally
+## Run the Docker demo
 
-Requirements: Python 3.14, [uv](https://docs.astral.sh/uv/), Node.js/npm, and
-FFmpeg for media processing. Use only source media you are authorized to
+Requirements: Docker Desktop using Linux containers, Docker Compose v2, and at
+least 4 GB of memory available to Docker. No host Python, Node.js, FFmpeg, or
+Airflow installation is needed. Use only source media you are authorized to
 process.
 
 ```powershell
-Copy-Item .env.example .env
-# Set GEMINI_API_KEY in .env before starting automatic semantic review.
-uv sync --locked
-uv run uvicorn apps.api.main:app --reload --host 127.0.0.1 --port 8010
+Copy-Item .\orchestration\airflow\airflow.env.example .\orchestration\airflow\.env.airflow
+notepad .\orchestration\airflow\.env.airflow
 ```
 
-In another terminal:
+Replace every `change-me` value. The required, local-only secrets are
+`AIRFLOW_API_PASSWORD`, `AIRFLOW_DB_PASSWORD`, and `AIRFLOW_JWT_SECRET`;
+`AIRFLOW_API_USERNAME` is also required. Keep the database password URL-safe.
+`CLIP_REVIEW_MODE=gemini` is the normal configuration. `GEMINI_API_KEY` may
+remain empty when semantic review is not used: a missing key does not block
+stack startup, project creation, or pipeline runs with `auto_review` disabled.
+The ignored env file is not copied into either image.
+
+From the repository root, the canonical start command is:
 
 ```powershell
-Set-Location .\apps\web
-npm ci
-npm run dev
+docker compose --env-file .\orchestration\airflow\.env.airflow up --build --detach --wait
 ```
 
-The development UI is served at `http://127.0.0.1:5173` and proxies API calls
-to FastAPI at `http://127.0.0.1:8010`. Keep
-`PIPELINE_ORCHESTRATOR=local` for the normal local workflow. Runtime review
-configuration includes `CLIP_REVIEW_MODE=gemini`, `GEMINI_MODEL`, and the
-request/batch timeout values; do not commit credentials.
+Services and addresses:
+
+| Service | Address | Purpose |
+| --- | --- | --- |
+| React/Nginx | `http://127.0.0.1:5173` | Product UI and `/api/*` reverse proxy |
+| FastAPI | `http://127.0.0.1:8010` | Application API |
+| Airflow | `http://127.0.0.1:8080` | DAG status and logs |
+| PostgreSQL | internal only | Airflow metadata |
+
+Check the running stack:
+
+```powershell
+docker compose --env-file .\orchestration\airflow\.env.airflow ps
+Invoke-RestMethod http://127.0.0.1:5173/healthz
+Invoke-RestMethod http://127.0.0.1:5173/api/health
+Invoke-RestMethod http://127.0.0.1:8010/health
+```
+
+For a short offline demo, open the UI, create a project with any valid HTTPS
+URL, leave automatic start disabled, and verify that it appears on the
+dashboard. This exercises the real React frontend, Nginx proxy, FastAPI,
+SQLite, and shared Docker workspace without downloading media or contacting an
+external model. For real processing, use an authorized podcast URL.
+
+The controlled repository smoke test uses isolated ports, data, Compose project
+name, and volumes:
+
+```powershell
+.\scripts\smoke_docker.ps1
+```
+
+It builds both images, waits for every healthcheck, verifies frontend and API
+access (directly and through Nginx), creates and lists one non-started project,
+checks SPA routing, and confirms that Airflow lists the DAG with no import
+errors. The script explicitly sets `CLIP_REVIEW_MODE=local_stub` as a controlled
+test fixture, but it never starts a pipeline or invokes review. It performs a
+collision preflight before creating anything, and its `finally` cleanup removes
+only resources owned by that smoke run.
+
+Real semantic boundary review requires the normal `CLIP_REVIEW_MODE=gemini`
+configuration and a valid `GEMINI_API_KEY`; there is no silent fallback.
+`local_stub` is reserved for controlled automated tests and is not an
+alternative production scoring mode.
+
+Stop the application while preserving databases, logs, and project data:
+
+```powershell
+docker compose --env-file .\orchestration\airflow\.env.airflow down
+```
+
+Do not add `--volumes` to the routine stop command.
+
+### Windows troubleshooting
+
+- If Docker reports a missing Linux engine pipe, start Docker Desktop and wait
+  until `docker info` succeeds.
+- If a port is busy, change `WEB_PORT`, `APP_API_PORT`, or `AIRFLOW_PORT` in
+  `.env.airflow`.
+- Keep the repository on a drive shared with Docker Desktop. WSL2-backed Linux
+  containers must be enabled.
+- Corporate HTTPS inspection may require the public root CA at
+  `orchestration/airflow/secrets/custom-ca/root-ca.pem` and
+  `CUSTOM_CA_REQUIRED=true`. Never commit that file. Docker Desktop must also
+  trust the proxy for dependency downloads during image builds.
+- A first build downloads the Airflow image and Python/Node dependencies and
+  can take several minutes. Inspect failures with
+  `docker compose --env-file .\orchestration\airflow\.env.airflow logs`.
+
+## Native development
+
+Native development requires Python 3.14, [uv](https://docs.astral.sh/uv/),
+Node.js/npm, and FFmpeg:
+
+```powershell
+Copy-Item .env.example .env
+uv sync --locked
+.\scripts\dev_full_stack.ps1 -OpenWindows
+```
+
+FastAPI runs at `http://127.0.0.1:8010`; Vite prints its development URL and
+proxies API calls to FastAPI. Keep `PIPELINE_ORCHESTRATOR=local` for this path.
 
 ## Test and validation
 

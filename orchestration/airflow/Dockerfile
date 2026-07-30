@@ -12,7 +12,8 @@ RUN apt-get update \
     && install -d -o airflow -g root /opt/ai-cutter /opt/airflow/logs /opt/airflow/secrets
 
 COPY --chown=root:root orchestration/airflow/bootstrap_ca_certificates.sh /usr/local/bin/bootstrap-ca-certificates
-RUN chmod 0755 /usr/local/bin/bootstrap-ca-certificates
+RUN sed -i 's/\r$//' /usr/local/bin/bootstrap-ca-certificates \
+    && chmod 0755 /usr/local/bin/bootstrap-ca-certificates
 
 USER airflow
 COPY --chown=airflow:root requirements.txt /tmp/podcast-cutter-requirements.txt
