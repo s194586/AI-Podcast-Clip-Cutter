@@ -109,7 +109,7 @@ agents or replace domain validation.
 
 ### What does Airflow own?
 
-Airflow schedules the eight pipeline stages, records scheduler metadata, and
+Airflow schedules the nine pipeline stages, records scheduler metadata, and
 supports bounded deterministic-stage retries. It does not own semantic
 decisions, graph-node execution, or automatic Gemini retry storms.
 

@@ -278,6 +278,7 @@ def _runtime_stage(task_id: str) -> str:
     return {
         "prepare_workspace": "waiting",
         "download_source": "downloading",
+        "detect_heatmap_peaks": "detecting_heatmap_peaks",
         "transcribe": "transcribing",
         "validate_transcript": "validating_transcript",
         "generate_candidates": "generating_candidates",

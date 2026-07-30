@@ -9,6 +9,7 @@ DAG_ID = "podcast_clip_pipeline"
 TASK_ORDER = (
     "prepare_workspace",
     "download_source",
+    "detect_heatmap_peaks",
     "transcribe",
     "validate_transcript",
     "generate_candidates",
@@ -19,6 +20,7 @@ TASK_ORDER = (
 TASK_RETRIES = {
     "prepare_workspace": 0,
     "download_source": 1,
+    "detect_heatmap_peaks": 1,
     "transcribe": 1,
     "validate_transcript": 0,
     "generate_candidates": 1,
@@ -74,6 +76,14 @@ else:
             return _run_task("download_source")
 
         @task(
+            task_id="detect_heatmap_peaks",
+            retries=TASK_RETRIES["detect_heatmap_peaks"],
+            retry_delay=timedelta(seconds=30),
+        )
+        def detect_heatmap_peaks():
+            return _run_task("detect_heatmap_peaks")
+
+        @task(
             task_id="transcribe",
             retries=TASK_RETRIES["transcribe"],
             retry_delay=timedelta(minutes=2),
@@ -116,6 +126,7 @@ else:
         stages = (
             prepare_workspace(),
             download_source(),
+            detect_heatmap_peaks(),
             transcribe(),
             validate_transcript(),
             generate_candidates(),
