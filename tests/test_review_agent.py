@@ -738,7 +738,7 @@ class ReviewAgentTests(unittest.TestCase):
         self.assertIsNone(result["reviewed_start"])
         self.assertIsNone(result["reviewed_end"])
         self.assertTrue(result["failed"])
-        self.assertEqual(result["failure_reason"], "Gemini provider request failed.")
+        self.assertEqual(result["failure_reason"], "Gemini API error: quota exhausted")
         clip = clip_service.load_clips(project_id=project_id, project_root=self.root)[0]
         self.assertEqual(clip["edited_start"], 100.0)
         self.assertEqual(clip["edited_end"], 140.0)
@@ -1252,7 +1252,7 @@ class ReviewAgentTests(unittest.TestCase):
             )
 
         self.assertTrue(malformed["failed"])
-        self.assertEqual(malformed["warnings"], ["Gemini provider request failed."])
+        self.assertEqual(malformed["warnings"], ["structured output was malformed"])
 
     def test_unknown_start_segment_id_triggers_one_retry_then_fails_safely(self):
         project_id = self._seed_project()
@@ -1799,7 +1799,7 @@ class ReviewAgentTests(unittest.TestCase):
         )
         failed_review = [review for review in payload["reviews"] if review["failed"]][0]
         self.assertEqual(failed_review["decision"], "manual_review")
-        self.assertEqual(failed_review["failure_reason"], "Gemini provider request failed.")
+        self.assertEqual(failed_review["failure_reason"], "Gemini API error for one clip")
 
     def test_all_failed_batch_summary_reports_attention_not_success(self):
         project_id = self._seed_project()

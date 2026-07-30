@@ -42,6 +42,7 @@ from .providers import (
     ReviewProviderOutputError,
     ReviewProviderQuotaError,
     ReviewProviderTimeoutError,
+    sanitize_provider_failure_diagnostics,
 )
 from .schemas import GeminiBoundaryDecision, ReviewMode
 from .tools import ReviewPersistenceCancelledError, get_latest_evaluation, save_evaluation
@@ -531,9 +532,12 @@ class ReviewAgentService:
         debug_metadata: dict[str, Any] | None = None,
         failure_category: str | None = None,
     ) -> dict[str, Any]:
-        safe_warning = _safe_failure_detail(failure_category)
-        warnings = [safe_warning]
         debug = _debug_metadata(debug_metadata)
+        failure_diagnostics = sanitize_provider_failure_diagnostics(
+            debug.get("provider_failure_diagnostics")
+        )
+        safe_warning = str(failure_diagnostics.get("safe_message") or _safe_failure_detail(failure_category))
+        warnings = [safe_warning]
         reasoning_summary = _failure_product_message(failure_category)
         return {
             "project_id": project_id,
@@ -577,6 +581,7 @@ class ReviewAgentService:
                 "provider_attempt_count": int(debug["provider_attempt_count"]),
                 "first_attempt_validation_error": debug.get("first_attempt_validation_error"),
                 "final_validation_error": safe_warning,
+                "provider_failure_diagnostics": failure_diagnostics,
                 "context_seconds": float(context.get("context_seconds") or 0.0),
                 "context_summary": _context_summary(context),
             },
@@ -983,6 +988,7 @@ def _debug_metadata(value: dict[str, Any] | None = None) -> dict[str, Any]:
         "provider_attempt_count": 1,
         "first_attempt_validation_error": None,
         "final_validation_error": None,
+        "provider_failure_diagnostics": {},
     }
     if value:
         base.update(value)

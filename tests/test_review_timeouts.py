@@ -37,6 +37,7 @@ from apps.review_agent.providers import (
     ReviewProviderTimeoutError,
     _provider_error_from_exception,
     _gemini_request_worker,
+    _run_gemini_request_in_process,
     _run_bounded_process,
     _create_genai_client,
     preflight_gemini_credentials,
@@ -117,6 +118,103 @@ class GeminiProviderTimeoutTests(unittest.TestCase):
 
         create_client.assert_called_once_with("offline-placeholder", timeout_seconds=300)
         self.assertTrue(connection.messages[0]["ok"])
+
+    def test_worker_serializes_only_safe_provider_failure_diagnostics(self):
+        class CapturingConnection:
+            def __init__(self):
+                self.messages = []
+
+            def send(self, payload):
+                self.messages.append(payload)
+
+            def close(self):
+                pass
+
+        class FakeTransportError(RuntimeError):
+            status_code = 503
+
+            def __str__(self):
+                return (
+                    "upstream failed; Bearer secret-bearer; api_key=secret-api-key; "
+                    "https://example.invalid/v1?key=secret-url-key; response body=private payload"
+                )
+
+        connection = CapturingConnection()
+        with patch(
+            "apps.review_agent.providers._create_genai_client",
+            side_effect=FakeTransportError(),
+        ):
+            _gemini_request_worker(connection, "offline-placeholder", "gemini-test", "prompt", 300)
+
+        payload = connection.messages[0]
+        diagnostics = payload["diagnostics"]
+        serialized = json.dumps(payload)
+        self.assertEqual(set(payload), {"ok", "diagnostics"})
+        self.assertFalse(payload["ok"])
+        self.assertTrue(diagnostics["original_error_type"].endswith(".FakeTransportError"))
+        self.assertEqual(diagnostics["mapped_error_type"], "ReviewProviderError")
+        self.assertEqual(diagnostics["http_status"], 503)
+        self.assertNotIn("secret-bearer", serialized)
+        self.assertNotIn("secret-api-key", serialized)
+        self.assertNotIn("secret-url-key", serialized)
+        self.assertNotIn("private payload", serialized)
+
+    def test_parent_restores_provider_error_category_and_diagnostics(self):
+        diagnostics = {
+            "category": "ReviewProviderTimeoutError",
+            "mapped_error_type": "ReviewProviderTimeoutError",
+            "original_error_type": "ReadTimeout",
+            "cause_type": "ConnectError",
+            "safe_message": "timed out while connecting to <redacted-url>",
+        }
+        with patch(
+            "apps.review_agent.providers._run_bounded_process",
+            return_value={"ok": False, "diagnostics": diagnostics},
+        ):
+            with self.assertRaises(ReviewProviderTimeoutError) as raised:
+                _run_gemini_request_in_process(
+                    api_key="offline-placeholder",
+                    model="gemini-test",
+                    prompt="prompt",
+                    timeout_seconds=300,
+                    cancellation_check=None,
+                )
+
+        self.assertEqual(str(raised.exception), diagnostics["safe_message"])
+        self.assertEqual(raised.exception.diagnostics, diagnostics)
+
+    def test_final_manual_review_keeps_safe_provider_detail(self):
+        diagnostics = {
+            "category": "ReviewProviderError",
+            "mapped_error_type": "ReviewProviderError",
+            "original_error_type": "ReadTimeout",
+            "safe_message": (
+                "ReadTimeout: Bearer secret-bearer; api_key=secret-api-key; "
+                "https://example.invalid/v1?key=secret-url-key; response body=private payload"
+            ),
+        }
+        result = ReviewAgentService(project_root=Path.cwd())._failed_result(
+            project_id=1,
+            clip={"id": "clip_001"},
+            context={},
+            provider="gemini",
+            model="unit",
+            warning="Gemini provider request failed.",
+            apply_safe_suggestions=True,
+            failure_category="provider",
+            debug_metadata={"provider_failure_diagnostics": diagnostics},
+        )
+
+        serialized = json.dumps(result)
+        self.assertEqual(result["decision"], "manual_review")
+        self.assertIn("ReadTimeout", result["failure_reason"])
+        self.assertEqual(result["warnings"], [result["failure_reason"]])
+        self.assertEqual(
+            result["raw_result"]["provider_failure_diagnostics"]["original_error_type"],
+            "ReadTimeout",
+        )
+        self.assertNotIn("secret", serialized.casefold())
+        self.assertNotIn("private payload", serialized)
 
     def test_credential_preflight_uses_one_short_non_generating_request(self):
         captured = {}

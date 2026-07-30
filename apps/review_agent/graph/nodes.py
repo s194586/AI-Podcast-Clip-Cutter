@@ -8,6 +8,7 @@ from langgraph.runtime import Runtime
 from apps.review_agent.providers import (
     COMPACT_REVIEW_REQUEST_CONTRACT_VERSION,
     REVIEW_RESPONSE_CONTRACT_VERSION,
+    safe_provider_failure_diagnostics,
 )
 
 from .runtime import ReviewGraphRuntime
@@ -254,6 +255,9 @@ def _debug_metadata(
             state.get("first_attempt_validation_error")
         ),
         "final_validation_error": str(final_error) if final_error is not None else None,
+        "provider_failure_diagnostics": (
+            safe_provider_failure_diagnostics(final_error) if final_error is not None else {}
+        ),
     }
 
 

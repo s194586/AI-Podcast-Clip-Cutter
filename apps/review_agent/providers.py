@@ -4,7 +4,7 @@ import json
 import multiprocessing
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any, Protocol
 
 from pydantic import ValidationError
@@ -27,7 +27,14 @@ REVIEW_RESPONSE_CONTRACT_VERSION = 2
 
 
 class ReviewProviderError(RuntimeError):
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        diagnostics: Mapping[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.diagnostics = sanitize_provider_failure_diagnostics(diagnostics)
 
 
 class ReviewProviderOutputError(ReviewProviderError):
@@ -432,8 +439,18 @@ def _run_gemini_request_in_process(
     )
     if bool(payload.get("ok")):
         return _validate_decision(dict(payload.get("decision") or {}))
-    category = str(payload.get("category") or "ReviewProviderError")
-    message = str(payload.get("message") or "Gemini boundary review failed.")
+    diagnostics = sanitize_provider_failure_diagnostics(payload.get("diagnostics"))
+    category = str(
+        diagnostics.get("mapped_error_type")
+        or diagnostics.get("category")
+        or payload.get("category")
+        or "ReviewProviderError"
+    )
+    message = str(
+        diagnostics.get("safe_message")
+        or payload.get("message")
+        or "Gemini boundary review failed."
+    )
     error_types = {
         "ReviewProviderTimeoutError": ReviewProviderTimeoutError,
         "ReviewProviderRequestCancelledError": ReviewProviderRequestCancelledError,
@@ -443,7 +460,7 @@ def _run_gemini_request_in_process(
         "ReviewProviderExtractionError": ReviewProviderExtractionError,
         "ReviewProviderOutputError": ReviewProviderOutputError,
     }
-    raise error_types.get(category, ReviewProviderError)(message)
+    raise error_types.get(category, ReviewProviderError)(message, diagnostics=diagnostics)
 
 
 def _run_bounded_process(
@@ -531,8 +548,7 @@ def _gemini_request_worker(
         send_connection.send(
             {
                 "ok": False,
-                "category": error.__class__.__name__,
-                "message": str(error),
+                "diagnostics": safe_provider_failure_diagnostics(error),
             }
         )
     finally:
@@ -560,40 +576,59 @@ def _timeout_milliseconds(timeout_seconds: float) -> int:
 
 def _provider_error_from_exception(exc: Exception) -> ReviewProviderError:
     if isinstance(exc, ReviewProviderError):
+        if not exc.diagnostics:
+            exc.diagnostics = _provider_failure_diagnostics(exc, exc)
         return exc
-    status_values = [
-        getattr(exc, "status_code", None),
-        getattr(exc, "code", None),
-        getattr(getattr(exc, "response", None), "status_code", None),
-    ]
+    status_values = _provider_status_values(exc)
     message = _safe_provider_error_message(exc)
     if 429 in status_values or re.search(r"\b429\b", message):
-        return ReviewProviderQuotaError(
-            "Gemini quota or rate limit was exceeded (HTTP 429). Retry review later."
+        return _with_provider_failure_diagnostics(
+            ReviewProviderQuotaError(
+                "Gemini quota or rate limit was exceeded (HTTP 429). Retry review later."
+            ),
+            exc,
         )
     if 499 in status_values or re.search(r"\b499\b", message):
-        return ReviewProviderRequestCancelledError(
-            "Gemini request was cancelled by the upstream service (HTTP 499)."
+        return _with_provider_failure_diagnostics(
+            ReviewProviderRequestCancelledError(
+                "Gemini request was cancelled by the upstream service (HTTP 499)."
+            ),
+            exc,
         )
     if 401 in status_values or 403 in status_values or re.search(r"\b(?:401|403)\b", message):
-        return ReviewProviderCredentialError(
-            "Gemini rejected GEMINI_API_KEY credentials. Update GEMINI_API_KEY and retry review."
+        return _with_provider_failure_diagnostics(
+            ReviewProviderCredentialError(
+                "Gemini rejected GEMINI_API_KEY credentials. Update GEMINI_API_KEY and retry review."
+            ),
+            exc,
         )
     if _is_invalid_api_key_error(status_values, message):
-        return ReviewProviderCredentialError(
-            "Gemini rejected GEMINI_API_KEY credentials. Update GEMINI_API_KEY and retry review."
+        return _with_provider_failure_diagnostics(
+            ReviewProviderCredentialError(
+                "Gemini rejected GEMINI_API_KEY credentials. Update GEMINI_API_KEY and retry review."
+            ),
+            exc,
         )
     class_name = exc.__class__.__name__.casefold()
     if isinstance(exc, TimeoutError) or "timeout" in class_name or "timed out" in message.casefold():
-        return ReviewProviderTimeoutError("Gemini boundary review request timed out.")
+        return _with_provider_failure_diagnostics(
+            ReviewProviderTimeoutError("Gemini boundary review request timed out."),
+            exc,
+        )
     if _is_provider_compatibility_error(status_values, message):
         status = "HTTP 400" if 400 in status_values or re.search(r"\b400\b", message) else "unsupported API"
-        return ReviewProviderCompatibilityError(
-            f"Gemini provider compatibility error ({status})."
+        return _with_provider_failure_diagnostics(
+            ReviewProviderCompatibilityError(
+                f"Gemini provider compatibility error ({status})."
+            ),
+            exc,
         )
-    status = next((value for value in status_values if isinstance(value, int)), None)
+    status = _safe_http_status(exc)
     status_suffix = f" (HTTP {status})" if status is not None else ""
-    return ReviewProviderError(f"Gemini provider request failed{status_suffix}.")
+    return _with_provider_failure_diagnostics(
+        ReviewProviderError(f"Gemini provider request failed{status_suffix}."),
+        exc,
+    )
 
 
 def _is_provider_compatibility_error(status_values: list[Any], message: str) -> bool:
@@ -628,8 +663,102 @@ def _is_invalid_api_key_error(status_values: list[Any], message: str) -> bool:
     )
 
 
+def safe_provider_failure_diagnostics(error: Exception) -> dict[str, Any]:
+    existing = getattr(error, "diagnostics", None)
+    if existing:
+        return sanitize_provider_failure_diagnostics(existing)
+    mapped = error if isinstance(error, ReviewProviderError) else _provider_error_from_exception(error)
+    return _provider_failure_diagnostics(error, mapped)
+
+
+def sanitize_provider_failure_diagnostics(value: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Return the only diagnostic fields allowed across the process boundary."""
+    if not isinstance(value, Mapping):
+        return {}
+    diagnostics: dict[str, Any] = {}
+    for key in ("category", "mapped_error_type", "original_error_type", "cause_type", "context_type"):
+        candidate = value.get(key)
+        if isinstance(candidate, str) and candidate and len(candidate) <= 160:
+            diagnostics[key] = candidate
+    status = value.get("http_status")
+    if isinstance(status, int) and not isinstance(status, bool) and 100 <= status <= 599:
+        diagnostics["http_status"] = status
+    message = value.get("safe_message")
+    if isinstance(message, str) and message.strip():
+        diagnostics["safe_message"] = _sanitize_provider_error_message(message, "Gemini provider request failed.")
+    return diagnostics
+
+
+def _with_provider_failure_diagnostics(
+    mapped_error: ReviewProviderError,
+    original_error: Exception,
+) -> ReviewProviderError:
+    mapped_error.diagnostics = _provider_failure_diagnostics(original_error, mapped_error)
+    return mapped_error
+
+
+def _provider_failure_diagnostics(
+    original_error: Exception,
+    mapped_error: ReviewProviderError,
+) -> dict[str, Any]:
+    diagnostics: dict[str, Any] = {
+        "category": mapped_error.__class__.__name__,
+        "mapped_error_type": mapped_error.__class__.__name__,
+        "original_error_type": _exception_type_name(original_error),
+        "safe_message": _safe_provider_error_message(original_error),
+    }
+    cause = original_error.__cause__
+    context = original_error.__context__
+    if cause is not None:
+        diagnostics["cause_type"] = _exception_type_name(cause)
+    elif context is not None:
+        diagnostics["context_type"] = _exception_type_name(context)
+    status = _safe_http_status(original_error)
+    if status is not None:
+        diagnostics["http_status"] = status
+    return sanitize_provider_failure_diagnostics(diagnostics)
+
+
+def _provider_status_values(exc: Exception) -> list[Any]:
+    return [
+        getattr(exc, "status_code", None),
+        getattr(exc, "code", None),
+        getattr(getattr(exc, "response", None), "status_code", None),
+    ]
+
+
+def _safe_http_status(exc: Exception) -> int | None:
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        for value in _provider_status_values(current):
+            if isinstance(value, int) and not isinstance(value, bool) and 100 <= value <= 599:
+                return value
+        current = current.__cause__ or current.__context__
+    return None
+
+
 def _safe_provider_error_message(exc: Exception) -> str:
-    message = " ".join(str(exc).split()) or exc.__class__.__name__
+    return _sanitize_provider_error_message(str(exc), exc.__class__.__name__)
+
+
+def _exception_type_name(exc: BaseException) -> str:
+    module = exc.__class__.__module__
+    name = exc.__class__.__name__
+    return name if module == "builtins" else f"{module}.{name}"
+
+
+def _sanitize_provider_error_message(message: str, fallback: str) -> str:
+    message = str(message or "")
+    message = re.sub(r"(?is)\b(?:response\s+)?(?:body|content|headers?)\s*[:=]\s*(?:\{.*?\}|\[.*?\]|[^\n]+)", "<redacted>", message)
+    message = re.sub(r"(?i)\bBearer\s+[^\s,;]+", "Bearer <redacted>", message)
+    message = re.sub(
+        r"(?i)\b(?:authorization|x-goog-api-key|x-api-key)\s*[:=]\s*[^\s,;]+",
+        "authorization=<redacted>",
+        message,
+    )
+    message = re.sub(r"(?i)https?://[^\s\"']+", "<redacted-url>", message)
     message = re.sub(
         r"(?i)([?&](?:key|api[_-]?key|token|access_token|authorization)=)([^&\s\"']+)",
         r"\1<redacted>",
@@ -640,6 +769,7 @@ def _safe_provider_error_message(exc: Exception) -> str:
         r"\1=<redacted>",
         message,
     )
+    message = " ".join(message.split()) or fallback
     return message[:500]
 
 
