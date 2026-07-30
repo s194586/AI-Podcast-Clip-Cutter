@@ -1,399 +1,142 @@
 # AI Podcast Clip Cutter
 
-![Portfolio MVP](https://img.shields.io/badge/status-portfolio%20MVP-2563eb)
-![Python 3.14](https://img.shields.io/badge/Python-3.14-3776AB?logo=python&logoColor=white)
-![React 19](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=111827)
-![FastAPI](https://img.shields.io/badge/FastAPI-0.138-009688?logo=fastapi&logoColor=white)
-![Airflow 3.3.0](https://img.shields.io/badge/Apache%20Airflow-3.3.0-017CEE?logo=apacheairflow&logoColor=white)
-![LangGraph 1.1.10](https://img.shields.io/badge/LangGraph-1.1.10-111827)
-![Docker](https://img.shields.io/badge/Docker-validated%20local%20stack-2496ED?logo=docker&logoColor=white)
+AI Podcast Clip Cutter is a local-first MVP for turning a long-form podcast
+into short, human-approved vertical clips. It separates deterministic candidate
+discovery from semantic editorial review: replay-interest data finds moments to
+inspect, while Gemini reviews only the transcript boundaries of an existing
+candidate.
 
-An end-to-end podcast clipping platform that combines deterministic candidate
-generation, Gemini semantic boundary review, LangGraph workflow routing, Apache
-Airflow orchestration, FastAPI, React, and Docker.
+## User flow
 
-## Current status
+1. Create a project from a source URL and run the local pipeline.
+2. Download, transcribe, validate the transcript, detect replay-interest peaks,
+   and generate neutral candidate windows.
+3. Review each candidate's transcript boundaries with Gemini.
+4. Inspect the result in the React editor, adjust boundaries when needed, then
+   accept or reject the clip.
+5. Render a user-selected 9:16 clip with raw and subtitled variants.
 
-The portfolio-ready MVP is complete. The current release is `v1.1.0`:
+Candidate generation uses local replay-interest peaks and canonical transcript
+artifacts. It does not make an editorial quality decision. Gemini is the only
+product semantic-review path: it receives a compact transcript window and
+selects start/end segment IDs for one of `render_ready`,
+`adjust_boundaries`, or `reject`. The backend validates those IDs, ranges,
+ordering, and duration before persisting anything.
 
-- the product flow is Projects -> Processing -> Review/Edit -> Render -> Exports;
-- the React UI presents state-aware primary actions and explicit loading, error, empty, and completed states;
-- local and Airflow orchestration modes reuse the same pipeline services;
-- LangGraph routes each semantic boundary review through validated terminal outcomes;
-- human-triggered rendering creates 1080x1920 raw and subtitled export variants;
-- dynamic face tracking uses a bounded last-crop hold and a blurred full-frame fallback when stable detection is unavailable;
-- subtitles are formatted deterministically from Faster-Whisper timestamps without LLM-based transcript rewriting;
-- GitHub Actions validates the backend, frontend, and Docker Compose configuration on pushes to `main`;
-- deployment, browser E2E tests, and automatic HTTP 429 `Retry-After` handling are optional extensions;
-- Content Packaging and publishing-metadata generation are not planned.
+If Gemini or its transport fails, the review ends as `manual_review`; existing
+boundaries are preserved for a person to inspect. The review path does not
+replace an unavailable provider with heuristic scoring, heuristic decisions, or
+a fallback provider.
 
-This repository demonstrates a production-oriented architecture and validated
-local Docker stack. It does not claim a production cloud deployment, guaranteed
-virality, or a fully autonomous editing system.
-
-## Demo and preview
-
-No screenshots are committed yet, so this README intentionally contains no
-placeholder or broken image links. [The demo guide](docs/DEMO.md) provides a
-two-to-three-minute recording script, safe capture checklist, and recommended
-asset filenames. [The portfolio overview](docs/PORTFOLIO.md) provides a concise
-recruiter summary and interview talking points.
-
-## Problem
-
-Turning a long podcast into short clips involves more than cutting at high-score
-timestamps. A useful workflow must:
-
-1. transcribe and score candidate windows reproducibly;
-2. select semantically complete openings and endings;
-3. preserve user edits and provide a manual-review fallback;
-4. expose processing and failures through an editor;
-5. run the same domain stages locally or under an observable scheduler.
-
-AI Podcast Clip Cutter separates those responsibilities instead of asking one
-model to own the entire pipeline.
-
-## Core capabilities
-
-- Podcast source ingestion, Faster-Whisper transcription, transcript validation, and local candidate scoring.
-- Stable project, clip, job, artifact, and review persistence in application SQLite.
-- Gemini selection from backend-generated, duration-safe `allowed_boundary_pairs`.
-- Authoritative backend validation before any reviewed boundary is persisted.
-- LangGraph routing for success, one corrective retry, manual review, provider failure, and cancellation.
-- Local subprocess orchestration or Apache Airflow 3.3.0 with LocalExecutor.
-- State-aware React flow for Projects, Processing, Review/Edit, Render, and Exports.
-- Human-controlled boundary preview, editing, acceptance/rejection, and rendering.
-- Face-aware 1080x1920 rendering with smoothing, a bounded face-loss grace period, and a blurred full-frame safe layout.
-- Deterministic subtitle cues built from word timestamps when available, with a segment-timestamp fallback for compatible older transcripts.
-- Grouped raw and subtitled exports with the latest render foregrounded and previous attempts retained as history.
-- Human-in-the-loop fallback: unresolved automatic review terminates instead of holding an Airflow task open.
-
-## Architecture overview
+## Architecture
 
 ```mermaid
 flowchart LR
-  UI[React frontend] --> API[FastAPI backend]
-  API --> SELECT{Orchestrator}
-  SELECT --> LOCAL[LocalPipelineOrchestrator]
-  SELECT --> AFLOW[AirflowOrchestrator]
-  AFLOW --> AIRFLOW[Apache Airflow 3.3.0]
-  LOCAL --> EXEC[PipelineStageExecutor]
-  AIRFLOW --> EXEC
-  EXEC --> STAGES[Reusable pipeline stages]
-  STAGES --> DB[(Application SQLite)]
-  STAGES --> WS[Project workspace]
-
-  API --> REVIEW[ReviewAgentService]
-  REVIEW --> GRAPH[LangGraph per-clip workflow]
-  GRAPH --> GEMINI[Google Gen AI provider]
-  GEMINI --> VALIDATE[Authoritative backend validation]
-  VALIDATE --> DB
+  U[React editor] --> A[FastAPI API]
+  A --> P[Local pipeline services]
+  P --> T[Transcript + replay-interest peaks]
+  T --> C[Canonical candidate windows]
+  C --> R[LangGraph boundary-review workflow]
+  R --> G[Gemini via google-genai]
+  G --> V[Backend boundary validation]
+  V --> D[(SQLite application state)]
+  D --> U
+  U --> E[Human boundary edit / accept / reject]
+  E --> F[FFmpeg 9:16 render + subtitles]
 ```
 
-Airflow uses PostgreSQL only for scheduler metadata. Application SQLite remains
-the authority for product state. Local and Airflow modes call the same
-`PipelineStageExecutor`, stage registry, and review service.
+The API, pipeline stages, and review service are reusable by the optional
+Airflow integration, but local mode is the normal development path. Application
+state is stored in SQLite; Airflow, when used, has separate scheduler metadata.
 
-See [Architecture](docs/ARCHITECTURE.md), [Pipeline Services](docs/PIPELINE_SERVICES.md),
-and [Engineering Decisions](docs/ENGINEERING_DECISIONS.md).
+## Technology
 
-## End-to-end pipeline
-
-```text
-create project
--> prepare isolated workspace
--> download source
--> transcribe
--> validate transcript
--> generate deterministic candidates
--> import candidates into SQLite
--> optionally review boundaries through LangGraph
--> mark project ready
--> human reviews/edits
--> human triggers rendering
--> create 1080x1920 raw and subtitled variants
--> present the latest files and render history in Exports
-```
-
-Candidate generation is deterministic and local. Gemini does not rank the full
-source or invent arbitrary timestamps; it chooses the best semantic pair from
-an allowlist generated from real transcript segments. Gemini is not used to
-rewrite quoted speech. Subtitle formatting may adjust spacing, capitalization,
-punctuation, and cue layout, but it preserves the words recognized by
-Faster-Whisper.
-
-## Airflow orchestration
-
-The optional Docker mode uses Airflow 3.3.0, PostgreSQL metadata, LocalExecutor,
-a DAG processor, and the stable REST API.
-
-```mermaid
-flowchart LR
-  A[prepare_workspace] --> B[download_source]
-  B --> C[transcribe]
-  C --> D[validate_transcript]
-  D --> E[generate_candidates]
-  E --> F[import_candidates]
-  F --> G[review_boundaries]
-  G --> H[mark_ready]
-```
-
-Each Airflow task delegates one real stage to the shared executor. The
-`review_boundaries` task has zero Airflow retries, preventing scheduler-level
-Gemini retry storms. LangGraph owns the one permitted corrective provider call.
-
-See [Airflow Operations](orchestration/airflow/README.md).
-
-## LangGraph boundary review
-
-```mermaid
-flowchart TD
-  A[build_review_context] --> B[invoke_reviewer]
-  B --> C[validate_review]
-  C -->|valid| D[apply_review]
-  D --> Z((END))
-  C -->|retryable invalid; retry unused| E[prepare_corrective_retry]
-  E --> B
-  C -->|second invalid| F[finalize_manual_review]
-  F --> Z
-  C -->|provider failure| G[finalize_provider_failure]
-  G --> Z
-  C -->|cancellation| H[finalize_cancelled]
-  H --> Z
-```
-
-Gemini performs semantic boundary selection. Backend validation remains
-authoritative. A clip can make at most two provider calls: one initial call and
-one corrective call for structured/domain-invalid output. Quota, timeout,
-credentials, provider outage, HTTP 499, cancellation, and batch-deadline
-failures do not take the corrective route.
-
-The graph has no persistent checkpointer. Transcripts and prompts remain
-ephemeral and are not placed in application events, Airflow XCom, or durable
-graph state. See [LangGraph Boundary Review](docs/LANGGRAPH_REVIEW.md).
-
-## Technology stack
-
-| Area | Technology |
-|---|---|
-| Backend/API | Python 3.14, FastAPI, SQLAlchemy, Pydantic |
+| Area | Implementation |
+| --- | --- |
+| Backend | Python 3.14, FastAPI, SQLAlchemy, Pydantic |
+| Review workflow | LangGraph, `google-genai`, Gemini `gemini-3.5-flash` |
+| TLS on Windows | `truststore` system certificate context in each Gemini client, including spawned workers |
+| Pipeline | Faster-Whisper, yt-dlp, FFmpeg, local replay-interest peak detection |
 | Frontend | React 19, TypeScript, Vite, Tailwind CSS |
-| Pipeline | Faster-Whisper, FFmpeg, yt-dlp, local transcript scoring |
-| Semantic review | `google-genai`, Gemini, typed structured output |
-| Workflow routing | LangGraph 1.1.10 |
-| Pipeline orchestration | Local subprocess mode or Apache Airflow 3.3.0 |
-| Persistence | SQLite application state; PostgreSQL Airflow metadata |
-| Packaging/runtime | Docker Desktop, WSL 2 Linux containers, Docker Compose |
-| Tests | Python `unittest`, Vitest, React Testing Library |
+| Persistence | SQLite |
+| Validation | Python `unittest`, Vitest, React Testing Library, GitHub Actions |
 
-## Repository structure
+## Review and editing contract
 
-```text
-apps/api/                 FastAPI routes, persistence, services, orchestrators
-apps/web/                 React product UI
-apps/pipeline/            reusable typed stages and shared executor
-apps/review_agent/        semantic boundary-review domain and provider adapter
-apps/review_agent/graph/  LangGraph state, nodes, routing, and workflow
-orchestration/airflow/    Airflow image, DAG, stage adapter, operations guide
-tests/                    offline unit, integration, and release-smoke tests
-docs/                     architecture, decisions, demo, and portfolio guides
-manager.py                backwards-compatible pipeline CLI
-transcribe.py             Faster-Whisper transcription entry point
-```
+Gemini sees no video frames, local candidate scores, database objects, API keys,
+or arbitrary timestamps. It returns non-empty canonical segment IDs and a
+structured decision. `recommended_action` is the persisted compatibility mirror
+of the Gemini decision.
 
-See the detailed [Repository Map](docs/REPO_MAP.md).
+For valid Gemini decisions, review provenance is
+`gemini_boundary_decision` with numeric-score provenance `not_available`.
+Legacy quality/context/hook/payoff/boundary, privacy, crop, and context fields
+remain `NULL` unless a historical record explicitly supplied them. They are not
+used by the Gemini review flow.
 
-## Quick start: local mode
+The React editor remains authoritative for human-in-the-loop work. A user can
+move the boundaries after review; rendering uses the edited boundaries, never
+an automatic render triggered by the model.
 
-Requirements: Windows PowerShell, Python 3.14, Node.js/npm, and FFmpeg available
-to the pipeline.
+## Run locally
+
+Requirements: Python 3.14, [uv](https://docs.astral.sh/uv/), Node.js/npm, and
+FFmpeg for media processing. Use only source media you are authorized to
+process.
 
 ```powershell
-py -3.14 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
 Copy-Item .env.example .env
+# Set GEMINI_API_KEY in .env before starting automatic semantic review.
+uv sync --locked
+uv run uvicorn apps.api.main:app --reload --host 127.0.0.1 --port 8010
 ```
 
-Keep `PIPELINE_ORCHESTRATOR=local`. Gemini is the default semantic reviewer;
-set `GEMINI_API_KEY` before starting automatic review. `local_stub` is a
-deterministic development/test double that must be selected explicitly and is
-not a production fallback.
-
-Start the API on the verified development port:
-
-```powershell
-.\.venv\Scripts\python.exe -m uvicorn apps.api.main:app --reload --port 8010
-```
-
-In a second terminal:
+In another terminal:
 
 ```powershell
 Set-Location .\apps\web
-npm install
+npm ci
 npm run dev
 ```
 
-Vite normally opens on `http://127.0.0.1:5173`; FastAPI is
-`http://127.0.0.1:8010`. The repository helper `.\scripts\dev_full_stack.ps1`
-prints the same commands and can open separate windows with `-OpenWindows`.
+The development UI is served at `http://127.0.0.1:5173` and proxies API calls
+to FastAPI at `http://127.0.0.1:8010`. Keep
+`PIPELINE_ORCHESTRATOR=local` for the normal local workflow. Runtime review
+configuration includes `CLIP_REVIEW_MODE=gemini`, `GEMINI_MODEL`, and the
+request/batch timeout values; do not commit credentials.
 
-Creating a project through React starts it through `LocalPipelineOrchestrator`.
-That action can download/transcribe media, so use only a source you are
-authorized to process.
+## Test and validation
 
-## Quick start: Airflow mode
-
-Requirements on Windows:
-
-- Docker Desktop with the WSL 2 Linux-container backend;
-- Docker Compose;
-- the host FastAPI process stopped so it does not share the application SQLite file.
-
-Create the ignored runtime environment and data directory:
+The CI workflow is the source of truth for the command shape. Run the relevant
+offline checks locally:
 
 ```powershell
-Copy-Item .\orchestration\airflow\airflow.env.example .\orchestration\airflow\.env.airflow
-notepad .\orchestration\airflow\.env.airflow
-New-Item -ItemType Directory -Force .\data | Out-Null
-```
+uv sync --locked
+uv run python -m unittest tests.test_review_timeouts tests.test_review_agent
+uv run python -m unittest discover -s tests
+uv pip check
 
-Replace every `change-me` value with a distinct random secret, then:
-
-```powershell
-docker compose --env-file .\orchestration\airflow\.env.airflow build
-docker compose --env-file .\orchestration\airflow\.env.airflow up airflow-init
-docker compose --env-file .\orchestration\airflow\.env.airflow up -d
-docker compose --env-file .\orchestration\airflow\.env.airflow ps
-```
-
-| Service | Default URL |
-|---|---|
-| React development UI | `http://127.0.0.1:5173` |
-| FastAPI in Compose | `http://127.0.0.1:8010` |
-| Airflow UI/API | `http://127.0.0.1:8080` |
-
-Normal stop preserves application data and Airflow metadata:
-
-```powershell
-docker compose --env-file .\orchestration\airflow\.env.airflow down
-```
-
-Do not add `-v` unless you intentionally want to delete Airflow metadata,
-credentials, and logs. See the [Airflow guide](orchestration/airflow/README.md)
-before resetting anything.
-
-## Configuration
-
-| Setting | Purpose | Safe example/default | Secret |
-|---|---|---|---|
-| `PIPELINE_ORCHESTRATOR` | Select local or Airflow orchestration | `local` | No |
-| `PODCAST_CUTTER_DB_URL` | Application database URL | `sqlite:///data/podcast_cutter.db` | No |
-| `PODCAST_CUTTER_PROJECT_ROOT` | Application data/workspace root | `.` | No |
-| `VITE_API_BASE_URL` | Optional browser API base | `http://127.0.0.1:8010` | No |
-| `APP_API_PORT` | Compose FastAPI host port | `8010` | No |
-| `AIRFLOW_PORT` | Airflow host port | `8080` | No |
-| `AIRFLOW_API_BASE_URL` | Backend Airflow REST URL | `http://127.0.0.1:8080` locally | No |
-| `AIRFLOW_UI_BASE_URL` | Browser-facing Airflow URL | `http://127.0.0.1:8080` | No |
-| `AIRFLOW_DAG_ID` | Product DAG identifier | `podcast_clip_pipeline` | No |
-| `AIRFLOW_API_USERNAME` | Airflow Simple Auth user | runtime-defined | No |
-| `AIRFLOW_API_PASSWORD` | Airflow REST password | unique random value | Yes |
-| `AIRFLOW_JWT_SECRET` | Airflow execution JWT signing secret | unique random value | Yes |
-| `CLIP_REVIEW_MODE` | `gemini` (product default) or explicit development/test `local_stub` | `gemini` | No |
-| `GEMINI_API_KEY` | Google Gen AI credential | unset | Yes |
-| `GEMINI_MODEL` | Configured review model | `gemini-3.5-flash` | No |
-| `CLIP_REVIEW_CONTEXT_SECONDS` | Context before/after candidate | `20.0` | No |
-| `GEMINI_REQUEST_TIMEOUT_SECONDS` | Maximum provider attempt | `300` | No |
-| `GEMINI_BATCH_TIMEOUT_SECONDS` | Maximum project review batch | `1800` | No |
-| `TRANSCRIPTION_DEVICE` | `auto`, `cuda`, or `cpu` | `auto` | No |
-| `TRANSCRIPTION_COMPUTE_TYPE` | Faster-Whisper compute type | `auto` | No |
-| `APP_DATA_HOST_PATH` | Compose application data mount | `./data` | No |
-| `subtitle_checker_mode` | Legacy per-project compatibility field; external/LLM subtitle correction is disabled | `local_only` retained for older data | No |
-
-Use `.env.example` and `orchestration/airflow/airflow.env.example` as templates.
-Never commit `.env` or `.env.airflow`.
-
-## Testing and validation
-
-Verified `v1.1.0` release results:
-
-- Python `unittest` suite: 305 tests completed successfully, with 1 optional FFmpeg smoke skipped.
-- React/Vitest suite: 52 of 52 tests passed.
-- Airflow DAG parsed with 8 tasks, zero import errors, and zero retries on `review_boundaries`.
-- Mocked LangGraph smoke covered valid-first response, corrective retry, two invalid responses, HTTP 429, cancellation, and a three-clip batch.
-- A real isolated Airflow smoke created one project, one job, one DagRun, executed eight sequential tasks, imported five clips, and ended with the project ready. It used `auto_review=false`, so no Gemini call occurred.
-
-The GitHub Actions workflow runs separate backend, frontend, and Compose
-validation jobs for each push to `main` and can also be started manually.
-
-These are release-validation results, not a live CI badge. There is currently no
-browser E2E suite.
-
-Run the offline validation gate:
-
-```powershell
-.\.venv\Scripts\python.exe -m unittest discover -s tests
-.\.venv\Scripts\python.exe -m pip check
 Set-Location .\apps\web
+npm ci
 npm run test -- --run
 npm run lint
 npm run build
 Set-Location ..\..
-docker compose --env-file .\orchestration\airflow\.env.airflow -f .\orchestration\airflow\docker-compose.yml config --quiet
+
 git diff --check
 ```
 
-## Engineering decisions
+## MVP limits
 
-- Deterministic stages make candidate generation reproducible and testable.
-- Gemini chooses only from backend-generated transcript boundaries.
-- Backend validation, not model confidence, decides whether a result is safe to persist.
-- One corrective retry balances recoverability with quota and latency control.
-- LangGraph runs per clip for isolation; it does not model multiple fictional agents.
-- Airflow schedules pipeline stages; it does not duplicate LangGraph nodes as tasks.
-- Application SQLite and Airflow PostgreSQL have separate responsibilities.
-- Local mode remains the simplest development path.
+- A successful live Gemini decision depends on external model availability.
+- The application is local-first and uses SQLite; it is not a multi-user cloud
+  deployment.
+- Rendering is manually initiated after editorial review.
+- There is no browser end-to-end suite, automatic publishing, or automatic
+  moderation/compliance workflow.
+- Transcription quality depends on the input audio and Faster-Whisper output.
+- Optional Docker/Airflow support is not required for normal local development.
 
-The rationale and consequences are documented in
-[Engineering Decisions](docs/ENGINEERING_DECISIONS.md).
-
-## Reliability and safety
-
-- Runtime secrets live in ignored environment files.
-- Airflow credentials stay backend-only.
-- DagRun configuration is versioned and allowlisted.
-- Absolute and traversal workspace paths are rejected.
-- Prompts and transcripts are excluded from XCom and durable LangGraph state.
-- Frontend orchestration metadata is sanitized.
-- Provider failures remain distinct from product review decisions.
-- Invalid/cancelled reviews do not overwrite AI boundaries, user edits, or prior valid reviewed boundaries.
-- Gemini is limited to semantic boundary review and does not rewrite quoted transcript text.
-- Subtitle formatting preserves recognized words and uses no external correction service.
-- Before stable face acquisition and after the bounded face-loss hold, dynamic tracking switches to a blurred full-frame layout instead of retaining a stale narrow crop.
-- Rendering is never triggered automatically by semantic review.
-
-These controls are engineering safeguards, not a formal security certification.
-
-## Known limitations
-
-- Gemini quotas may return HTTP 429; automatic `Retry-After` handling is not implemented.
-- The application business database is SQLite and targets a local, single-project-at-a-time deployment.
-- Airflow is validated as local Docker infrastructure, not a production cloud deployment.
-- There is no browser E2E suite or automatic moderation/compliance pipeline.
-- Candidate and subtitle text quality depend on source audio and Faster-Whisper; lexical ASR errors may remain.
-- There is no built-in subtitle text editor.
-- The Airflow image intentionally excludes legacy `google-generativeai`; current provider integration uses `google-genai`.
-- The complete pipeline remains local-first, and production hosting is not part of this release.
-- Final rendering remains user-triggered and editorially controlled.
-
-## Roadmap and completion status
-
-The portfolio MVP is complete at `v1.1.0`. Optional extensions are limited to:
-
-- final README/demo assets after safe screenshots are captured;
-- browser E2E tests;
-- deployment/production serving;
-- automatic Gemini HTTP 429 `Retry-After` handling.
-
-Content Packaging, AI titles/descriptions, hashtags, thumbnail text, publishing
-metadata, additional agents, and unrelated product expansion are not part of
-the roadmap.
+See [Sprint 2 review](SPRINT_2_REVIEW.md) for the current acceptance-test
+status and [the review-agent documentation](docs/CLIP_REVIEW_AGENT.md) for the
+protocol details.
