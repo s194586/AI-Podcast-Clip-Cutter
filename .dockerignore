@@ -8,7 +8,9 @@ __pycache__
 !.env.example
 apps/web/node_modules
 apps/web/dist
+apps/web/coverage
 node_modules
+.docker-smoke
 data
 input
 cuts

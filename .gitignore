@@ -89,6 +89,7 @@ orchestration/airflow/standalone_admin_password.txt
 orchestration/airflow/.env.airflow
 orchestration/airflow/secrets/
 .airflow-validation-data/
+.docker-smoke/
 
 # Media outputs
 *.mp4

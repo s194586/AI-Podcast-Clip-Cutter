@@ -56,27 +56,27 @@ not logged. yt-dlp is configured to use this system store with certificate
 verification enabled. Do not copy the Windows certificate store or commit a
 local root.
 
-The same fixed PEM is exposed to Docker BuildKit as a build secret. Dependency
-installation uses a temporary combined bundle with normal TLS verification;
-the temporary file is removed in the same build step and the secret is not
-copied into an image layer. No `--trusted-host` or certificate bypass is used.
+The canonical build does not require this optional file and never copies it
+into an image. If HTTPS inspection also affects image-build downloads, configure
+Docker Desktop to trust the proxy/root before building. No `--trusted-host` or
+certificate bypass is used.
 
 ## Start
 
 Stop any host FastAPI process using the same SQLite file before Airflow mode.
-Then build, migrate, and start:
+The repository-level Compose file is the canonical demo stack and also starts
+the containerized React/Nginx frontend. Build, initialize, start, and wait for
+healthchecks with one command:
 
 ```powershell
-docker compose --env-file .\orchestration\airflow\.env.airflow build
-docker compose --env-file .\orchestration\airflow\.env.airflow up airflow-init
-docker compose --env-file .\orchestration\airflow\.env.airflow up -d
+docker compose --env-file .\orchestration\airflow\.env.airflow up --build --detach --wait
 docker compose --env-file .\orchestration\airflow\.env.airflow ps
 ```
 
-Open FastAPI at `http://127.0.0.1:8010` and Airflow at
-`http://127.0.0.1:8080`. Run the React UI separately with
-`.\scripts\dev_web.ps1`. FastAPI submits and reconciles DAG runs; do not trigger
-the DAG manually without its versioned application run configuration.
+Open the React UI at `http://127.0.0.1:5173`, FastAPI at
+`http://127.0.0.1:8010`, and Airflow at `http://127.0.0.1:8080`. FastAPI
+submits and reconciles DAG runs; do not trigger the DAG manually without its
+versioned application run configuration.
 
 ## Stop And Reset
 
