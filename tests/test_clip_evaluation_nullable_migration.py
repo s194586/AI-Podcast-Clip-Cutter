@@ -256,10 +256,10 @@ class ClipEvaluationNullableMigrationTests(unittest.TestCase):
             ).one()
         self.assertEqual(tuple(row), (None, None, None, None, None, None, None, None))
 
-    def test_save_evaluation_keeps_current_filler_behavior_after_nullable_migration(self) -> None:
+    def test_save_evaluation_persists_null_for_missing_gemini_legacy_fields(self) -> None:
         project_id, _clip_id = self._seed_project_and_clip()
 
-        save_evaluation(
+        saved = save_evaluation(
             {
                 "project_id": project_id,
                 "clip_id": "clip_001",
@@ -270,6 +270,12 @@ class ClipEvaluationNullableMigrationTests(unittest.TestCase):
             }
         )
 
+        self.assertIsNone(saved["needs_more_context"])
+        self.assertEqual(
+            saved["review_provenance"],
+            {"review_kind": "manual_review", "numeric_score_provenance": "not_available"},
+        )
+
         with self.engine.connect() as connection:
             row = connection.execute(
                 text(
@@ -278,7 +284,7 @@ class ClipEvaluationNullableMigrationTests(unittest.TestCase):
                     "FROM clip_evaluations WHERE provider = 'gemini'"
                 )
             ).one()
-        self.assertEqual(tuple(row), (0.0, 0.0, 0.0, 0.0, 0.0, "low", "", 0))
+        self.assertEqual(tuple(row), (None, None, None, None, None, None, None, None))
 
 
 if __name__ == "__main__":

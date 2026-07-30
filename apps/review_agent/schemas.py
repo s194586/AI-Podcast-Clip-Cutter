@@ -18,6 +18,8 @@ RecommendedAction = Literal[
     "manual_review",
 ]
 CropAdvice = Literal["speaker_focus", "wider_context", "keep_current", "manual_review"]
+ReviewKind = Literal["gemini_boundary_decision", "manual_review", "legacy_heuristic", "unknown"]
+NumericScoreProvenance = Literal["legacy_heuristic", "not_available"]
 
 
 class ClipReviewRequest(BaseModel):
@@ -133,6 +135,13 @@ class CropSuggestion(BaseModel):
     reason: str
 
 
+class ReviewProvenance(BaseModel):
+    """Non-breaking API metadata for the origin of review and score fields."""
+
+    review_kind: ReviewKind
+    numeric_score_provenance: NumericScoreProvenance
+
+
 class ClipReviewEvaluation(BaseModel):
     project_id: int
     clip_id: str
@@ -148,7 +157,8 @@ class ClipReviewEvaluation(BaseModel):
     payoff_score: float | None = None
     boundary_score: float | None = None
     privacy_risk: PrivacyRisk | None = None
-    needs_more_context: bool = False
+    needs_more_context: bool | None = None
+    review_provenance: ReviewProvenance | None = None
     selected_start_option_index: int | None = None
     selected_end_option_index: int | None = None
     selected_start_segment_id: str | None = None

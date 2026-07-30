@@ -81,6 +81,19 @@ class GeminiBoundaryDecision(BaseModel):
 
 Gemini does not produce numeric quality, hook, payoff, boundary, context, or privacy scores. It also does not return crop advice or defer editorial decisions to `manual_review`.
 
+`decision` is the sole canonical editorial result for a Gemini review. New
+Gemini records store no numeric score: their API `review_provenance` is
+`{"review_kind": "gemini_boundary_decision", "numeric_score_provenance": "not_available"}`.
+Backend/provider failures use `{"review_kind": "manual_review",
+"numeric_score_provenance": "not_available"}` instead; they are not Gemini
+editorial decisions. Records with neither a verified Gemini decision nor
+historical numeric legacy data use `{"review_kind": "unknown",
+"numeric_score_provenance": "not_available"}`.
+The retained score, privacy, crop, and context fields are read-only
+compatibility data for historical heuristic/local records. Candidate rank,
+source-peak rank, and replay-interest remain technical candidate provenance,
+not editorial quality scores.
+
 Segment IDs are required for every Gemini response, including `reject`. For
 `reject`, Gemini returns the current aligned IDs; the backend does not apply
 boundaries.

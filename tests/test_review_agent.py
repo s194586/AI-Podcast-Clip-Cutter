@@ -32,7 +32,7 @@ from apps.review_agent.providers import (
 )
 from apps.review_agent.schemas import GeminiBoundaryDecision
 from apps.review_agent.service import BoundaryOptionSelectionError, ReviewAgentService
-from apps.review_agent.tools import check_sensitive_patterns, save_evaluation
+from apps.review_agent.tools import check_sensitive_patterns, evaluation_to_dict, save_evaluation
 from transcription.segment_identity import canonical_segment_id
 
 
@@ -547,6 +547,7 @@ class ReviewAgentTests(unittest.TestCase):
         self.assertEqual(result["selected_start_option_index"], context["current_aligned_start_option_index"])
         self.assertEqual(result["selected_end_option_index"], context["current_aligned_end_option_index"])
         self.assertEqual((result["reviewed_start"], result["reviewed_end"]), (100.0, 140.0))
+        self.assertNotIn("needs_more_context", result)
         self.assertEqual(result["raw_result"]["review_response_contract_version"], 2)
 
     def test_id_path_rejects_unknown_ineligible_and_unlisted_boundary_pairs(self):
@@ -665,6 +666,7 @@ class ReviewAgentTests(unittest.TestCase):
             warning="Invalid.", apply_safe_suggestions=True, failure_category="structured_output",
         )
         self.assertEqual(failed["raw_result"]["review_response_contract_version"], 2)
+        self.assertNotIn("needs_more_context", failed)
 
     def test_visual_reference_prompt_still_requires_three_decision_choice(self):
         prompt = build_gemini_prompt(
@@ -729,6 +731,10 @@ class ReviewAgentTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertIsNone(calls[0])
         self.assertEqual(result["decision"], "manual_review")
+        self.assertEqual(
+            result["review_provenance"],
+            {"review_kind": "manual_review", "numeric_score_provenance": "not_available"},
+        )
         self.assertIsNone(result["reviewed_start"])
         self.assertIsNone(result["reviewed_end"])
         self.assertTrue(result["failed"])
@@ -1342,7 +1348,7 @@ class ReviewAgentTests(unittest.TestCase):
         self.assertEqual(updated["edited_end"], 139.0)
         self.assertEqual(updated["boundary_source"], "user")
 
-    def test_missing_review_provenance_is_saved_and_serialized_as_unknown(self):
+    def test_unknown_provider_manual_review_is_not_presented_as_heuristic(self):
         project_id = self._seed_project()
 
         saved = save_evaluation(
@@ -1356,9 +1362,184 @@ class ReviewAgentTests(unittest.TestCase):
 
         self.assertEqual(saved["provider"], "unknown")
         self.assertEqual(saved["model"], "unknown")
+        self.assertEqual(
+            saved["review_provenance"],
+            {"review_kind": "manual_review", "numeric_score_provenance": "not_available"},
+        )
         with session_scope() as session:
             evaluation = session.scalars(select(ClipEvaluation)).one()
         self.assertEqual(evaluation.provider, "unknown")
+
+    def test_unknown_review_without_legacy_scores_has_unknown_provenance(self):
+        project_id = self._seed_project()
+        with session_scope() as session:
+            clip = ClipRepository(session).get_by_external_id(project_id, "clip_001")
+            evaluation = ClipEvaluation(
+                project_id=project_id,
+                clip_id=clip.id,
+                external_clip_id="clip_001",
+                provider="unknown",
+                decision="reviewed",
+                recommended_action="manual_review",
+            )
+            session.add(evaluation)
+            session.flush()
+            serialized = evaluation_to_dict(evaluation)
+
+        self.assertEqual(
+            serialized["review_provenance"],
+            {"review_kind": "unknown", "numeric_score_provenance": "not_available"},
+        )
+
+    def test_legacy_heuristic_evaluation_serializes_scores_without_changes(self):
+        project_id = self._seed_project()
+        with session_scope() as session:
+            clip = ClipRepository(session).get_by_external_id(project_id, "clip_001")
+            evaluation = ClipEvaluation(
+                project_id=project_id,
+                clip_id=clip.id,
+                external_clip_id="clip_001",
+                provider="local_stub",
+                model="legacy-local",
+                decision="render_ready",
+                recommended_action="render_ready",
+                quality_score=0.91,
+                context_score=0.82,
+                hook_score=0.73,
+                payoff_score=0.64,
+                boundary_score=0.55,
+                privacy_risk="medium",
+                crop_advice="wider_context",
+                needs_more_context=True,
+                raw_result_json={"provider": "local_stub", "model": "legacy-local"},
+            )
+            session.add(evaluation)
+            session.flush()
+            serialized = evaluation_to_dict(evaluation)
+
+        self.assertEqual(
+            {field: serialized[field] for field in (
+                "quality_score", "context_score", "hook_score", "payoff_score", "boundary_score",
+                "privacy_risk", "crop_advice", "needs_more_context",
+            )},
+            {
+                "quality_score": 0.91,
+                "context_score": 0.82,
+                "hook_score": 0.73,
+                "payoff_score": 0.64,
+                "boundary_score": 0.55,
+                "privacy_risk": "medium",
+                "crop_advice": "wider_context",
+                "needs_more_context": True,
+            },
+        )
+        self.assertEqual(
+            serialized["review_provenance"],
+            {"review_kind": "legacy_heuristic", "numeric_score_provenance": "legacy_heuristic"},
+        )
+
+    def test_historical_gemini_zero_fillers_are_not_presented_as_numeric_scores(self):
+        project_id = self._seed_project()
+        with session_scope() as session:
+            clip = ClipRepository(session).get_by_external_id(project_id, "clip_001")
+            evaluation = ClipEvaluation(
+                project_id=project_id,
+                clip_id=clip.id,
+                external_clip_id="clip_001",
+                provider="gemini",
+                model="historical-gemini",
+                decision="render_ready",
+                recommended_action="render_ready",
+                quality_score=0.0,
+                context_score=0.0,
+                hook_score=0.0,
+                payoff_score=0.0,
+                boundary_score=0.0,
+                privacy_risk="low",
+                crop_advice="",
+                needs_more_context=False,
+                raw_result_json={"provider": "gemini", "model": "historical-gemini"},
+            )
+            session.add(evaluation)
+            session.flush()
+            serialized = evaluation_to_dict(evaluation)
+
+        self.assertNotIn("quality_score", serialized)
+        self.assertNotIn("crop_advice", serialized)
+        self.assertEqual(
+            serialized["review_provenance"],
+            {"review_kind": "gemini_boundary_decision", "numeric_score_provenance": "not_available"},
+        )
+
+    def test_gemini_persistence_uses_decision_and_preserves_explicit_legacy_values(self):
+        project_id = self._seed_project()
+
+        save_evaluation(
+            {
+                "project_id": project_id,
+                "clip_id": "clip_001",
+                "provider": "gemini",
+                "model": "gemini-unit",
+                "decision": "reject",
+                "recommended_action": "render_ready",
+                "quality_score": 0.91,
+                "context_score": 0.82,
+                "hook_score": 0.73,
+                "payoff_score": 0.64,
+                "boundary_score": 0.55,
+                "privacy_risk": "medium",
+                "crop_advice": "wider_context",
+                "needs_more_context": "false",
+            }
+        )
+
+        with session_scope() as session:
+            evaluation = session.scalars(select(ClipEvaluation)).one()
+        self.assertEqual(evaluation.recommended_action, "reject")
+        self.assertEqual(
+            (
+                evaluation.quality_score,
+                evaluation.context_score,
+                evaluation.hook_score,
+                evaluation.payoff_score,
+                evaluation.boundary_score,
+                evaluation.privacy_risk,
+                evaluation.crop_advice,
+                evaluation.needs_more_context,
+            ),
+            (0.91, 0.82, 0.73, 0.64, 0.55, "medium", "wider_context", False),
+        )
+        clip = clip_service.load_clips(project_id=project_id, project_root=self.root)[0]
+        self.assertEqual(clip["status"], "rejected")
+
+    def test_missing_or_invalid_gemini_decision_never_persists_reviewed(self):
+        project_id = self._seed_project()
+
+        saved = save_evaluation(
+            {
+                "project_id": project_id,
+                "clip_id": "clip_001",
+                "provider": "gemini",
+                "model": "gemini-unit",
+            }
+        )
+        self.assertEqual(saved["decision"], "manual_review")
+        self.assertEqual(saved["recommended_action"], "manual_review")
+
+        with self.assertRaisesRegex(ValueError, "Invalid Gemini decision"):
+            save_evaluation(
+                {
+                    "project_id": project_id,
+                    "clip_id": "clip_001",
+                    "provider": "gemini",
+                    "model": "gemini-unit",
+                    "decision": "reviewed",
+                }
+            )
+
+        with session_scope() as session:
+            decisions = list(session.scalars(select(ClipEvaluation.decision)).all())
+        self.assertEqual(decisions, ["manual_review"])
 
     def test_reject_and_manual_review_do_not_auto_apply_boundaries(self):
         project_id = self._seed_project()
