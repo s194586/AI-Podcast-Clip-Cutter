@@ -21,6 +21,7 @@ from .stages import (
 PROJECT_STAGE_ORDER = (
     "prepare_workspace",
     "download_source",
+    "detect_heatmap_peaks",
     "transcribe",
     "validate_transcript",
     "generate_candidates",

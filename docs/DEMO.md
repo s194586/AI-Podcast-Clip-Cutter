@@ -20,7 +20,7 @@ not add placeholder image links to the README.
 | 2:00-2:25 | Prepared 1080x1920 render | “Stable detections use smoothed face tracking. If detection is unavailable, the dynamic renderer moves to the full source on a blurred background. Captions are formatted deterministically from transcript timestamps.” |
 | 2:25-2:55 | Exports | “The latest render is foregrounded, previous attempts stay collapsed as history, and Raw and With subtitles are grouped as variants of the same clip.” |
 
-If an Airflow proof is useful for the audience, show the eight-task DAG only as
+If an Airflow proof is useful for the audience, show the nine-task DAG only as
 a brief optional cutaway. Do not interrupt the main product flow or start a new
 DagRun solely for the recording.
 
@@ -44,7 +44,7 @@ DagRun solely for the recording.
 | Dashboard with safe project cards | `dashboard.png` |
 | Project creation form | `new-project.png` |
 | Processing progress | `processing.png` |
-| Airflow eight-task DAG | `airflow-dag.png` |
+| Airflow nine-task DAG | `airflow-dag.png` |
 | Clip editor with reviewed boundaries | `clip-editor.png` |
 | Manual-review fallback | `manual-review.png` |
 | Exports page with a safe artifact | `exports.png` |

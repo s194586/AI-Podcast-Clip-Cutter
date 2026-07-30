@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ast
+import json
 import os
 import tempfile
 import unittest
@@ -223,8 +225,63 @@ class AirflowSettingsAndInfrastructureTests(unittest.TestCase):
     def test_registry_and_dag_share_exact_stage_order(self):
         self.assertEqual(TASK_ORDER, PROJECT_STAGE_ORDER)
 
+    def test_heatmap_task_is_explicitly_declared_in_required_dag_chain(self):
+        expected = (
+            "prepare_workspace",
+            "download_source",
+            "detect_heatmap_peaks",
+            "transcribe",
+            "validate_transcript",
+            "generate_candidates",
+            "import_candidates",
+            "review_boundaries",
+            "mark_ready",
+        )
+        root = Path(__file__).resolve().parents[1]
+        tree = ast.parse(
+            (root / "orchestration/airflow/dags/podcast_pipeline_dag.py").read_text(
+                encoding="utf-8"
+            )
+        )
+        pipeline_function = next(
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef) and node.name == "_podcast_clip_pipeline"
+        )
+        task_ids = {
+            keyword.value.value
+            for node in ast.walk(pipeline_function)
+            if isinstance(node, ast.FunctionDef)
+            for decorator in node.decorator_list
+            if isinstance(decorator, ast.Call)
+            and isinstance(decorator.func, ast.Name)
+            and decorator.func.id == "task"
+            for keyword in decorator.keywords
+            if keyword.arg == "task_id" and isinstance(keyword.value, ast.Constant)
+        }
+        stages_assignment = next(
+            node
+            for node in pipeline_function.body
+            if isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id == "stages" for target in node.targets)
+        )
+        declared_chain = tuple(
+            element.func.id
+            for element in stages_assignment.value.elts
+            if isinstance(element, ast.Call) and isinstance(element.func, ast.Name)
+        )
+        self.assertEqual(declared_chain, expected)
+        self.assertIn("detect_heatmap_peaks", task_ids)
+        self.assertTrue(
+            any(isinstance(node, ast.BinOp) and isinstance(node.op, ast.RShift) for node in ast.walk(pipeline_function))
+        )
+        self.assertLess(declared_chain.index("download_source"), declared_chain.index("detect_heatmap_peaks"))
+        self.assertLess(declared_chain.index("detect_heatmap_peaks"), declared_chain.index("transcribe"))
+        self.assertLess(declared_chain.index("detect_heatmap_peaks"), declared_chain.index("generate_candidates"))
+
     def test_review_has_no_airflow_retry(self):
         self.assertEqual(TASK_RETRIES["review_boundaries"], 0)
+        self.assertEqual(TASK_RETRIES["detect_heatmap_peaks"], 1)
         self.assertTrue(all(0 <= value <= 2 for value in TASK_RETRIES.values()))
 
     def test_dag_module_has_an_explicit_parse_state(self):
@@ -597,6 +654,64 @@ class AirflowOrchestratorTests(unittest.TestCase):
             )
         self.assertTrue(result["skipped"])
         provider.assert_not_called()
+
+    def test_airflow_tasks_produce_peaks_before_candidates_in_clean_workspace(self):
+        started = self._start()
+        workspace = self.root / f"data/projects/{self.project_id}/workspace"
+        metadata = workspace / "metadata"
+        metadata.mkdir(parents=True, exist_ok=True)
+        points = [
+            {
+                "start_time": index * 10.0,
+                "end_time": (index + 1) * 10.0,
+                "value": 0.95 if index == 12 else 0.1,
+            }
+            for index in range(25)
+        ]
+        (metadata / "heatmap.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "source": "youtube_most_replayed",
+                    "synthetic": False,
+                    "video_id": "offline-video",
+                    "extractor": "youtube",
+                    "extractor_version": "offline-test",
+                    "duration_seconds": 250.0,
+                    "points": points,
+                }
+            ),
+            encoding="utf-8",
+        )
+        peaks_path = metadata / "heatmap_peaks.json"
+        candidates_path = metadata / "candidate_windows.json"
+        self.assertFalse(peaks_path.exists())
+        self.assertFalse(candidates_path.exists())
+
+        config = _valid_payload(
+            project_id=self.project_id,
+            job_id=started.job_id,
+            auto_review=False,
+        )
+        completed = [
+            execute_airflow_stage(
+                config,
+                "detect_heatmap_peaks",
+                container_project_root=self.root,
+            )["stage"],
+            execute_airflow_stage(
+                config,
+                "generate_candidates",
+                container_project_root=self.root,
+            )["stage"],
+        ]
+
+        peaks = json.loads(peaks_path.read_text(encoding="utf-8"))
+        candidates = json.loads(candidates_path.read_text(encoding="utf-8"))
+        self.assertEqual(completed, ["detecting_heatmap_peaks", "generating_candidates"])
+        self.assertGreater(len(peaks["peaks"]), 0)
+        self.assertEqual(len(candidates["candidates"]), len(peaks["peaks"]))
+        self.assertTrue((workspace / "top_windows.json").exists())
 
     def test_review_stage_requests_gemini_without_fallback(self):
         started = self._start()

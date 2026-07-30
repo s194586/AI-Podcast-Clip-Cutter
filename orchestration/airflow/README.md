@@ -8,8 +8,9 @@ separate DAG processor, and the Airflow 3 stable REST API.
 The DAG is `podcast_clip_pipeline`. Its tasks are the actual pipeline stages:
 
 ```text
-prepare_workspace -> download_source -> transcribe -> validate_transcript
--> generate_candidates -> import_candidates -> review_boundaries -> mark_ready
+prepare_workspace -> download_source -> detect_heatmap_peaks -> transcribe
+-> validate_transcript -> generate_candidates -> import_candidates
+-> review_boundaries -> mark_ready
 ```
 
 Tasks call `PipelineStageExecutor` and `PipelineStageRegistry`. They never call
