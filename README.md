@@ -97,8 +97,10 @@ notepad .\orchestration\airflow\.env.airflow
 Replace every `change-me` value. The required, local-only secrets are
 `AIRFLOW_API_PASSWORD`, `AIRFLOW_DB_PASSWORD`, and `AIRFLOW_JWT_SECRET`;
 `AIRFLOW_API_USERNAME` is also required. Keep the database password URL-safe.
-`GEMINI_API_KEY` is optional and may remain empty. The ignored env file is not
-copied into either image.
+`CLIP_REVIEW_MODE=gemini` is the normal configuration. `GEMINI_API_KEY` may
+remain empty when semantic review is not used: a missing key does not block
+stack startup, project creation, or pipeline runs with `auto_review` disabled.
+The ignored env file is not copied into either image.
 
 From the repository root, the canonical start command is:
 
@@ -140,14 +142,15 @@ name, and volumes:
 It builds both images, waits for every healthcheck, verifies frontend and API
 access (directly and through Nginx), creates and lists one non-started project,
 checks SPA routing, and confirms that Airflow lists the DAG with no import
-errors. It never starts a pipeline or calls Gemini. Its `finally` cleanup
-removes only the isolated smoke containers, network, volumes, and workspace.
+errors. The script explicitly sets `CLIP_REVIEW_MODE=local_stub` as a controlled
+test fixture, but it never starts a pipeline or invokes review. It performs a
+collision preflight before creating anything, and its `finally` cleanup removes
+only resources owned by that smoke run.
 
-The example config uses `CLIP_REVIEW_MODE=local_stub`, which is a deterministic
-development provider for manually invoked review endpoints. The normal project
-and pipeline flow works without a Gemini key when `auto_review` is disabled.
-Real semantic boundary review requires `CLIP_REVIEW_MODE=gemini` and a valid
-`GEMINI_API_KEY`; the Airflow automatic review task never silently falls back.
+Real semantic boundary review requires the normal `CLIP_REVIEW_MODE=gemini`
+configuration and a valid `GEMINI_API_KEY`; there is no silent fallback.
+`local_stub` is reserved for controlled automated tests and is not an
+alternative production scoring mode.
 
 Stop the application while preserving databases, logs, and project data:
 

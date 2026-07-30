@@ -18,7 +18,7 @@ x-airflow-environment: &airflow-environment
   AIRFLOW_JWT_SECRET: ${AIRFLOW_JWT_SECRET}
   PODCAST_CUTTER_PROJECT_ROOT: /opt/ai-cutter
   PODCAST_CUTTER_DB_URL: sqlite:////opt/ai-cutter/data/podcast_cutter.db
-  CLIP_REVIEW_MODE: ${CLIP_REVIEW_MODE:-local_stub}
+  CLIP_REVIEW_MODE: ${CLIP_REVIEW_MODE:-gemini}
   CLIP_REVIEW_CONTEXT_SECONDS: ${CLIP_REVIEW_CONTEXT_SECONDS:-20.0}
   GEMINI_API_KEY: ${GEMINI_API_KEY:-}
   GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.5-flash}

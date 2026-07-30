@@ -33,9 +33,10 @@ password URL-safe. The env file is excluded from Git and the Docker build. The
 Simple Auth Manager password is written with mode `0600` to the
 `airflow-secrets` volume and is not printed by the initializer.
 
-Keep `CLIP_REVIEW_MODE=local_stub` for offline manual review endpoints. The DAG's
-automatic review stage is explicitly Gemini with no silent fallback; projects
-used for offline pipeline fixtures must set `auto_review=false`.
+Keep the normal `CLIP_REVIEW_MODE=gemini` setting. A missing `GEMINI_API_KEY`
+does not block stack startup or projects with `auto_review=false`; semantic
+review requires a valid key and never silently falls back. `local_stub` is
+reserved for controlled automated tests such as `smoke_docker.ps1`.
 
 ### Optional local HTTPS-inspection root
 

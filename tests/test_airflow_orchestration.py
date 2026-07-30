@@ -321,7 +321,7 @@ class AirflowSettingsAndInfrastructureTests(unittest.TestCase):
         self.assertEqual(compose["x-airflow-environment"]["AIRFLOW__CORE__EXECUTOR"], "LocalExecutor")
         self.assertEqual(
             compose["x-airflow-environment"]["CLIP_REVIEW_MODE"],
-            "${CLIP_REVIEW_MODE:-local_stub}",
+            "${CLIP_REVIEW_MODE:-gemini}",
         )
         self.assertNotIn("redis", services)
         self.assertNotIn("airflow-worker", services)
@@ -359,8 +359,35 @@ class AirflowSettingsAndInfrastructureTests(unittest.TestCase):
         self.assertIn("npm ci", dockerfile)
         self.assertIn("npm run build", dockerfile)
         self.assertIn("proxy_pass http://app-api:8010/;", nginx)
+        self.assertIn("proxy_read_timeout 1800s;", nginx)
+        self.assertIn("proxy_send_timeout 1800s;", nginx)
         self.assertIn("try_files $uri $uri/ /index.html;", nginx)
         self.assertNotIn("GEMINI", dockerfile + nginx)
+
+    def test_docker_smoke_preflights_compose_resources_before_owning_cleanup(self):
+        root = Path(__file__).resolve().parents[1]
+        script = (root / "scripts/smoke_docker.ps1").read_text(encoding="utf-8")
+        example_env = (root / "orchestration/airflow/airflow.env.example").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("com.docker.compose.project=$ProjectName", script)
+        self.assertIn('"container", "network", "volume"', script)
+        self.assertIn("Smoke preflight collision", script)
+        self.assertIn('"CLIP_REVIEW_MODE=local_stub"', script)
+        self.assertIn("SMOKE_REVIEW_CONFIG_OK mode=local_stub gemini_key=empty", script)
+        self.assertIn("CLIP_REVIEW_MODE=gemini", example_env)
+        self.assertIn("$runOwnsResources = $true", script)
+        self.assertIn("if ($runOwnsResources -and $composeAttempted)", script)
+        self.assertIn("-not $smokeParentExisted", script)
+        self.assertLess(
+            script.index("Smoke preflight collision"),
+            script.index("$runOwnsResources = $true"),
+        )
+        self.assertLess(
+            script.index("$runOwnsResources = $true"),
+            script.index("New-Item -ItemType Directory"),
+        )
 
     def test_default_compose_build_does_not_require_optional_custom_ca_file(self):
         root = Path(__file__).resolve().parents[1]
