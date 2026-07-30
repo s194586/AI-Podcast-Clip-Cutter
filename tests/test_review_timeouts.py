@@ -1,5 +1,6 @@
 import json
 import os
+import ssl
 import tempfile
 import time
 import unittest
@@ -35,7 +36,9 @@ from apps.review_agent.providers import (
     ReviewProviderRequestCancelledError,
     ReviewProviderTimeoutError,
     _provider_error_from_exception,
+    _gemini_request_worker,
     _run_bounded_process,
+    _create_genai_client,
     preflight_gemini_credentials,
 )
 from apps.review_agent.schemas import GeminiBoundaryDecision
@@ -76,13 +79,44 @@ class GeminiProviderTimeoutTests(unittest.TestCase):
                 captured.update(kwargs)
 
         with patch("google.genai.Client", FakeClient):
-            from apps.review_agent.providers import _create_genai_client
-
             _create_genai_client("offline-placeholder", timeout_seconds=300)
 
         http_options = captured["http_options"]
         self.assertEqual(http_options.timeout, 300000)
         self.assertEqual(http_options.retry_options.attempts, 1)
+        self.assertIsInstance(http_options.client_args["verify"], ssl.SSLContext)
+
+    def test_spawned_worker_uses_the_shared_client_factory(self):
+        class CapturingConnection:
+            def __init__(self):
+                self.messages = []
+
+            def send(self, payload):
+                self.messages.append(payload)
+
+            def close(self):
+                pass
+
+        decision = GeminiBoundaryDecision(
+            review_response_contract_version=2,
+            decision="render_ready",
+            start_segment_id="seg_v1_start",
+            end_segment_id="seg_v1_end",
+            reasoning_summary="Offline decision.",
+            start_reason="Offline start.",
+            end_reason="Offline end.",
+            warnings=[],
+        )
+        connection = CapturingConnection()
+        with patch(
+            "apps.review_agent.providers._create_genai_client", return_value=object()
+        ) as create_client, patch(
+            "apps.review_agent.providers._request_structured_response", return_value=object()
+        ), patch("apps.review_agent.providers._parse_boundary_decision", return_value=decision):
+            _gemini_request_worker(connection, "offline-placeholder", "gemini-test", "prompt", 300)
+
+        create_client.assert_called_once_with("offline-placeholder", timeout_seconds=300)
+        self.assertTrue(connection.messages[0]["ok"])
 
     def test_credential_preflight_uses_one_short_non_generating_request(self):
         captured = {}

@@ -394,15 +394,24 @@ def build_gemini_prompt(payload: dict[str, Any], corrective_message: str | None 
 
 def _create_genai_client(api_key: str, *, timeout_seconds: float) -> Any:
     try:
+        import ssl
+
         from google import genai  # type: ignore
         from google.genai import types  # type: ignore
+        import truststore
     except Exception as exc:  # pragma: no cover - depends on environment
         raise ReviewProviderError("google-genai is not installed. Install the google-genai package.") from exc
+
+    # This factory runs in both the API process and the spawned Windows review
+    # worker. Keep the SSL context process-local so every Gemini client uses
+    # the Windows certificate store without relaxing certificate validation.
+    tls_context = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     return genai.Client(
         api_key=api_key,
         http_options=types.HttpOptions(
             timeout=_timeout_milliseconds(timeout_seconds),
             retry_options=types.HttpRetryOptions(attempts=1),
+            client_args={"verify": tls_context},
         ),
     )
 
