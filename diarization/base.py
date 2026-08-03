@@ -22,6 +22,15 @@ class DiarizationConfig:
     single_speaker_likelihood_threshold: float = 0.58
 
 
+@dataclass(frozen=True)
+class SpeakerTurn:
+    """Model-independent speaker interval carrying the backend's anonymous label."""
+
+    start: float
+    end: float
+    raw_speaker: str
+
+
 @dataclass
 class DiarizationResult:
     backend: str
