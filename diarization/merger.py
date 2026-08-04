@@ -278,6 +278,7 @@ def merge_speaker_turns(
                     importance=segment.importance,
                     chaos=segment.chaos,
                     words=[_copy_word(word) for word in run_words],
+                    extra_fields=dict(segment.extra_fields),
                 )
             )
             output_source_indices.extend(item.source_index for item in run)
@@ -472,6 +473,7 @@ def _copy_segment(segment: TranscriptSegment, *, speaker: str | None = None) -> 
         importance=segment.importance,
         chaos=segment.chaos,
         words=[_copy_word(word) for word in segment.words],
+        extra_fields=dict(segment.extra_fields),
     )
 
 

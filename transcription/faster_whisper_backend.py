@@ -100,6 +100,11 @@ class FasterWhisperBackend:
         self.model = None
         gc.collect()
 
+    def release_resources(self) -> None:
+        """Release the materialized Whisper model before the next heavyweight stage."""
+
+        self._release_model()
+
     def _resolve_model_reference(self, requested_model: str) -> str:
         model_text = str(requested_model or "").strip() or self.config.model
         model_path = Path(model_text)

@@ -89,6 +89,21 @@ class CompactReviewRequestTests(unittest.TestCase):
         )
         self.assertNotIn("option_index", json.dumps(request))
 
+    def test_pyannote_speaker_labels_reach_the_compact_gemini_payload(self) -> None:
+        context = build_clip_transcript_context_from_segments(
+            [
+                {"start": 0.0, "end": 10.0, "text": "Host setup.", "speaker": "Speaker 0"},
+                {"start": 10.0, "end": 20.0, "text": "Guest payoff.", "speaker": "Speaker 1"},
+            ],
+            0.0,
+            20.0,
+            context_seconds=0.0,
+        )
+
+        request = build_compact_review_request(context)
+
+        self.assertEqual([segment["speaker"] for segment in request["segments"]], ["Speaker 0", "Speaker 1"])
+
     def test_prompt_embeds_only_compact_request_and_requires_segment_ids(self) -> None:
         request = build_compact_review_request(self.context)
         prompt = build_gemini_prompt(request)

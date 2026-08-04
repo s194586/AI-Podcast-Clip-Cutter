@@ -3,7 +3,7 @@ name = "podcast-shorts-cutter"
 version = "1.1.0"
 description = "Local-first human-in-the-loop podcast shorts cutter"
 readme = "README.md"
-requires-python = ">=3.14"
+requires-python = ">=3.12"
 dependencies = [
     "certifi>=2026.4.22",
     "fastapi>=0.115.0",
@@ -14,9 +14,23 @@ dependencies = [
     "mediapipe>=0.10.35",
     "numpy>=2.3.4",
     "opencv-python-headless>=4.13.0.92",
+    "pyannote.audio==4.0.7",
     "python-dotenv>=1.2.2",
+    "torch==2.13.0+cpu",
+    "torchaudio==2.11.0+cpu",
+    "torchcodec==0.15.0+cpu",
     "uvicorn>=0.30.0",
     "yt-dlp>=2026.3.17",
     "sqlalchemy>=2.0",
     "truststore>=0.10.4",
 ]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+torchaudio = { index = "pytorch-cpu" }
+torchcodec = { index = "pytorch-cpu" }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true

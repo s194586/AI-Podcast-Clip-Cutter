@@ -1,8 +1,14 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+import os
 
 from apps.pipeline.content_mode import normalize_content_type_mode
+from diarization import (
+    DEFAULT_DIARIZATION_MODEL_ID,
+    DEFAULT_DIARIZATION_MODEL_REVISION,
+    DiarizationConfig,
+)
 from layout import normalize_layout_mode
 from pipeline_modes import (
     AI_MODE_LOCAL_ONLY,
@@ -31,9 +37,25 @@ class PipelineConfig:
     whisper_model: str = "small"
     transcription_device: str = "auto"
     transcription_compute_type: str = "auto"
-    enable_diarization: bool = True
-    diarization_backend: str = "heuristic_cluster"
-    diarization_max_speakers: int = 4
+    diarization_mode: str = field(default_factory=lambda: _environment_text("DIARIZATION_MODE", "pyannote"))
+    diarization_model_id: str = field(
+        default_factory=lambda: _environment_text("DIARIZATION_MODEL_ID", DEFAULT_DIARIZATION_MODEL_ID)
+    )
+    diarization_model_revision: str = field(
+        default_factory=lambda: _environment_text(
+            "DIARIZATION_MODEL_REVISION", DEFAULT_DIARIZATION_MODEL_REVISION
+        )
+    )
+    diarization_device: str = field(default_factory=lambda: _environment_text("DIARIZATION_DEVICE", "cpu"))
+    diarization_num_speakers: int | str | None = field(
+        default_factory=lambda: os.environ.get("DIARIZATION_NUM_SPEAKERS")
+    )
+    diarization_min_speakers: int | str | None = field(
+        default_factory=lambda: os.environ.get("DIARIZATION_MIN_SPEAKERS")
+    )
+    diarization_max_speakers: int | str | None = field(
+        default_factory=lambda: os.environ.get("DIARIZATION_MAX_SPEAKERS")
+    )
     content_type: str = "auto"
     layout_mode: str = "auto"
 
@@ -56,11 +78,29 @@ class PipelineConfig:
             "transcription_compute_type",
             _text_or_default(self.transcription_compute_type, "auto"),
         )
-        object.__setattr__(self, "diarization_backend", _text_or_default(self.diarization_backend, "heuristic_cluster"))
-        object.__setattr__(self, "diarization_max_speakers", max(1, int(self.diarization_max_speakers)))
+        diarization = DiarizationConfig(
+            mode=self.diarization_mode,
+            model_id=self.diarization_model_id,
+            model_revision=self.diarization_model_revision,
+            device=self.diarization_device,
+            num_speakers=self.diarization_num_speakers,
+            min_speakers=self.diarization_min_speakers,
+            max_speakers=self.diarization_max_speakers,
+        )
+        object.__setattr__(self, "diarization_mode", diarization.mode)
+        object.__setattr__(self, "diarization_model_id", diarization.model_id)
+        object.__setattr__(self, "diarization_model_revision", diarization.model_revision)
+        object.__setattr__(self, "diarization_device", diarization.device)
+        object.__setattr__(self, "diarization_num_speakers", diarization.num_speakers)
+        object.__setattr__(self, "diarization_min_speakers", diarization.min_speakers)
+        object.__setattr__(self, "diarization_max_speakers", diarization.max_speakers)
         object.__setattr__(self, "content_type", normalize_content_type_mode(self.content_type))
         object.__setattr__(self, "layout_mode", normalize_layout_mode(self.layout_mode))
 
 
 def _text_or_default(value: str | None, default: str) -> str:
     return str(value or default).strip() or default
+
+
+def _environment_text(name: str, default: str) -> str:
+    return str(os.environ.get(name) or default).strip() or default

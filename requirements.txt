@@ -1,3 +1,5 @@
+--extra-index-url https://download.pytorch.org/whl/cpu
+
 yt-dlp
 python-dotenv
 fastapi
@@ -10,4 +12,8 @@ opencv-python-headless
 certifi
 numpy
 faster-whisper
+pyannote.audio==4.0.7
+torch==2.13.0+cpu
+torchaudio==2.11.0+cpu
+torchcodec==0.15.0+cpu
 SQLAlchemy>=2.0

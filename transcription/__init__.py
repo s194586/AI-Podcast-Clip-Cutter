@@ -5,7 +5,6 @@ from .base import (
     normalize_speaker_label,
     sec_to_hms,
 )
-from .faster_whisper_backend import FasterWhisperBackend
 from .segment_identity import (
     SEGMENT_ID_SCHEME,
     SEGMENT_ID_VERSION,
@@ -27,3 +26,11 @@ __all__ = [
     "SegmentIdentityError",
     "canonical_segment_id",
 ]
+
+
+def __getattr__(name: str):
+    if name == "FasterWhisperBackend":
+        from .faster_whisper_backend import FasterWhisperBackend
+
+        return FasterWhisperBackend
+    raise AttributeError(name)

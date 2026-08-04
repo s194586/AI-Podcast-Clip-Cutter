@@ -65,22 +65,39 @@ class TranscriptSegment:
     start: float
     end: float
     text: str
-    speaker: str = "Speaker 0"
+    speaker: str = ""
     importance: int = 3
     chaos: bool = False
     words: list[TranscriptWord] = field(default_factory=list)
+    extra_fields: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         start_centiseconds, end_centiseconds = canonical_time_range(self.start, self.end)
+        reserved_fields = {
+            "segment_id",
+            "start",
+            "end",
+            "text",
+            "speaker",
+            "importance",
+            "chaos",
+            "words",
+        }
         payload = {
+            key: value
+            for key, value in self.extra_fields.items()
+            if key not in reserved_fields
+        }
+        payload.update({
             "segment_id": canonical_segment_id(self.start, self.end),
             "start": centiseconds_to_hms(start_centiseconds),
             "end": centiseconds_to_hms(end_centiseconds),
             "text": self.text,
-            "speaker": normalize_speaker_label(self.speaker),
             "importance": int(self.importance),
             "chaos": bool(self.chaos),
-        }
+        })
+        if str(self.speaker or "").strip():
+            payload["speaker"] = normalize_speaker_label(self.speaker)
         if self.words:
             payload["words"] = [word.to_dict() for word in self.words]
         return payload
