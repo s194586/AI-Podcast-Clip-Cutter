@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.metadata
+import json
 import unittest
 from enum import Enum
 from pathlib import Path
@@ -167,6 +168,45 @@ class GeminiSdkContractTests(unittest.TestCase):
 
         with self.assertRaises(ReviewProviderOutputError):
             _parse_boundary_decision(response)
+
+    def test_validation_error_diagnostics_exclude_input_and_raw_response(self) -> None:
+        raw_response = json.dumps(
+            {
+                "review_response_contract_version": 3,
+                "decision": "render_ready",
+                "start_segment_id": "seg_v1_start",
+                "end_segment_id": "seg_v1_end",
+                "reasoning_summary": "Complete.",
+                "start_reason": "Complete.",
+                "end_reason": "Complete.",
+                "unexpected": "private raw response marker secret-api-key",
+            }
+        )
+        response = SimpleNamespace(status="completed", output_text=raw_response, steps=[])
+
+        with self.assertRaises(ReviewProviderOutputError) as raised:
+            _parse_boundary_decision(response)
+
+        diagnostics = raised.exception.diagnostics
+        validation_errors = diagnostics["validation_errors"]
+        self.assertEqual(
+            {tuple(item["loc"]) for item in validation_errors},
+            {("review_response_contract_version",), ("unexpected",)},
+        )
+        self.assertTrue(all(set(item) == {"loc", "type", "msg"} for item in validation_errors))
+        serialized = json.dumps(diagnostics)
+        self.assertTrue(all("input" not in item for item in validation_errors))
+        self.assertNotIn("private raw response marker", serialized)
+        self.assertNotIn("secret-api-key", serialized)
+        self.assertNotIn(raw_response, serialized)
+
+    def test_valid_structured_response_still_parses_after_diagnostic_hardening(self) -> None:
+        response = SimpleNamespace(status="completed", output_text=VALID_DECISION, steps=[])
+
+        decision = _parse_boundary_decision(response)
+
+        self.assertEqual(decision.review_response_contract_version, 2)
+        self.assertEqual(decision.decision, "render_ready")
 
 
 if __name__ == "__main__":
