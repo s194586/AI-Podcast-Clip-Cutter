@@ -52,6 +52,29 @@ class DiarizationMergerTests(unittest.TestCase):
         self.assertEqual(result.segments[0].speaker, "Speaker 0")
         self.assertEqual(result.segments[0].text, "Hello, world!")
 
+    def test_speaker_split_preserves_custom_segment_fields(self):
+        segment = _segment(
+            [_word(0.0, 0.8, "Left"), _word(1.2, 2.0, "right")],
+            start=0.0,
+            end=2.0,
+            text="Left right",
+        )
+        segment.extra_fields = {"source_confidence": 0.91, "editor_note": "keep"}
+
+        result = merge_speaker_turns(
+            [segment],
+            [SpeakerTurn(0.0, 0.8, "a"), SpeakerTurn(1.2, 2.0, "b")],
+        )
+
+        self.assertEqual(
+            [item.extra_fields for item in result.segments],
+            [segment.extra_fields, segment.extra_fields],
+        )
+        self.assertEqual(
+            [item.to_dict()["editor_note"] for item in result.segments],
+            ["keep", "keep"],
+        )
+
     def test_two_speakers_do_not_merge_across_whisper_segments(self):
         first = _segment([_word(0.0, 1.0, "First.")])
         second = _segment([_word(1.0, 2.0, "Second.")])

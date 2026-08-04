@@ -38,6 +38,34 @@ does not block stack startup or projects with `auto_review=false`; semantic
 review requires a valid key and never silently falls back. `local_stub` is
 reserved for controlled automated tests such as `smoke_docker.ps1`.
 
+### Pyannote Community-1
+
+Accept the gated Community-1 terms on Hugging Face and create a read-only token
+before running transcription with `DIARIZATION_MODE=pyannote`. Put the token in
+the ignored `.env.airflow` file as `HF_TOKEN`; Compose passes it only to
+`airflow-scheduler`, where LocalExecutor runs the task. The API server, init
+container, and DAG processor do not receive it. An empty token still allows the
+stack and DAG parser to start; the transcription task fails explicitly if
+Pyannote is requested without access.
+
+The scheduler mounts the named `huggingface-cache` volume at
+`/opt/airflow/huggingface`. After the pinned Community-1 revision has been
+downloaded once, `HF_HUB_OFFLINE=1` enforces cache-only operation. A cache miss
+in offline mode is a transcription error. The image build installs CPU wheels
+but never downloads model weights. Set `DIARIZATION_MODE=off` to bypass model
+loading and speaker attribution entirely. This MVP does not support Pyannote on
+CUDA.
+
+Output labels are anonymous and provide neither speaker identity nor face
+association. Exclusive diarization selects one primary speaker and does not
+fully represent overlapping speech. Speaker-boundary splits change canonical
+time ranges, so regenerating the transcript can change canonical segment IDs.
+
+The opt-in real-model check is documented in the repository README. It requires
+`RUN_PYANNOTE_INTEGRATION=1`, `PYANNOTE_TEST_AUDIO`, and `HF_TOKEN`, makes no
+Gemini request, and is skipped by default. Until it is run, manual end-to-end
+transcription is the remaining real-model gate.
+
 ### Optional local HTTPS-inspection root
 
 If antivirus or a corporate proxy replaces public HTTPS certificates with a

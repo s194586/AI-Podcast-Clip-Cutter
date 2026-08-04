@@ -25,6 +25,17 @@ x-airflow-environment: &airflow-environment
   GEMINI_REQUEST_TIMEOUT_SECONDS: ${GEMINI_REQUEST_TIMEOUT_SECONDS:-300}
   GEMINI_BATCH_TIMEOUT_SECONDS: ${GEMINI_BATCH_TIMEOUT_SECONDS:-1800}
   MODEL_DOWNLOAD_NO_CHECK_CERTIFICATES: ${MODEL_DOWNLOAD_NO_CHECK_CERTIFICATES:-false}
+  DIARIZATION_MODE: ${DIARIZATION_MODE:-pyannote}
+  DIARIZATION_MODEL_ID: ${DIARIZATION_MODEL_ID:-pyannote/speaker-diarization-community-1}
+  DIARIZATION_MODEL_REVISION: ${DIARIZATION_MODEL_REVISION:-3533c8cf8e369892e6b79ff1bf80f7b0286a54ee}
+  DIARIZATION_DEVICE: ${DIARIZATION_DEVICE:-cpu}
+  DIARIZATION_NUM_SPEAKERS: ${DIARIZATION_NUM_SPEAKERS:-}
+  DIARIZATION_MIN_SPEAKERS: ${DIARIZATION_MIN_SPEAKERS:-}
+  DIARIZATION_MAX_SPEAKERS: ${DIARIZATION_MAX_SPEAKERS:-}
+  HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-0}
+  HF_HUB_DISABLE_IMPLICIT_TOKEN: "1"
+  HF_HUB_DISABLE_TELEMETRY: "1"
+  PYANNOTE_METRICS_ENABLED: "0"
   CUSTOM_CA_REQUIRED: ${CUSTOM_CA_REQUIRED:-false}
   SSL_CERT_FILE: /etc/ssl/certs/ca-certificates.crt
   REQUESTS_CA_BUNDLE: /etc/ssl/certs/ca-certificates.crt
@@ -119,6 +130,20 @@ services:
   airflow-scheduler:
     <<: *airflow-common
     command: ["scheduler"]
+    environment:
+      <<: *airflow-environment
+      HF_TOKEN: ${HF_TOKEN:-}
+      HF_HOME: /opt/airflow/huggingface
+    volumes:
+      - type: bind
+        source: ${APP_DATA_HOST_PATH:-./data}
+        target: /opt/ai-cutter/data
+      - airflow-logs:/opt/airflow/logs
+      - type: bind
+        source: ./orchestration/airflow/secrets/custom-ca
+        target: /opt/airflow/custom-ca
+        read_only: true
+      - huggingface-cache:/opt/airflow/huggingface
     healthcheck:
       test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8974/health"]
       interval: 15s
@@ -200,3 +225,4 @@ volumes:
   airflow-postgres:
   airflow-logs:
   airflow-secrets:
+  huggingface-cache:

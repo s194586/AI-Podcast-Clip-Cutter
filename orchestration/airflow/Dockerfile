@@ -17,9 +17,10 @@ RUN sed -i 's/\r$//' /usr/local/bin/bootstrap-ca-certificates \
 
 USER airflow
 COPY --chown=airflow:root requirements.txt /tmp/podcast-cutter-requirements.txt
+COPY --chown=airflow:root requirements-airflow.txt /tmp/podcast-cutter-airflow-requirements.txt
 RUN sed 's/\r$//' /tmp/podcast-cutter-requirements.txt \
     | grep -Ev "^google-(generativeai|genai)([=<>!~].*)?$" \
-    > /tmp/podcast-cutter-airflow-requirements.txt
+    > /tmp/podcast-cutter-airflow-app-requirements.txt
 RUN --mount=type=secret,id=custom_ca,required=false,uid=50000,gid=0,mode=0444 \
     set -eu; \
     build_ca_bundle=""; \
@@ -29,11 +30,20 @@ RUN --mount=type=secret,id=custom_ca,required=false,uid=50000,gid=0,mode=0444 \
         cat /etc/ssl/certs/ca-certificates.crt /run/secrets/custom_ca > "${build_ca_bundle}"; \
         export PIP_CERT="${build_ca_bundle}" SSL_CERT_FILE="${build_ca_bundle}" REQUESTS_CA_BUNDLE="${build_ca_bundle}"; \
     fi; \
+    sed -i 's/\r$//' /tmp/podcast-cutter-airflow-requirements.txt /tmp/podcast-cutter-airflow-app-requirements.txt; \
     pip install --no-cache-dir \
-        "apache-airflow==${AIRFLOW_VERSION}" \
         -r /tmp/podcast-cutter-airflow-requirements.txt \
         --constraint "${AIRFLOW_CONSTRAINT_URL}"; \
     pip uninstall --yes apache-airflow-providers-google google-cloud-aiplatform; \
+    pip uninstall --yes apache-airflow-providers-snowflake; \
+    pip install --no-cache-dir \
+        --extra-index-url https://download.pytorch.org/whl/cpu \
+        "torch==2.13.0+cpu" \
+        "torchaudio==2.11.0+cpu" \
+        "torchcodec==0.15.0+cpu"; \
+    pip install --no-cache-dir \
+        "apache-airflow==${AIRFLOW_VERSION}" \
+        -r /tmp/podcast-cutter-airflow-app-requirements.txt; \
     pip install --no-cache-dir "google-genai==2.11.0"; \
     pip check; \
     if [ -n "${build_ca_bundle}" ]; then rm -f "${build_ca_bundle}"; fi

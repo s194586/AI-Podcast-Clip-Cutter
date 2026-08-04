@@ -15,6 +15,11 @@ from apps.pipeline.reporting import HumanReadableEventPrinter, print_legacy_summ
 from apps.pipeline.runner import PipelineRunner
 from apps.pipeline.content_mode import VALID_CONTENT_TYPE_MODES
 from layout import VALID_LAYOUT_MODES
+from diarization import (
+    DEFAULT_DIARIZATION_MODEL_ID,
+    DEFAULT_DIARIZATION_MODEL_REVISION,
+    SUPPORTED_DIARIZATION_MODES,
+)
 from pipeline_modes import VALID_AI_MODES, VALID_SUBTITLE_CHECKER_MODES
 
 try:
@@ -25,6 +30,17 @@ except Exception:
 
 class ManagerError(RuntimeError):
     """Compatibility error raised by the legacy manager facade."""
+
+
+def _environment_text(name: str, default: str) -> str:
+    return str(os.environ.get(name) or default).strip() or default
+
+
+def _environment_optional_integer(name: str) -> str | None:
+    value = os.environ.get(name)
+    if value is None:
+        return None
+    return value.strip() or None
 
 
 class WorkflowManager:
@@ -46,9 +62,13 @@ class WorkflowManager:
         whisper_model: str = "small",
         transcription_device: str = "auto",
         transcription_compute_type: str = "auto",
-        enable_diarization: bool = True,
-        diarization_backend: str = "heuristic_cluster",
-        diarization_max_speakers: int = 4,
+        diarization_mode: str = "pyannote",
+        diarization_model_id: str = DEFAULT_DIARIZATION_MODEL_ID,
+        diarization_model_revision: str = DEFAULT_DIARIZATION_MODEL_REVISION,
+        diarization_device: str = "cpu",
+        diarization_num_speakers: int | None = None,
+        diarization_min_speakers: int | None = None,
+        diarization_max_speakers: int | None = None,
         content_type: str = "auto",
         layout_mode: str = "auto",
         workspace_dir: str | None = None,
@@ -71,8 +91,12 @@ class WorkflowManager:
             whisper_model=whisper_model,
             transcription_device=transcription_device,
             transcription_compute_type=transcription_compute_type,
-            enable_diarization=enable_diarization,
-            diarization_backend=diarization_backend,
+            diarization_mode=diarization_mode,
+            diarization_model_id=diarization_model_id,
+            diarization_model_revision=diarization_model_revision,
+            diarization_device=diarization_device,
+            diarization_num_speakers=diarization_num_speakers,
+            diarization_min_speakers=diarization_min_speakers,
             diarization_max_speakers=diarization_max_speakers,
             content_type=content_type,
             layout_mode=layout_mode,
@@ -127,11 +151,25 @@ def build_parser() -> argparse.ArgumentParser:
         "--transcription-compute-type",
         default=os.environ.get("TRANSCRIPTION_COMPUTE_TYPE", "auto"),
     )
-    parser.set_defaults(enable_diarization=True)
-    parser.add_argument("--enable-diarization", dest="enable_diarization", action="store_true")
-    parser.add_argument("--disable-diarization", dest="enable_diarization", action="store_false")
-    parser.add_argument("--diarization-backend", default="heuristic_cluster")
-    parser.add_argument("--diarization-max-speakers", type=int, default=4)
+    parser.add_argument(
+        "--diarization-mode",
+        choices=SUPPORTED_DIARIZATION_MODES,
+        default=_environment_text("DIARIZATION_MODE", "pyannote"),
+    )
+    parser.add_argument("--enable-diarization", dest="diarization_mode", action="store_const", const="pyannote")
+    parser.add_argument("--disable-diarization", dest="diarization_mode", action="store_const", const="off")
+    parser.add_argument(
+        "--diarization-model-id",
+        default=_environment_text("DIARIZATION_MODEL_ID", DEFAULT_DIARIZATION_MODEL_ID),
+    )
+    parser.add_argument(
+        "--diarization-model-revision",
+        default=_environment_text("DIARIZATION_MODEL_REVISION", DEFAULT_DIARIZATION_MODEL_REVISION),
+    )
+    parser.add_argument("--diarization-device", choices=("cpu",), default=_environment_text("DIARIZATION_DEVICE", "cpu"))
+    parser.add_argument("--diarization-num-speakers", type=int, default=_environment_optional_integer("DIARIZATION_NUM_SPEAKERS"))
+    parser.add_argument("--diarization-min-speakers", type=int, default=_environment_optional_integer("DIARIZATION_MIN_SPEAKERS"))
+    parser.add_argument("--diarization-max-speakers", type=int, default=_environment_optional_integer("DIARIZATION_MAX_SPEAKERS"))
     parser.add_argument("--content-type", choices=VALID_CONTENT_TYPE_MODES, default="auto")
     parser.add_argument("--layout-mode", choices=VALID_LAYOUT_MODES, default="auto")
     parser.set_defaults(auto_fix_subtitles=True)
@@ -172,8 +210,12 @@ def main(argv: list[str] | None = None) -> int:
         whisper_model=args.whisper_model,
         transcription_device=args.transcription_device,
         transcription_compute_type=args.transcription_compute_type,
-        enable_diarization=args.enable_diarization,
-        diarization_backend=args.diarization_backend,
+        diarization_mode=args.diarization_mode,
+        diarization_model_id=args.diarization_model_id,
+        diarization_model_revision=args.diarization_model_revision,
+        diarization_device=args.diarization_device,
+        diarization_num_speakers=args.diarization_num_speakers,
+        diarization_min_speakers=args.diarization_min_speakers,
         diarization_max_speakers=args.diarization_max_speakers,
         content_type=args.content_type,
         layout_mode=args.layout_mode,

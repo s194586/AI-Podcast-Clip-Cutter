@@ -57,13 +57,69 @@ metadata. Native local development can still use `LocalPipelineOrchestrator`.
 
 | Area | Implementation |
 | --- | --- |
-| Backend | Python 3.14, FastAPI, SQLAlchemy, Pydantic |
+| Backend | Python 3.12+, FastAPI, SQLAlchemy, Pydantic |
 | Review workflow | LangGraph, `google-genai`, Gemini `gemini-3.5-flash` |
 | TLS on Windows | `truststore` system certificate context in each Gemini client, including spawned workers |
-| Pipeline | Faster-Whisper, yt-dlp, FFmpeg, local replay-interest peak detection |
+| Pipeline | Faster-Whisper word timestamps, Pyannote Community-1, yt-dlp, FFmpeg, local replay-interest peak detection |
 | Frontend | React 19, TypeScript, Vite, Tailwind CSS |
 | Persistence | SQLite |
 | Validation | Python `unittest`, Vitest, React Testing Library, GitHub Actions |
+
+## Speaker diarization
+
+The production transcript path is sequential: Faster-Whisper fully materializes
+word timestamps and releases its model, Pyannote Community-1 runs on CPU, its
+`exclusive_speaker_diarization` turns enter the deterministic merger, and the
+merged transcript is written atomically before the existing Gemini boundary
+review can read it. There is no heuristic or single-speaker fallback: missing
+credentials, gated-model access, an offline cache miss, invalid model output,
+or a merger error fails transcription and preserves any existing transcript.
+
+Before using `pyannote` mode, accept the terms for
+`pyannote/speaker-diarization-community-1` on Hugging Face and create a read-only
+Hugging Face token. Store it in the ignored runtime environment as `HF_TOKEN`;
+do not pass it on the command line. The MVP is CPU-only.
+
+```powershell
+$env:DIARIZATION_MODE = "pyannote" # production speaker attribution
+$env:HF_TOKEN = "<read-token>"
+python .\transcribe.py --file .\input\podcast.mp3
+
+$env:DIARIZATION_MODE = "off"      # no model and no placeholder speaker labels
+Remove-Item Env:HF_TOKEN -ErrorAction SilentlyContinue
+python .\transcribe.py --file .\input\podcast.mp3
+```
+
+The default model revision is pinned to
+`3533c8cf8e369892e6b79ff1bf80f7b0286a54ee`. Leave
+`DIARIZATION_NUM_SPEAKERS`, `DIARIZATION_MIN_SPEAKERS`, and
+`DIARIZATION_MAX_SPEAKERS` empty for automatic estimation. An exact count is
+mutually exclusive with the minimum/maximum range.
+
+Set `HF_HOME` to a persistent directory to retain downloaded model files.
+`HF_HUB_OFFLINE=1` forbids network access and therefore works only after the
+pinned model is already cached. Implicit token discovery and telemetry are
+disabled by the provided environment configuration.
+
+Speaker labels are anonymous (`Speaker 0`, `Speaker 1`, and so on); they do not
+identify people and are not associated with faces. Exclusive diarization gives
+one primary speaker at a time, so it does not preserve a complete representation
+of overlapping speech. Regenerating diarization or splitting segments at
+speaker changes changes the canonical time ranges and therefore canonical
+segment IDs.
+
+The real-model smoke test is opt-in and never calls Gemini:
+
+```powershell
+$env:RUN_PYANNOTE_INTEGRATION = "1"
+$env:PYANNOTE_TEST_AUDIO = "C:\path\to\authorized-test-audio.wav"
+$env:HF_TOKEN = "<read-token>"
+.venv\Scripts\python.exe -m unittest tests.test_pyannote_integration
+```
+
+Without the explicit flag the test is skipped and no model is loaded. If this
+test is not run, a manual end-to-end transcription remains the only outstanding
+real-model gate.
 
 ## Review and editing contract
 

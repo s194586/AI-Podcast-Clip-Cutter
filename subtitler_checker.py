@@ -34,6 +34,7 @@ from gemini_transport import (
     genai,
     get_api_key,
 )
+from transcription.segment_identity import canonical_segment_id
 
 try:
     from dotenv import load_dotenv
@@ -734,6 +735,7 @@ def fix_local_issues(segments: List[Dict[str, Any]], issues: List[Dict[str, Any]
     prev_end = None
 
     for i, segment in enumerate(segments):
+        original_segment = segment.copy()
         fixed_segment = segment.copy()
         start = parse_time(segment.get("start"))
         end = parse_time(segment.get("end"))
@@ -776,6 +778,7 @@ def fix_local_issues(segments: List[Dict[str, Any]], issues: List[Dict[str, Any]
                 "reason": "Lokalna korekta tekstu przed generowaniem napisów",
             })
 
+        _refresh_segment_contract(fixed_segment, original_segment)
         fixed_segments.append(fixed_segment)
         prev_end = parse_time(fixed_segment["end"])
 
@@ -792,7 +795,7 @@ def fix_ai_issues(
 ) -> List[Dict[str, Any]]:
     """Naprawia problemy wykryte przez AI (timing mismatches i hallucinations)."""
     configure_gemini(api_key)
-    fixed_segments = segments.copy()
+    fixed_segments = [segment.copy() for segment in segments]
 
     for sample in samples:
         if sample.get("status") != "checked":
@@ -827,8 +830,10 @@ def fix_ai_issues(
                             expected_duration = len(seg_words) / words_per_sec if words_per_sec > 0 else 1.0
                             current_duration = parse_time(seg["end"]) - parse_time(seg["start"])
                             if abs(current_duration - expected_duration) > 0.5:
+                                original_segment = fixed_segments[idx].copy()
                                 new_end = parse_time(seg["start"]) + expected_duration
                                 fixed_segments[idx]["end"] = format_time(new_end)
+                                _refresh_segment_contract(fixed_segments[idx], original_segment)
                                 fix_log["fixes_applied"].append({
                                     "type": "timing_adjustment",
                                     "segment_index": idx,
@@ -845,7 +850,9 @@ def fix_ai_issues(
                 idx, seg = window_segments[0]
                 original_text = str(seg.get("text", "")).strip()
                 if corrected_text != original_text:
+                    original_segment = fixed_segments[idx].copy()
                     fixed_segments[idx]["text"] = corrected_text
+                    _refresh_segment_contract(fixed_segments[idx], original_segment)
                     fix_log["fixes_applied"].append({
                         "type": "ai_logic_text_fix",
                         "segment_index": idx,
@@ -878,11 +885,16 @@ def fix_ai_issues(
                             new_segments.append(seg)
                         else:
                             # Zamień na nowy segment
-                            new_segments.append({
-                                "start": format_time(max(seg_start, start)),
-                                "end": format_time(min(seg_end, end)),
-                                "text": retranscript,
-                            })
+                            replacement = seg.copy()
+                            replacement.update(
+                                {
+                                    "start": format_time(max(seg_start, start)),
+                                    "end": format_time(min(seg_end, end)),
+                                    "text": retranscript,
+                                }
+                            )
+                            _refresh_segment_contract(replacement, seg)
+                            new_segments.append(replacement)
                             fix_log["fixes_applied"].append({
                                 "type": "retranscription",
                                 "segment_index": i,
@@ -896,6 +908,18 @@ def fix_ai_issues(
                 print(f"  ⚠ Nie udało się retranskrybować okna {format_time(start)}-{format_time(end)}: {exc}")
 
     return fixed_segments
+
+
+def _refresh_segment_contract(segment: Dict[str, Any], original: Dict[str, Any]) -> None:
+    timing_changed = segment.get("start") != original.get("start") or segment.get("end") != original.get("end")
+    text_changed = segment.get("text") != original.get("text")
+    if timing_changed:
+        segment["segment_id"] = canonical_segment_id(
+            parse_time(segment["start"]),
+            parse_time(segment["end"]),
+        )
+    if timing_changed or text_changed:
+        segment.pop("words", None)
 
 
 def fix_transcription(
@@ -942,7 +966,11 @@ def fix_transcription(
         segments = fix_ai_issues(segments, samples, audio_path, api_key, model_name, fix_log)
 
     # Zapisz poprawioną transkrypcję
-    fixed_transcript = {"segments": segments} if isinstance(original_transcript, dict) and "segments" in original_transcript else segments
+    if isinstance(original_transcript, dict) and "segments" in original_transcript:
+        fixed_transcript = dict(original_transcript)
+        fixed_transcript["segments"] = segments
+    else:
+        fixed_transcript = segments
     with open(transcript_path, "w", encoding="utf-8") as f:
         json.dump(fixed_transcript, f, ensure_ascii=False, indent=2)
 

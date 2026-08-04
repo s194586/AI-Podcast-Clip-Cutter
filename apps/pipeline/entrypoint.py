@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 import argparse
+import os
 import signal
 import sys
 from pathlib import Path
 
 from apps.api.db.database import session_scope
 from apps.api.db.repositories import JobRepository
+from diarization import (
+    DEFAULT_DIARIZATION_MODEL_ID,
+    DEFAULT_DIARIZATION_MODEL_REVISION,
+    SUPPORTED_DIARIZATION_MODES,
+)
 
 from .cancellation import CancellationToken
 from .config import PipelineConfig
@@ -18,6 +24,17 @@ from .runner import PipelineRunner
 
 
 DEFAULT_REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _environment_text(name: str, default: str) -> str:
+    return str(os.environ.get(name) or default).strip() or default
+
+
+def _environment_optional_integer(name: str) -> str | None:
+    value = os.environ.get(name)
+    if value is None:
+        return None
+    return value.strip() or None
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -40,11 +57,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--whisper-model", default="small")
     parser.add_argument("--transcription-device", default="auto", choices=("auto", "cuda", "cpu"))
     parser.add_argument("--transcription-compute-type", default="auto")
-    parser.set_defaults(enable_diarization=True)
-    parser.add_argument("--enable-diarization", dest="enable_diarization", action="store_true")
-    parser.add_argument("--disable-diarization", dest="enable_diarization", action="store_false")
-    parser.add_argument("--diarization-backend", default="heuristic_cluster")
-    parser.add_argument("--diarization-max-speakers", type=int, default=4)
+    parser.add_argument("--diarization-mode", choices=SUPPORTED_DIARIZATION_MODES, default=_environment_text("DIARIZATION_MODE", "pyannote"))
+    parser.add_argument("--enable-diarization", dest="diarization_mode", action="store_const", const="pyannote")
+    parser.add_argument("--disable-diarization", dest="diarization_mode", action="store_const", const="off")
+    parser.add_argument("--diarization-model-id", default=_environment_text("DIARIZATION_MODEL_ID", DEFAULT_DIARIZATION_MODEL_ID))
+    parser.add_argument("--diarization-model-revision", default=_environment_text("DIARIZATION_MODEL_REVISION", DEFAULT_DIARIZATION_MODEL_REVISION))
+    parser.add_argument("--diarization-device", choices=("cpu",), default=_environment_text("DIARIZATION_DEVICE", "cpu"))
+    parser.add_argument("--diarization-num-speakers", type=int, default=_environment_optional_integer("DIARIZATION_NUM_SPEAKERS"))
+    parser.add_argument("--diarization-min-speakers", type=int, default=_environment_optional_integer("DIARIZATION_MIN_SPEAKERS"))
+    parser.add_argument("--diarization-max-speakers", type=int, default=_environment_optional_integer("DIARIZATION_MAX_SPEAKERS"))
     parser.add_argument("--content-type", default="auto", choices=("auto", "podcast"))
     parser.add_argument("--layout-mode", default="auto", choices=("auto", "speaker_face_crop"))
     return parser
@@ -62,8 +83,12 @@ def create_context(args: argparse.Namespace) -> PipelineContext:
         whisper_model=args.whisper_model,
         transcription_device=args.transcription_device,
         transcription_compute_type=args.transcription_compute_type,
-        enable_diarization=args.enable_diarization,
-        diarization_backend=args.diarization_backend,
+        diarization_mode=args.diarization_mode,
+        diarization_model_id=args.diarization_model_id,
+        diarization_model_revision=args.diarization_model_revision,
+        diarization_device=args.diarization_device,
+        diarization_num_speakers=args.diarization_num_speakers,
+        diarization_min_speakers=args.diarization_min_speakers,
         diarization_max_speakers=args.diarization_max_speakers,
         content_type=args.content_type,
         layout_mode=args.layout_mode,
