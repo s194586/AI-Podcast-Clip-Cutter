@@ -10,6 +10,7 @@ tqdm
 mediapipe
 opencv-python-headless
 certifi
+truststore
 numpy
 faster-whisper
 pyannote.audio==4.0.7

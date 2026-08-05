@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
-import multiprocessing
+import os
 import re
+import subprocess
+import sys
 import time
 from collections.abc import Callable, Mapping
 from typing import Any, Protocol
@@ -24,6 +26,11 @@ DEFAULT_GEMINI_CREDENTIAL_PREFLIGHT_TIMEOUT_SECONDS = 10
 LOCAL_STUB_MODEL = "local_stub"
 COMPACT_REVIEW_REQUEST_CONTRACT_VERSION = 3
 REVIEW_RESPONSE_CONTRACT_VERSION = 2
+GEMINI_WORKER_PROTOCOL_VERSION = 1
+GEMINI_WORKER_MODULE = "apps.review_agent.gemini_worker"
+_WORKER_POLL_INTERVAL_SECONDS = 0.1
+_WORKER_TERMINATE_GRACE_SECONDS = 1.0
+_MAX_WORKER_RESPONSE_BYTES = 1_000_000
 
 
 class ReviewProviderError(RuntimeError):
@@ -412,9 +419,9 @@ def _create_genai_client(api_key: str, *, timeout_seconds: float) -> Any:
     except Exception as exc:  # pragma: no cover - depends on environment
         raise ReviewProviderError("google-genai is not installed. Install the google-genai package.") from exc
 
-    # This factory runs in both the API process and the spawned Windows review
-    # worker. Keep the SSL context process-local so every Gemini client uses
-    # the Windows certificate store without relaxing certificate validation.
+    # This factory also runs in the isolated review worker. Keep the SSL
+    # context process-local so every Gemini client uses the platform certificate
+    # store without relaxing certificate validation.
     tls_context = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     return genai.Client(
         api_key=api_key,
@@ -435,13 +442,22 @@ def _run_gemini_request_in_process(
     cancellation_check: Callable[[], bool] | None,
 ) -> GeminiBoundaryDecision:
     payload = _run_bounded_process(
-        _gemini_request_worker,
-        (api_key, model, prompt, timeout_seconds),
+        {
+            "protocol_version": GEMINI_WORKER_PROTOCOL_VERSION,
+            "operation": "review_gemini",
+            "api_key": api_key,
+            "model": model,
+            "prompt": prompt,
+            "timeout_seconds": timeout_seconds,
+        },
         timeout_seconds=timeout_seconds,
         cancellation_check=cancellation_check,
     )
     if bool(payload.get("ok")):
-        return _validate_decision(dict(payload.get("decision") or {}))
+        result = payload.get("result")
+        if not isinstance(result, Mapping):
+            raise ReviewProviderError("Gemini request worker returned an incomplete success response.")
+        return _validate_decision(dict(result.get("decision") or {}))
     diagnostics = sanitize_provider_failure_diagnostics(payload.get("diagnostics"))
     category = str(
         diagnostics.get("mapped_error_type")
@@ -467,110 +483,125 @@ def _run_gemini_request_in_process(
 
 
 def _run_bounded_process(
-    target: Callable[..., None],
-    args: tuple[Any, ...],
+    request_payload: Mapping[str, Any],
     *,
     timeout_seconds: float,
     cancellation_check: Callable[[], bool] | None = None,
+    _worker_module: str = GEMINI_WORKER_MODULE,
+    _executable: str | None = None,
 ) -> dict[str, Any]:
-    process_context = multiprocessing.get_context("spawn")
-    receive_connection, send_connection = process_context.Pipe(duplex=False)
-    process = process_context.Process(
-        target=target,
-        args=(send_connection, *args),
-        daemon=True,
-    )
+    """Run an importable worker module without inheriting the parent's ``__main__``.
+
+    Production always uses the fixed Gemini worker module. The private module
+    override exists solely for offline process-boundary regression tests; it is
+    never selected from the request payload or other production input.
+    """
+
+    command = [str(_executable or sys.executable), "-m", str(_worker_module)]
+    serialized_request = json.dumps(
+        dict(request_payload), ensure_ascii=False, separators=(",", ":")
+    ).encode("utf-8")
+    process = None
     deadline = time.monotonic() + max(0.001, float(timeout_seconds))
     try:
         try:
-            process.start()
+            process = subprocess.Popen(
+                command,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                shell=False,
+                close_fds=True,
+                start_new_session=os.name != "nt",
+            )
         except OSError as exc:
             raise ReviewProviderError("Gemini request worker could not start.") from exc
-        send_connection.close()
+
+        communicate_input: bytes | None = serialized_request
         while True:
             if cancellation_check is not None and cancellation_check():
-                _terminate_process(process)
+                _terminate_subprocess(process)
                 raise ReviewProviderCancelledError("Gemini boundary review was cancelled.")
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                _terminate_process(process)
+                _terminate_subprocess(process)
                 raise ReviewProviderTimeoutError(
                     f"Gemini boundary review timed out after {float(timeout_seconds):g} seconds."
                 )
-            if receive_connection.poll(min(0.1, remaining)):
-                try:
-                    payload = receive_connection.recv()
-                except EOFError as exc:
-                    raise ReviewProviderError(
-                        "Gemini request worker closed without a response."
-                    ) from exc
-                process.join(timeout=1.0)
-                if process.is_alive():
-                    _terminate_process(process)
-                return dict(payload or {})
-            if not process.is_alive():
-                process.join(timeout=1.0)
-                if receive_connection.poll():
-                    try:
-                        return dict(receive_connection.recv() or {})
-                    except EOFError as exc:
-                        raise ReviewProviderError(
-                            "Gemini request worker closed without a response."
-                        ) from exc
-                raise ReviewProviderError("Gemini request worker exited without a response.")
+            try:
+                stdout, _stderr = process.communicate(
+                    input=communicate_input,
+                    timeout=min(_WORKER_POLL_INTERVAL_SECONDS, remaining),
+                )
+                break
+            except subprocess.TimeoutExpired:
+                # ``communicate`` may safely be resumed after TimeoutExpired;
+                # input has already been retained by Popen's communication state.
+                communicate_input = None
+
+        return_code = process.returncode
+        if return_code != 0:
+            if return_code is not None and return_code < 0:
+                raise ReviewProviderError(
+                    f"Gemini request worker was terminated by signal {-return_code}."
+                )
+            raise ReviewProviderError(
+                f"Gemini request worker exited with code {return_code}."
+            )
+        return _decode_worker_response(stdout)
     finally:
-        send_connection.close()
-        receive_connection.close()
-        if process.is_alive():
-            _terminate_process(process)
+        if process is not None and process.poll() is None:
+            _terminate_subprocess(process)
+        if process is not None:
+            _close_subprocess_pipes(process)
 
 
-def _gemini_request_worker(
-    send_connection: Any,
-    api_key: str,
-    model: str,
-    prompt: str,
-    timeout_seconds: float,
-) -> None:
-    client = None
+def _decode_worker_response(stdout: bytes) -> dict[str, Any]:
+    if not stdout:
+        raise ReviewProviderError("Gemini request worker returned an empty IPC response.")
+    if len(stdout) > _MAX_WORKER_RESPONSE_BYTES:
+        raise ReviewProviderError("Gemini request worker returned an oversized IPC response.")
     try:
-        client = _create_genai_client(api_key, timeout_seconds=timeout_seconds)
-        response = _request_structured_response(
-            client,
-            model=model,
-            prompt=prompt,
-            timeout_seconds=timeout_seconds,
-        )
-        decision = _parse_boundary_decision(response)
-        decision_payload = (
-            decision.model_dump() if hasattr(decision, "model_dump") else decision.dict()
-        )
-        send_connection.send({"ok": True, "decision": decision_payload})
-    except Exception as exc:
-        error = _provider_error_from_exception(exc)
-        send_connection.send(
-            {
-                "ok": False,
-                "diagnostics": safe_provider_failure_diagnostics(error),
-            }
-        )
-    finally:
+        decoded = stdout.decode("utf-8")
+        payload = json.loads(decoded)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ReviewProviderError("Gemini request worker returned an invalid IPC response.") from exc
+    if not isinstance(payload, dict):
+        raise ReviewProviderError("Gemini request worker returned a non-object IPC response.")
+    if payload.get("protocol_version") != GEMINI_WORKER_PROTOCOL_VERSION:
+        raise ReviewProviderError("Gemini request worker returned an unsupported IPC protocol version.")
+    if type(payload.get("ok")) is not bool:
+        raise ReviewProviderError("Gemini request worker returned an incomplete IPC response.")
+    if payload["ok"] and not isinstance(payload.get("result"), dict):
+        raise ReviewProviderError("Gemini request worker returned an incomplete success response.")
+    if not payload["ok"] and not isinstance(payload.get("diagnostics"), dict):
+        raise ReviewProviderError("Gemini request worker returned an incomplete failure response.")
+    return payload
+
+
+def _terminate_subprocess(process: subprocess.Popen[bytes]) -> None:
+    """Reap a child after a terminate/kill escalation, closing all three pipes."""
+
+    try:
+        if process.poll() is None:
+            process.terminate()
         try:
-            if client is not None and hasattr(client, "close"):
-                client.close()
-        finally:
-            send_connection.close()
+            process.communicate(timeout=_WORKER_TERMINATE_GRACE_SECONDS)
+            return
+        except subprocess.TimeoutExpired:
+            process.kill()
+        try:
+            process.communicate(timeout=_WORKER_TERMINATE_GRACE_SECONDS)
+        except subprocess.TimeoutExpired:  # pragma: no cover - OS-level pathological case
+            process.wait(timeout=_WORKER_TERMINATE_GRACE_SECONDS)
+    finally:
+        _close_subprocess_pipes(process)
 
 
-def _terminate_process(process: Any) -> None:
-    if not process.is_alive():
-        process.join(timeout=0.2)
-        return
-    process.terminate()
-    process.join(timeout=1.0)
-    if process.is_alive() and hasattr(process, "kill"):
-        process.kill()
-        process.join(timeout=1.0)
+def _close_subprocess_pipes(process: subprocess.Popen[bytes]) -> None:
+    for stream in (process.stdin, process.stdout, process.stderr):
+        if stream is not None and not stream.closed:
+            stream.close()
 
 
 def _timeout_milliseconds(timeout_seconds: float) -> int:

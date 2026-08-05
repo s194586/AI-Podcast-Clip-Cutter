@@ -1,4 +1,6 @@
 import unittest
+import tempfile
+from pathlib import Path
 from unittest.mock import ANY, patch
 
 import numpy as np
@@ -123,6 +125,84 @@ class TrackingFallbackStateTests(unittest.TestCase):
         center_y = cutter.OUTPUT_HEIGHT // 2
         self.assertGreater(int(composed[center_y, 5, 2]), 200)
         self.assertGreater(int(composed[center_y, cutter.OUTPUT_WIDTH - 6, 0]), 200)
+
+
+class RenderEncodingPipelineTests(unittest.TestCase):
+    def test_frame_encode_converts_jpeg_full_range_to_yuv420p_tv_range(self):
+        with patch.object(cutter.subprocess, "run") as run:
+            cutter.encode_frames_to_video(Path("frames"), Path("silent.mp4"), 25.0)
+
+        command = run.call_args.args[0]
+        self.assertEqual(
+            command[command.index("-vf") + 1],
+            "scale=in_range=full:out_range=tv,format=yuv420p",
+        )
+        self.assertEqual(command[command.index("-pix_fmt") + 1], "yuv420p")
+
+    def test_mux_copies_preencoded_h264_and_aac_streams(self):
+        with patch.object(cutter.subprocess, "run") as run:
+            cutter.mux_video_with_audio(Path("silent.mp4"), Path("audio.m4a"), Path("output.mp4"))
+
+        command = run.call_args.args[0]
+        self.assertEqual(command[command.index("-c:v") + 1], "copy")
+        self.assertEqual(command[command.index("-c:a") + 1], "copy")
+        self.assertIn(["-map", "0:v:0"], [command[index : index + 2] for index in range(len(command) - 1)])
+        self.assertIn(["-map", "1:a:0"], [command[index : index + 2] for index in range(len(command) - 1)])
+        self.assertIn("-shortest", command)
+        self.assertIn("+faststart", command)
+        self.assertIn("-map_metadata", command)
+
+    def test_face_model_download_uses_platform_curl_and_atomic_replace(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            model_path = Path(temporary_directory) / "face_detector.tflite"
+
+            def create_download(command, **_kwargs):
+                destination = Path(command[command.index("--output") + 1])
+                destination.write_bytes(b"model-fixture")
+
+            with (
+                patch.object(cutter, "FACE_DETECTOR_MODEL_PATH", model_path),
+                patch.object(cutter.shutil, "which", side_effect=lambda name: "/usr/bin/curl" if name == "curl" else None),
+                patch.object(cutter.subprocess, "run", side_effect=create_download) as run,
+            ):
+                resolved = cutter.ensure_face_detector_model()
+
+            self.assertEqual(resolved, model_path)
+            self.assertEqual(model_path.read_bytes(), b"model-fixture")
+            self.assertFalse(model_path.with_suffix(".tflite.part").exists())
+            command = run.call_args.args[0]
+            self.assertEqual(command[0], "/usr/bin/curl")
+            self.assertNotIn("curl.exe", command)
+
+    def test_static_full_frame_fallback_reports_preserved_frame(self):
+        hints = {
+            "layout_mode": "speaker_face_crop",
+            "layout_policy": "face_active_speaker",
+            "crop_mode": "speaker_face_crop",
+            "crop_priority": "speaker_face",
+            "allow_face_tracking": True,
+            "preserve_full_frame": False,
+            "blur_background": False,
+            "safe_center_crop": False,
+            "output_width": 1080,
+            "output_height": 1920,
+            "output_aspect_ratio": "9:16",
+        }
+        with patch.object(cutter, "inspect_video_stream", return_value=(25.0, 1920, 1080)):
+            stats = cutter.build_static_render_stats(
+                Path("source.mp4"),
+                10.0,
+                2.0,
+                render_hints=hints,
+                tracking_mode="full_frame_blur_background",
+                fallback_reason="detector unavailable",
+            )
+
+        self.assertEqual(stats["tracking_mode"], "full_frame_blur_background")
+        self.assertTrue(stats["full_frame_preserved"])
+        self.assertTrue(stats["blur_background"])
+        self.assertEqual(stats["fallback_reason"], "detector unavailable")
+        self.assertEqual(stats["encoding"]["lossy_video_encode_stages_before_subtitles"], 1)
 
 
 if __name__ == "__main__":

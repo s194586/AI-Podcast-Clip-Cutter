@@ -2,6 +2,7 @@ import argparse
 import json
 import math
 import re
+import shutil
 import subprocess
 import tempfile
 from collections import deque
@@ -371,6 +372,8 @@ def encode_frames_to_video(frames_dir, output_path, fps):
         f"{fps:.6f}",
         "-i",
         str(frames_dir / "frame_%06d.jpg"),
+        "-vf",
+        "scale=in_range=full:out_range=tv,format=yuv420p",
         "-c:v",
         "libx264",
         "-preset",
@@ -379,6 +382,8 @@ def encode_frames_to_video(frames_dir, output_path, fps):
         "18",
         "-pix_fmt",
         "yuv420p",
+        "-movflags",
+        "+faststart",
         str(output_path),
     ]
     subprocess.run(cmd, check=True, capture_output=True, text=True)
@@ -393,19 +398,17 @@ def mux_video_with_audio(video_path, audio_path, output_path):
         str(video_path),
         "-i",
         str(audio_path),
+        "-map",
+        "0:v:0",
+        "-map",
+        "1:a:0",
         "-c:v",
-        "libx264",
-        "-preset",
-        "superfast",
-        "-crf",
-        "23",
-        "-pix_fmt",
-        "yuv420p",
+        "copy",
         "-c:a",
-        "aac",
-        "-b:a",
-        "192k",
+        "copy",
         "-shortest",
+        "-map_metadata",
+        "-1",
         "-movflags",
         "+faststart",
         str(output_path),
@@ -425,7 +428,9 @@ def center_crop_ffmpeg(video_path, output_path, start, duration):
         "-t",
         f"{duration:.3f}",
         "-map",
-        "0",
+        "0:v:0",
+        "-map",
+        "0:a:0?",
         "-vf",
         "crop=ih*9/16:ih:(iw-ih*9/16)/2:0,scale=1080:1920",
         "-c:v",
@@ -440,6 +445,8 @@ def center_crop_ffmpeg(video_path, output_path, start, duration):
         "aac",
         "-b:a",
         "192k",
+        "-map_metadata",
+        "-1",
         "-movflags",
         "+faststart",
         str(output_path),
@@ -480,6 +487,8 @@ def full_frame_blur_background_ffmpeg(video_path, output_path, start, duration):
         "aac",
         "-b:a",
         "192k",
+        "-map_metadata",
+        "-1",
         "-movflags",
         "+faststart",
         str(output_path),
@@ -580,7 +589,7 @@ def resolve_render_plan(cutting_log, requested_layout_mode="auto"):
 def build_static_render_stats(video_path, start, duration, *, render_hints, tracking_mode, output_path=None, fallback_reason=""):
     fps, frame_width, frame_height = inspect_video_stream(video_path)
     total_frames = max(1, int(round(duration * fps)))
-    full_frame_preserved = bool(render_hints.get("preserve_full_frame")) and tracking_mode == "full_frame_blur_background"
+    full_frame_preserved = tracking_mode == "full_frame_blur_background"
     stats = {
         "fps": fps,
         "frame_width": frame_width,
@@ -602,7 +611,7 @@ def build_static_render_stats(video_path, start, duration, *, render_hints, trac
         "face_tracking_used": False,
         "preserve_full_frame": bool(render_hints.get("preserve_full_frame")),
         "full_frame_preserved": full_frame_preserved,
-        "blur_background": bool(render_hints.get("blur_background")),
+        "blur_background": full_frame_preserved or bool(render_hints.get("blur_background")),
         "safe_center_crop": bool(render_hints.get("safe_center_crop")),
         "tracking_mode": tracking_mode,
         "crop_stabilized": True,
@@ -616,6 +625,13 @@ def build_static_render_stats(video_path, start, duration, *, render_hints, trac
         "output_height": int(render_hints.get("output_height") or OUTPUT_HEIGHT),
         "output_aspect_ratio": str(render_hints.get("output_aspect_ratio") or "9:16"),
         "is_vertical_9_16": True,
+        "encoding": {
+            "video_codec": "h264",
+            "audio_codec": "aac",
+            "pixel_format": "yuv420p",
+            "faststart": True,
+            "lossy_video_encode_stages_before_subtitles": 1,
+        },
     }
     if output_path and Path(output_path).exists():
         try:
@@ -751,16 +767,29 @@ def ensure_face_detector_model():
 
     FACE_DETECTOR_MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
     print(f"  Downloading MediaPipe face detector model to {FACE_DETECTOR_MODEL_PATH} ...")
+    curl_path = shutil.which("curl") or shutil.which("curl.exe")
+    if not curl_path:
+        raise RuntimeError("curl is required to download the MediaPipe face detector model.")
+    temporary_path = FACE_DETECTOR_MODEL_PATH.with_suffix(FACE_DETECTOR_MODEL_PATH.suffix + ".part")
     cmd = [
-        "curl.exe",
+        curl_path,
         "--fail",
         "--location",
-        "--ssl-no-revoke",
+        "--silent",
+        "--show-error",
         "--output",
-        str(FACE_DETECTOR_MODEL_PATH),
+        str(temporary_path),
         FACE_DETECTOR_MODEL_URL,
     ]
-    subprocess.run(cmd, check=True)
+    if Path(curl_path).suffix.lower() == ".exe":
+        cmd.insert(5, "--ssl-no-revoke")
+    try:
+        subprocess.run(cmd, check=True)
+        if not temporary_path.is_file() or temporary_path.stat().st_size <= 0:
+            raise RuntimeError("MediaPipe face detector download produced an empty file.")
+        temporary_path.replace(FACE_DETECTOR_MODEL_PATH)
+    finally:
+        temporary_path.unlink(missing_ok=True)
     return FACE_DETECTOR_MODEL_PATH
 
 
@@ -1125,7 +1154,7 @@ def render_dynamic_segment(video_path, frames_dir, start, duration, clip_segment
         "face_tracking_used": face_tracking_used,
         "preserve_full_frame": bool(render_hints.get("preserve_full_frame")),
         "full_frame_preserved": safe_output_frames > 0,
-        "blur_background": bool(render_hints.get("blur_background")),
+        "blur_background": safe_output_frames > 0 or bool(render_hints.get("blur_background")),
         "safe_center_crop": bool(render_hints.get("safe_center_crop")),
         "tracking_mode": (
             "dynamic_face_tracking_with_safe_fallback"
@@ -1145,6 +1174,19 @@ def render_dynamic_segment(video_path, frames_dir, start, duration, clip_segment
         "output_height": int(render_hints.get("output_height") or OUTPUT_HEIGHT),
         "output_aspect_ratio": str(render_hints.get("output_aspect_ratio") or "9:16"),
         "is_vertical_9_16": True,
+        "encoding": {
+            "frame_intermediate": "jpeg_quality_95",
+            "silent_video_codec": "h264",
+            "silent_video_crf": 18,
+            "color_range": "tv",
+            "mux_video_codec": "copy",
+            "audio_codec": "aac",
+            "audio_bitrate": "192k",
+            "mux_audio_codec": "copy",
+            "pixel_format": "yuv420p",
+            "faststart": True,
+            "lossy_video_encode_stages_before_subtitles": 1,
+        },
     }
 
 
@@ -1153,7 +1195,7 @@ def cut_segment(video_path, output_path, start, duration, clip_segments, window,
     with tempfile.TemporaryDirectory(prefix="face_track_") as temp_dir:
         temp_dir_path = Path(temp_dir)
         frames_dir = temp_dir_path / "frames"
-        temp_video_path = temp_dir_path / f"{output_path.stem}_silent.avi"
+        temp_video_path = temp_dir_path / f"{output_path.stem}_silent.mp4"
         temp_audio_path = temp_dir_path / f"{output_path.stem}_audio.m4a"
 
         render_stats = render_dynamic_segment(video_path, frames_dir, start, duration, clip_segments, window, render_hints)
@@ -1235,23 +1277,19 @@ def main():
                 framing_mode = "face_tracking"
                 render_stats = cut_segment(video_path, output_path, start, duration, clip_segments, window, render_hints)
         except Exception as exc:
-            framing_mode = "center_fallback"
+            framing_mode = "full_frame_blur_background"
+            full_frame_blur_background_ffmpeg(video_path, output_path, start, duration)
             render_stats = build_static_render_stats(
                 video_path,
                 start,
                 duration,
                 render_hints=render_hints,
-                tracking_mode="center_fallback",
-                output_path=output_path if output_path.exists() else None,
+                tracking_mode="full_frame_blur_background",
+                output_path=output_path,
                 fallback_reason=str(exc),
             )
             render_stats["error"] = str(exc)
-            print(f"  Warning: face tracking failed for segment {idx}, falling back to center crop. Reason: {exc}")
-            center_crop_ffmpeg(video_path, output_path, start, duration)
-            try:
-                render_stats.update(probe_output_video(output_path))
-            except Exception as probe_exc:
-                render_stats["output_probe_error"] = str(probe_exc)
+            print(f"  Warning: face tracking failed for segment {idx}, using full-frame blur fallback. Reason: {exc}")
 
         upsert_cutter_adjustment(
             cutting_log,
