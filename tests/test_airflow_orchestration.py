@@ -609,6 +609,23 @@ class AirflowOrchestratorTests(unittest.TestCase):
         self.assertEqual(status.stage, "downloading")
         self.assertEqual(status.airflow_task_id, "download_source")
 
+    def test_reconciliation_preserves_finer_grained_review_progress(self):
+        started = self._start()
+        with session_scope() as session:
+            jobs = JobRepository(session)
+            projects = ProjectRepository(session)
+            job = jobs.get(started.job_id)
+            project = projects.get(self.project_id)
+            jobs.update_state(job, status="running", current_stage="reviewing_with_ai", progress=90.0)
+            projects.update_flow_state(project, status="running", current_stage="reviewing_with_ai", progress_percent=90.0)
+        self.client.tasks = [
+            {"task_id": "review_boundaries", "state": "running", "try_number": 1, "max_tries": 0}
+        ]
+
+        status = self.orchestrator.get_status(self.project_id)
+
+        self.assertEqual(status.progress_percent, 90.0)
+
     def test_retry_state_remains_nonterminal(self):
         self._start()
         self.client.tasks = [{"task_id": "transcribe", "state": "up_for_retry", "try_number": 1, "max_tries": 1}]
@@ -623,6 +640,21 @@ class AirflowOrchestratorTests(unittest.TestCase):
         self.client.tasks = [{"task_id": "mark_ready", "state": "success", "try_number": 1, "max_tries": 1}]
         status = self.orchestrator.get_status(self.project_id)
         self.assertEqual((status.status, status.stage, status.progress_percent), ("ready", "ready", 100.0))
+
+    def test_successful_retry_does_not_surface_a_previous_job_error(self):
+        first = self._start()
+        with session_scope() as session:
+            job = JobRepository(session).get(first.job_id)
+            JobRepository(session).update_state(job, status="failed", error_message="old failure")
+        second = self._start()
+        self.client.run = {"state": "success"}
+        self.client.tasks = [{"task_id": "mark_ready", "state": "success", "try_number": 1, "max_tries": 1}]
+
+        status = self.orchestrator.get_status(self.project_id)
+        payload = project_service.get_project_status(self.project_id)
+
+        self.assertEqual(status.status, "ready")
+        self.assertIsNone(payload["last_error"])
 
     def test_failed_run_marks_project_failed(self):
         self._start()

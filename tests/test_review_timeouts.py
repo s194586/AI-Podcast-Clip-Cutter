@@ -1,6 +1,8 @@
 import json
 import os
 import ssl
+import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -26,6 +28,7 @@ from apps.pipeline.stages.prepare import PrepareWorkspaceStage
 from apps.pipeline.stages.review_candidates import ReviewCandidatesStage
 from apps.review_agent.config import ReviewConfigError, load_review_config
 from apps.review_agent.providers import (
+    GEMINI_WORKER_PROTOCOL_VERSION,
     GeminiBoundaryReviewer,
     ReviewProviderCancelledError,
     ReviewProviderCompatibilityError,
@@ -36,12 +39,12 @@ from apps.review_agent.providers import (
     ReviewProviderRequestCancelledError,
     ReviewProviderTimeoutError,
     _provider_error_from_exception,
-    _gemini_request_worker,
     _run_gemini_request_in_process,
     _run_bounded_process,
     _create_genai_client,
     preflight_gemini_credentials,
 )
+from apps.review_agent.gemini_worker import handle_request as handle_gemini_worker_request
 from apps.review_agent.schemas import GeminiBoundaryDecision
 from apps.review_agent.service import (
     ClipReviewCancelledError,
@@ -51,11 +54,7 @@ from apps.review_agent.service import (
 )
 
 
-def _hanging_worker(send_connection, sleep_seconds):
-    try:
-        time.sleep(sleep_seconds)
-    finally:
-        send_connection.close()
+ISOLATED_WORKER_FIXTURE = "tests.isolated_worker_fixture"
 
 
 def _aligned_decision(context):
@@ -87,17 +86,7 @@ class GeminiProviderTimeoutTests(unittest.TestCase):
         self.assertEqual(http_options.retry_options.attempts, 1)
         self.assertIsInstance(http_options.client_args["verify"], ssl.SSLContext)
 
-    def test_spawned_worker_uses_the_shared_client_factory(self):
-        class CapturingConnection:
-            def __init__(self):
-                self.messages = []
-
-            def send(self, payload):
-                self.messages.append(payload)
-
-            def close(self):
-                pass
-
+    def test_isolated_worker_uses_the_shared_client_factory(self):
         decision = GeminiBoundaryDecision(
             review_response_contract_version=2,
             decision="render_ready",
@@ -108,28 +97,27 @@ class GeminiProviderTimeoutTests(unittest.TestCase):
             end_reason="Offline end.",
             warnings=[],
         )
-        connection = CapturingConnection()
         with patch(
-            "apps.review_agent.providers._create_genai_client", return_value=object()
+            "apps.review_agent.gemini_worker._create_genai_client", return_value=object()
         ) as create_client, patch(
-            "apps.review_agent.providers._request_structured_response", return_value=object()
-        ), patch("apps.review_agent.providers._parse_boundary_decision", return_value=decision):
-            _gemini_request_worker(connection, "offline-placeholder", "gemini-test", "prompt", 300)
+            "apps.review_agent.gemini_worker._request_structured_response", return_value=object()
+        ), patch("apps.review_agent.gemini_worker._parse_boundary_decision", return_value=decision):
+            payload = handle_gemini_worker_request(
+                {
+                    "protocol_version": GEMINI_WORKER_PROTOCOL_VERSION,
+                    "operation": "review_gemini",
+                    "api_key": "offline-placeholder",
+                    "model": "gemini-test",
+                    "prompt": "prompt",
+                    "timeout_seconds": 300,
+                }
+            )
 
         create_client.assert_called_once_with("offline-placeholder", timeout_seconds=300)
-        self.assertTrue(connection.messages[0]["ok"])
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["result"]["decision"]["decision"], "render_ready")
 
     def test_worker_serializes_only_safe_provider_failure_diagnostics(self):
-        class CapturingConnection:
-            def __init__(self):
-                self.messages = []
-
-            def send(self, payload):
-                self.messages.append(payload)
-
-            def close(self):
-                pass
-
         class FakeTransportError(RuntimeError):
             status_code = 503
 
@@ -139,17 +127,24 @@ class GeminiProviderTimeoutTests(unittest.TestCase):
                     "https://example.invalid/v1?key=secret-url-key; response body=private payload"
                 )
 
-        connection = CapturingConnection()
         with patch(
-            "apps.review_agent.providers._create_genai_client",
+            "apps.review_agent.gemini_worker._create_genai_client",
             side_effect=FakeTransportError(),
         ):
-            _gemini_request_worker(connection, "offline-placeholder", "gemini-test", "prompt", 300)
+            payload = handle_gemini_worker_request(
+                {
+                    "protocol_version": GEMINI_WORKER_PROTOCOL_VERSION,
+                    "operation": "review_gemini",
+                    "api_key": "offline-placeholder",
+                    "model": "gemini-test",
+                    "prompt": "prompt",
+                    "timeout_seconds": 300,
+                }
+            )
 
-        payload = connection.messages[0]
         diagnostics = payload["diagnostics"]
         serialized = json.dumps(payload)
-        self.assertEqual(set(payload), {"ok", "diagnostics"})
+        self.assertEqual(set(payload), {"protocol_version", "ok", "diagnostics"})
         self.assertFalse(payload["ok"])
         self.assertTrue(diagnostics["original_error_type"].endswith(".FakeTransportError"))
         self.assertEqual(diagnostics["mapped_error_type"], "ReviewProviderError")
@@ -169,7 +164,11 @@ class GeminiProviderTimeoutTests(unittest.TestCase):
         }
         with patch(
             "apps.review_agent.providers._run_bounded_process",
-            return_value={"ok": False, "diagnostics": diagnostics},
+            return_value={
+                "protocol_version": GEMINI_WORKER_PROTOCOL_VERSION,
+                "ok": False,
+                "diagnostics": diagnostics,
+            },
         ):
             with self.assertRaises(ReviewProviderTimeoutError) as raised:
                 _run_gemini_request_in_process(
@@ -251,7 +250,11 @@ class GeminiProviderTimeoutTests(unittest.TestCase):
         }
         with patch(
             "apps.review_agent.providers._run_bounded_process",
-            return_value={"ok": True, "decision": decision},
+            return_value={
+                "protocol_version": GEMINI_WORKER_PROTOCOL_VERSION,
+                "ok": True,
+                "result": {"decision": decision},
+            },
         ) as bounded_process:
             reviewer = GeminiBoundaryReviewer(api_key="offline-placeholder")
             reviewer.review({})
@@ -259,14 +262,168 @@ class GeminiProviderTimeoutTests(unittest.TestCase):
         self.assertEqual(bounded_process.call_args.kwargs["timeout_seconds"], 300)
 
     def test_hanging_process_is_terminated_at_application_deadline(self):
+        processes = []
+        real_popen = subprocess.Popen
+
+        def capture_process(*args, **kwargs):
+            process = real_popen(*args, **kwargs)
+            processes.append(process)
+            return process
+
         started = time.monotonic()
-        with self.assertRaises(ReviewProviderTimeoutError):
-            _run_bounded_process(
-                _hanging_worker,
-                (5.0,),
-                timeout_seconds=0.2,
-            )
+        with patch("apps.review_agent.providers.subprocess.Popen", side_effect=capture_process):
+            with self.assertRaises(ReviewProviderTimeoutError):
+                _run_bounded_process(
+                    {"fixture": "hang", "sleep_seconds": 5.0},
+                    timeout_seconds=0.2,
+                    _worker_module=ISOLATED_WORKER_FIXTURE,
+                )
         self.assertLess(time.monotonic() - started, 3.0)
+        self.assertEqual(len(processes), 1)
+        self.assertIsNotNone(processes[0].poll())
+        self.assertTrue(processes[0].stdin.closed)
+        self.assertTrue(processes[0].stdout.closed)
+        self.assertTrue(processes[0].stderr.closed)
+        if os.name == "posix":
+            with self.assertRaises(ChildProcessError):
+                os.waitpid(processes[0].pid, os.WNOHANG)
+
+    def test_dedicated_module_does_not_reexecute_airflow_console_script_main(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            fake_console_main = Path(temporary_directory) / "airflow"
+            marker = Path(temporary_directory) / "parent-main.marker"
+            fake_console_main.write_text(
+                "import json, pathlib, sys\n"
+                "marker = pathlib.Path(sys.argv[1])\n"
+                "if marker.exists():\n"
+                "    raise RuntimeError('airflow console-script main executed twice')\n"
+                "marker.write_text('executed-once', encoding='utf-8')\n"
+                "from apps.review_agent.providers import _run_bounded_process\n"
+                "result = _run_bounded_process(\n"
+                "    {'fixture': 'sentinel', 'sentinel': 'offline-sentinel'},\n"
+                "    timeout_seconds=5,\n"
+                f"    _worker_module={ISOLATED_WORKER_FIXTURE!r},\n"
+                ")\n"
+                "print(json.dumps(result))\n",
+                encoding="utf-8",
+            )
+            completed = subprocess.run(
+                [sys.executable, str(fake_console_main), str(marker)],
+                cwd=Path.cwd(),
+                env={
+                    **os.environ,
+                    "PYTHONPATH": os.pathsep.join(
+                        filter(None, (str(Path.cwd()), os.environ.get("PYTHONPATH")))
+                    ),
+                },
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            payload = json.loads(completed.stdout)
+            self.assertEqual(payload["result"]["sentinel"], "offline-sentinel")
+            self.assertEqual(marker.read_text(encoding="utf-8"), "executed-once")
+
+    def test_cancellation_terminates_and_reaps_worker(self):
+        processes = []
+        real_popen = subprocess.Popen
+        started = time.monotonic()
+
+        def capture_process(*args, **kwargs):
+            process = real_popen(*args, **kwargs)
+            processes.append(process)
+            return process
+
+        with patch("apps.review_agent.providers.subprocess.Popen", side_effect=capture_process):
+            with self.assertRaises(ReviewProviderCancelledError):
+                _run_bounded_process(
+                    {"fixture": "hang", "sleep_seconds": 5.0},
+                    timeout_seconds=5,
+                    cancellation_check=lambda: time.monotonic() - started > 0.2,
+                    _worker_module=ISOLATED_WORKER_FIXTURE,
+                )
+        self.assertIsNotNone(processes[0].poll())
+        self.assertTrue(processes[0].stdin.closed)
+        self.assertTrue(processes[0].stdout.closed)
+        self.assertTrue(processes[0].stderr.closed)
+        if os.name == "posix":
+            with self.assertRaises(ChildProcessError):
+                os.waitpid(processes[0].pid, os.WNOHANG)
+
+    def test_worker_exit_code_and_invalid_or_incomplete_ipc_are_distinct(self):
+        cases = (
+            ({"fixture": "exit", "exit_code": 7}, "exited with code 7"),
+            ({"fixture": "invalid_json"}, "invalid IPC response"),
+            ({"fixture": "incomplete"}, "incomplete IPC response"),
+        )
+        for request, expected in cases:
+            with self.subTest(request=request), self.assertRaisesRegex(ReviewProviderError, expected):
+                _run_bounded_process(
+                    request,
+                    timeout_seconds=5,
+                    _worker_module=ISOLATED_WORKER_FIXTURE,
+                )
+
+    @unittest.skipUnless(os.name == "posix", "signal exit codes are POSIX-specific")
+    def test_terminate_escalates_to_kill(self):
+        processes = []
+        real_popen = subprocess.Popen
+
+        def capture_process(*args, **kwargs):
+            process = real_popen(*args, **kwargs)
+            processes.append(process)
+            return process
+
+        with patch("apps.review_agent.providers.subprocess.Popen", side_effect=capture_process):
+            with self.assertRaises(ReviewProviderTimeoutError):
+                _run_bounded_process(
+                    {"fixture": "ignore_terminate", "sleep_seconds": 5.0},
+                    timeout_seconds=0.3,
+                    _worker_module=ISOLATED_WORKER_FIXTURE,
+                )
+        self.assertEqual(processes[0].returncode, -9)
+
+    @unittest.skipUnless(os.name == "posix", "signal exit codes are POSIX-specific")
+    def test_worker_signal_is_reported_distinctly(self):
+        with self.assertRaisesRegex(ReviewProviderError, "terminated by signal 15"):
+            _run_bounded_process(
+                {"fixture": "signal"},
+                timeout_seconds=5,
+                _worker_module=ISOLATED_WORKER_FIXTURE,
+            )
+
+    def test_prompt_and_api_key_are_absent_from_command_line_and_safe_errors(self):
+        api_key = "test-secret-api-key-should-not-appear"
+        prompt = "test-secret-prompt-should-not-appear"
+        captured_commands = []
+        real_popen = subprocess.Popen
+
+        def capture_command(*args, **kwargs):
+            captured_commands.append(args[0])
+            return real_popen(*args, **kwargs)
+
+        with patch("apps.review_agent.providers.subprocess.Popen", side_effect=capture_command):
+            with self.assertRaises(ReviewProviderError) as raised:
+                _run_bounded_process(
+                    {
+                        "fixture": "leak_stderr",
+                        "secret": f"{api_key} {prompt}",
+                    },
+                    timeout_seconds=5,
+                    _worker_module=ISOLATED_WORKER_FIXTURE,
+                )
+        serialized_command = json.dumps(captured_commands)
+        self.assertNotIn(api_key, serialized_command)
+        self.assertNotIn(prompt, serialized_command)
+        self.assertNotIn(api_key, str(raised.exception))
+        self.assertNotIn(prompt, str(raised.exception))
+        self.assertEqual(
+            captured_commands[0],
+            [sys.executable, "-m", ISOLATED_WORKER_FIXTURE],
+        )
 
     def test_http_499_is_a_controlled_upstream_cancellation(self):
         error = RuntimeError("request failed with HTTP 499; key=should-not-survive")

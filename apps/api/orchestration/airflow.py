@@ -319,11 +319,16 @@ class AirflowOrchestrator:
             error_message = None
             if retrying and try_number is not None and max_tries is not None:
                 error_message = f"Airflow scheduled another attempt for {task_id}."
+            # Stage callbacks can report finer-grained work within an Airflow
+            # task (notably the per-clip Gemini review progress).  Reconciliation
+            # must never replace that progress with the static stage baseline.
+            stage_progress = float(progress_for_stage(stage) or 0.0)
+            persisted_progress = max(float(job.progress or 0.0), stage_progress)
             jobs.update_state(
                 job,
                 status="running" if run_state == "running" or task_id else "queued",
                 current_stage=stage,
-                progress=progress_for_stage(stage),
+                progress=persisted_progress,
                 started_at=job.started_at or (now if run_state == "running" else None),
                 error_message=error_message,
                 airflow_state=state,
@@ -335,7 +340,7 @@ class AirflowOrchestrator:
                 project,
                 status="running" if run_state == "running" or task_id else "queued",
                 current_stage=stage,
-                progress_percent=progress_for_stage(stage),
+                progress_percent=max(float(project.progress_percent or 0.0), persisted_progress),
                 error_message=error_message,
                 started_at=project.started_at or (now if run_state == "running" else None),
                 completed_at=None,

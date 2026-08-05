@@ -1013,6 +1013,8 @@ def add_subtitles_to_video(input_video: Path, output_video: Path, ass_file: Path
         "yuv420p",
         "-c:a",
         "copy",
+        "-map_metadata",
+        "-1",
         "-movflags",
         "+faststart",
         str(output_video),

@@ -289,7 +289,14 @@ def get_project_status(project_id: int) -> dict[str, Any]:
             "updated_at": _iso(project.updated_at),
             "completed_at": _iso(project.completed_at),
             "clip_count": clip_count,
-            "last_error": JobRepository(session).latest_failed_error(project.id),
+            # A project can have historical failed jobs followed by a healthy
+            # retry.  The processing view describes the current/latest job, so
+            # it must not surface an error from an unrelated older DagRun.
+            "last_error": (
+                latest_job.error_message
+                if latest_job is not None and latest_job.status == "failed"
+                else None
+            ),
             "job": _job_to_status_dict(latest_job) if latest_job is not None else None,
         }
 
