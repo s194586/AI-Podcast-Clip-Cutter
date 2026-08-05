@@ -268,7 +268,7 @@ def _request_structured_response(
     prompt: str,
     timeout_seconds: float,
 ) -> Any:
-    schema = _model_json_schema(GeminiBoundaryDecision)
+    schema = _normalize_gemini_response_schema(_model_json_schema(GeminiBoundaryDecision))
     interactions = getattr(client, "interactions", None)
     if interactions is None or not hasattr(interactions, "create"):
         raise ReviewProviderCompatibilityError(
@@ -356,6 +356,9 @@ def build_gemini_prompt(payload: dict[str, Any], corrective_message: str | None 
         "You do not analyze video.\n"
         "You only decide whether the clip forms a coherent standalone excerpt and which supplied transcript "
         "segment boundaries should be used.\n\n"
+        "review_request_contract_version 3 identifies the input request contract.\n"
+        "Your response must contain review_response_contract_version 2; it identifies the separate response "
+        "contract.\n\n"
         "Each segment relation is before, candidate, or after. Boolean start_eligible and "
         "end_eligible identify whether that segment is eligible for each respective boundary.\n"
         "The current aligned segment IDs in candidate metadata identify the transcript boundaries nearest to the "
@@ -686,6 +689,33 @@ def sanitize_provider_failure_diagnostics(value: Mapping[str, Any] | None) -> di
     message = value.get("safe_message")
     if isinstance(message, str) and message.strip():
         diagnostics["safe_message"] = _sanitize_provider_error_message(message, "Gemini provider request failed.")
+    validation_errors = value.get("validation_errors")
+    if isinstance(validation_errors, (list, tuple)):
+        safe_validation_errors = []
+        for item in validation_errors:
+            if not isinstance(item, Mapping):
+                continue
+            location = item.get("loc")
+            error_type = item.get("type")
+            error_message = item.get("msg")
+            if not isinstance(location, (list, tuple)):
+                continue
+            safe_location = [part for part in location if isinstance(part, (str, int))]
+            if len(safe_location) != len(location):
+                continue
+            if not isinstance(error_type, str) or not error_type or len(error_type) > 160:
+                continue
+            if not isinstance(error_message, str) or not error_message.strip():
+                continue
+            safe_validation_errors.append(
+                {
+                    "loc": safe_location,
+                    "type": error_type,
+                    "msg": _sanitize_provider_error_message(error_message, "Validation failed."),
+                }
+            )
+        if safe_validation_errors:
+            diagnostics["validation_errors"] = safe_validation_errors
     return diagnostics
 
 
@@ -785,9 +815,24 @@ def _parse_boundary_decision(response: Any) -> GeminiBoundaryDecision:
     except ReviewProviderOutputError:
         raise
     except ValidationError as exc:
-        raise ReviewProviderOutputError(
-            "Gemini response did not match the boundary decision schema."
-        ) from exc
+        error = ReviewProviderOutputError(
+            "Gemini response did not match the boundary decision schema.",
+            diagnostics={
+                "category": "ReviewProviderOutputError",
+                "mapped_error_type": "ReviewProviderOutputError",
+                "original_error_type": _exception_type_name(exc),
+                "safe_message": "Gemini response did not match the boundary decision schema.",
+                "validation_errors": [
+                    {
+                        "loc": list(item.get("loc") or ()),
+                        "type": item.get("type"),
+                        "msg": item.get("msg"),
+                    }
+                    for item in exc.errors(include_url=False, include_context=False, include_input=False)
+                ],
+            },
+        )
+        raise error from exc
     except Exception as exc:
         raise ReviewProviderOutputError(
             "Gemini response could not be parsed as structured JSON."
@@ -969,6 +1014,23 @@ def _model_json_schema(model: Any) -> dict[str, Any]:
     if hasattr(model, "model_json_schema"):
         return model.model_json_schema()
     return model.schema()
+
+
+def _normalize_gemini_response_schema(value: Any) -> Any:
+    """Return a schema copy using Gemini-supported singleton enums instead of const."""
+
+    if isinstance(value, dict):
+        normalized = {
+            key: _normalize_gemini_response_schema(item)
+            for key, item in value.items()
+            if key != "const"
+        }
+        if "const" in value:
+            normalized["enum"] = [_normalize_gemini_response_schema(value["const"])]
+        return normalized
+    if isinstance(value, list):
+        return [_normalize_gemini_response_schema(item) for item in value]
+    return value
 
 
 def _json_for_prompt(value: Any) -> str:

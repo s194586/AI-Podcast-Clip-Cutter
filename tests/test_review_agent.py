@@ -349,6 +349,16 @@ class ReviewAgentTests(unittest.TestCase):
         self.assertNotIn('"allowed_boundary_pairs"', prompt)
         self.assertIn("start_segment_id", calls[0]["response_format"]["schema"]["properties"])
         self.assertNotIn("selected_start_option_index", calls[0]["response_format"]["schema"]["properties"])
+        response_schema = calls[0]["response_format"]["schema"]
+        self.assertNotIn('"const"', json.dumps(response_schema))
+        response_version = response_schema["properties"]["review_response_contract_version"]
+        self.assertEqual(response_version["type"], "integer")
+        self.assertEqual(response_version["enum"], [2])
+        self.assertEqual(
+            set(response_schema["required"]),
+            set(GeminiBoundaryDecision.model_json_schema()["required"]),
+        )
+        self.assertFalse(response_schema["additionalProperties"])
         self.assertIn('"text": "The setup matters here."', prompt)
         self.assertNotIn("local_score", prompt)
         self.assertNotIn("local_features", prompt)
@@ -359,6 +369,8 @@ class ReviewAgentTests(unittest.TestCase):
         self.assertNotIn("secret-key", prompt)
         self.assertIn("You must make the editorial decision yourself.", prompt)
         self.assertIn("improving the setup, opening sentence, question, answer completeness, payoff, or ending", prompt)
+        self.assertIn("review_request_contract_version 3 identifies the input request contract", prompt)
+        self.assertIn("response must contain review_response_contract_version 2", prompt)
 
     def test_compact_provider_request_keeps_pairs_backend_only(self):
         context = build_clip_transcript_context(
