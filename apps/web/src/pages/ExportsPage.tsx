@@ -8,7 +8,7 @@ import { listProjectExports } from '../api/render'
 import type { ExportItem, Project } from '../api/types'
 import type { AppShellContext } from '../components/AppShell'
 import { ErrorState, EmptyState, LoadingSkeleton } from '../components/StateBlocks'
-import { formatDate, formatFileSize, formatSeconds, projectTitle } from '../utils/format'
+import { formatDate, formatDuration, formatFileSize, projectTitle } from '../utils/format'
 
 interface ExportGroup {
   key: string
@@ -196,7 +196,7 @@ function ExportPanel({ group }: { group: ExportGroup }) {
           <dl className="grid gap-2 text-sm sm:grid-cols-2">
             <div>
               <dt className="app-label">Duration</dt>
-              <dd className="mt-1 text-app-text">{formatSeconds(selectedArtifact.duration)}</dd>
+              <dd className="mt-1 text-app-text">{formatDuration(selectedArtifact.duration)}</dd>
             </div>
             <div>
               <dt className="app-label">File size</dt>

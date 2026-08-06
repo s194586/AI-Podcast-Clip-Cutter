@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -9,6 +10,7 @@ from ..db.repositories import ClipRepository, ProjectRepository
 from .artifact_service import record_render_artifacts
 from .clips import ClipValidationError, validate_adjusted_bounds
 from .project_state import DEFAULT_PROJECT_ID, PROJECT_ROOT
+from transcription.base import parse_time_to_seconds
 
 
 def clip_to_dict(clip: Clip) -> dict[str, Any]:
@@ -33,7 +35,7 @@ def clip_to_dict(clip: Clip) -> dict[str, Any]:
         "max_end": round(float(clip.max_end), 2),
         "duration": duration,
         "summary": clip.summary or "",
-        "text": clip.text or "",
+        "text": _clip_transcript_excerpt(clip),
         "source": clip.source or "",
         "status": clip.status or "draft",
         "candidate_id": clip.candidate_id,
@@ -61,6 +63,38 @@ def clip_to_dict(clip: Clip) -> dict[str, Any]:
         "created_at": clip.created_at.isoformat() if clip.created_at else None,
         "updated_at": clip.updated_at.isoformat() if clip.updated_at else None,
     }
+
+
+def _clip_transcript_excerpt(clip: Clip) -> str:
+    """Build an excerpt from canonical transcript segments overlapping the clip."""
+    project = getattr(clip, "project", None)
+    transcript_path = getattr(project, "transcript_path", None)
+    if not transcript_path:
+        return ""
+    path = Path(transcript_path)
+    if not path.is_absolute():
+        path = PROJECT_ROOT / path
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return ""
+    segments = payload.get("segments") if isinstance(payload, dict) else None
+    if not isinstance(segments, list):
+        return ""
+    start, end = float(clip.edited_start), float(clip.edited_end)
+    excerpt: list[str] = []
+    for segment in segments:
+        if not isinstance(segment, dict):
+            continue
+        try:
+            segment_start = parse_time_to_seconds(segment.get("start", 0))
+            segment_end = parse_time_to_seconds(segment.get("end", 0))
+        except (TypeError, ValueError):
+            continue
+        text = str(segment.get("text") or "").strip()
+        if text and segment_start < end and segment_end > start:
+            excerpt.append(text)
+    return " ".join(excerpt)
 
 
 def _round_optional(value: float | None) -> float | None:

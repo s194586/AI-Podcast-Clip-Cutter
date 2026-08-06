@@ -28,7 +28,8 @@ import { ErrorState, EmptyState, LoadingSkeleton } from '../components/StateBloc
 import { StatusBadge } from '../components/StatusBadge'
 import {
   clipTitle,
-  formatSeconds,
+  formatDuration,
+  formatTimecode,
   projectTitle,
   reviewerLabel,
   statusLabel,
@@ -346,6 +347,15 @@ export function EditorPage() {
       const result = await reviewProjectClips(projectId)
       const response = await listProjectClips(projectId)
       setClips(response.clips)
+      const refreshedClip = response.clips.find((clip) => clip.id === selectedClipId) ?? response.clips[0]
+      if (refreshedClip) {
+        hydratedClipIdRef.current = null
+        setSelectedClipId(refreshedClip.id)
+        setEditStart(preferredSeekStart(refreshedClip))
+        setEditEnd(preferredEditEnd(refreshedClip))
+        requestSeek(preferredSeekStart(refreshedClip))
+      }
+      setActionError(null)
       setNotice(
         result.summary_message
           || `${result.provider ? statusLabel(result.provider) : 'Configured reviewer'} review finished: `
@@ -508,7 +518,7 @@ export function EditorPage() {
                   >
                     <div className="mb-2 flex items-center justify-between gap-2">
                       <span className="font-semibold text-app-text">{clipTitle(clip)}</span>
-                      <span className="text-xs text-app-muted">{formatSeconds(clip.duration)}</span>
+                      <span className="text-xs text-app-muted">{formatDuration(clip.duration)}</span>
                     </div>
                     <p className="line-clamp-3 text-sm leading-5 text-app-muted">{transcriptExcerpt(clip) || 'No transcript excerpt.'}</p>
                     <div className="mt-3">
@@ -525,7 +535,7 @@ export function EditorPage() {
               <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
                 <div>
                   <h2 className="app-section-title">Video workspace</h2>
-                  <p className="mt-1 text-sm text-app-muted">Clip interval {formatSeconds(editStart)} to {formatSeconds(editEnd)}</p>
+                  <p className="mt-1 text-sm text-app-muted">Clip interval {formatTimecode(editStart)} to {formatTimecode(editEnd)}</p>
                 </div>
                 <StatusBadge value={selectedClip.status} />
               </div>
@@ -554,7 +564,7 @@ export function EditorPage() {
                   </div>
                   <p className="text-sm text-app-muted">
                     <span className="app-label mr-2">Current time</span>
-                    <span className="font-semibold text-app-text">{formatSeconds(currentTime)}</span>
+                    <span className="font-semibold text-app-text">{formatTimecode(currentTime)}</span>
                   </p>
                 </div>
 
@@ -576,15 +586,15 @@ export function EditorPage() {
                 <dl className="mt-4 grid grid-cols-3 gap-2">
                   <div className="app-panel-muted p-3">
                     <dt className="app-label">Start time</dt>
-                    <dd className="mt-1 font-semibold">{formatSeconds(editStart)}</dd>
+                    <dd className="mt-1 font-semibold">{formatTimecode(editStart)}</dd>
                   </div>
                   <div className="app-panel-muted p-3">
                     <dt className="app-label">End time</dt>
-                    <dd className="mt-1 font-semibold">{formatSeconds(editEnd)}</dd>
+                    <dd className="mt-1 font-semibold">{formatTimecode(editEnd)}</dd>
                   </div>
                   <div className="app-panel-muted p-3">
                     <dt className="app-label">Duration</dt>
-                    <dd className="mt-1 font-semibold">{formatSeconds(editEnd - editStart)}</dd>
+                    <dd className="mt-1 font-semibold">{formatDuration(editEnd - editStart)}</dd>
                   </div>
                 </dl>
 
@@ -837,11 +847,11 @@ function BoundaryGroup({ title, start, end, emptyLabel }: BoundaryGroupProps) {
         <dl className="mt-3 grid grid-cols-2 gap-2 text-sm">
           <div>
             <dt className="app-label">Start</dt>
-            <dd className="mt-1 font-semibold">{formatSeconds(start)}</dd>
+            <dd className="mt-1 font-semibold">{formatTimecode(start)}</dd>
           </div>
           <div>
             <dt className="app-label">End</dt>
-            <dd className="mt-1 font-semibold">{formatSeconds(end)}</dd>
+            <dd className="mt-1 font-semibold">{formatTimecode(end)}</dd>
           </div>
         </dl>
       ) : (
