@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -22,10 +23,13 @@ from diarization import (
     PyannoteDiarizationBackend,
 )
 from transcription import TranscriptionConfig
+from transcription.base import TranscriptSegment, TranscriptWord, TranscriptionResult, parse_time_to_seconds
+from transcription.segment_identity import TRANSCRIPT_SCHEMA_VERSION
 
 
 SUPPORTED_TRANSCRIPTION_BACKENDS = ("faster_whisper",)
 SUPPORTED_TRANSCRIPTION_DEVICES = ("auto", "cuda", "cpu")
+ASR_CHECKPOINT_SCHEMA_VERSION = 1
 
 
 def get_duration(path: Path) -> float:
@@ -240,30 +244,36 @@ def transcribe_file(
     print(f"  Device: {args.device} | Compute type: {args.compute_type}")
     print(f"  Diarization mode: {diarization_config.mode}")
 
-    if _transcription_backend is None:
-        transcription, transcription_config = build_transcription_backend(args)
-    else:
-        transcription = _transcription_backend
-        transcription_config = TranscriptionConfig(
-            backend=backend,
-            model=whisper_model,
-            language=language,
-            device=device,
-            compute_type=compute_type,
-            beam_size=max(1, int(beam_size)),
-            vad_filter=vad_filter,
-            word_timestamps=word_timestamps,
-        )
+    transcription_config = TranscriptionConfig(
+        backend=backend,
+        model=whisper_model,
+        language=language,
+        device=device,
+        compute_type=compute_type,
+        beam_size=max(1, int(beam_size)),
+        vad_filter=vad_filter,
+        word_timestamps=word_timestamps,
+    )
     if _diarization_backend is not None:
         diarization = _diarization_backend
 
     total_started_at = time.perf_counter()
-    try:
-        transcription_result = transcription.transcribe(audio_path)
-        if not transcription_result.duration_seconds:
-            transcription_result.duration_seconds = get_duration(audio_path)
-    finally:
-        transcription.release_resources()
+    checkpoint_path = output_path.parent / "asr_checkpoint.json"
+    transcription_result = _load_asr_checkpoint(checkpoint_path, audio_path, transcription_config)
+    checkpoint_reused = transcription_result is not None
+    if transcription_result is not None:
+        print(f"ASR checkpoint reused: {checkpoint_path}")
+    else:
+        if _transcription_backend is None:
+            transcription = build_transcription_backend(args)[0]
+        else:
+            transcription = _transcription_backend
+        try:
+            transcription_result = transcription.transcribe(audio_path)
+            if not transcription_result.duration_seconds:
+                transcription_result.duration_seconds = get_duration(audio_path)
+        finally:
+            transcription.release_resources()
 
     print(
         f"  Transcription finished in {transcription_result.transcription_seconds:.1f}s "
@@ -273,6 +283,9 @@ def transcribe_file(
         f"  Effective transcription device: {transcription_result.device} "
         f"({transcription_result.compute_type})"
     )
+
+    if not checkpoint_reused:
+        _write_asr_checkpoint(checkpoint_path, audio_path, transcription_config, transcription_result)
 
     diarization_result = diarization.assign_speakers(audio_path, transcription_result.segments)
     print(
@@ -335,6 +348,126 @@ def _write_json_atomically(output_path: Path, payload: dict[str, Any]) -> None:
     finally:
         if temporary_path is not None:
             temporary_path.unlink(missing_ok=True)
+
+
+def _audio_fingerprint(audio_path: Path) -> dict[str, Any]:
+    digest = hashlib.sha256()
+    with audio_path.open("rb") as file_handle:
+        for chunk in iter(lambda: file_handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return {"sha256": digest.hexdigest(), "size": audio_path.stat().st_size}
+
+
+def _checkpoint_config(config: TranscriptionConfig) -> dict[str, Any]:
+    return {
+        "backend": config.backend,
+        "model": config.model,
+        "language": config.language,
+        "device": config.device,
+        "compute_type": config.compute_type,
+        "beam_size": config.beam_size,
+        "vad_filter": config.vad_filter,
+        "word_timestamps": config.word_timestamps,
+    }
+
+
+def _write_asr_checkpoint(
+    checkpoint_path: Path,
+    audio_path: Path,
+    config: TranscriptionConfig,
+    result: TranscriptionResult,
+) -> None:
+    payload = result.to_dict()
+    payload.update(
+        {
+            "asr_checkpoint_schema_version": ASR_CHECKPOINT_SCHEMA_VERSION,
+            "source_audio_fingerprint": _audio_fingerprint(audio_path),
+            "transcription_config": _checkpoint_config(config),
+            "checkpoint_backend": {
+                "backend": result.backend,
+                "model": result.model,
+                "language": result.language,
+                "device": result.device,
+                "compute_type": result.compute_type,
+            },
+        }
+    )
+    _write_json_atomically(checkpoint_path, payload)
+    print(f"ASR checkpoint saved to: {checkpoint_path}")
+
+
+def _load_asr_checkpoint(
+    checkpoint_path: Path,
+    audio_path: Path,
+    config: TranscriptionConfig,
+) -> TranscriptionResult | None:
+    if not checkpoint_path.exists():
+        return None
+    try:
+        payload = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("checkpoint root is not an object")
+        if payload.get("asr_checkpoint_schema_version") != ASR_CHECKPOINT_SCHEMA_VERSION:
+            raise ValueError("checkpoint schema version mismatch")
+        if payload.get("source_audio_fingerprint") != _audio_fingerprint(audio_path):
+            raise ValueError("source audio fingerprint mismatch")
+        if payload.get("transcription_config") != _checkpoint_config(config):
+            raise ValueError("transcription configuration mismatch")
+        metadata = payload.get("metadata")
+        raw_segments = payload.get("segments")
+        backend = payload.get("checkpoint_backend")
+        if not isinstance(metadata, dict) or not isinstance(raw_segments, list) or not isinstance(backend, dict):
+            raise ValueError("checkpoint is incomplete")
+        if payload.get("transcript_schema_version") != TRANSCRIPT_SCHEMA_VERSION:
+            raise ValueError("transcript schema version mismatch")
+        segments = [_segment_from_checkpoint(item) for item in raw_segments]
+        return TranscriptionResult(
+            backend=str(backend["backend"]),
+            model=str(backend["model"]),
+            audio_path=audio_path,
+            language=str(backend["language"]),
+            duration_seconds=float(metadata["duration_seconds"]),
+            transcription_seconds=float(metadata["transcription_seconds"]),
+            segments=segments,
+            device=str(backend["device"]),
+            compute_type=str(backend["compute_type"]),
+            extra_metadata={
+                key: value
+                for key, value in metadata.items()
+                if key not in {"backend", "model", "audio", "language", "duration_seconds", "transcription_seconds", "device", "compute_type"}
+            },
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError, ValueError, OverflowError) as exc:
+        print(f"ASR checkpoint ignored: {checkpoint_path} ({exc})")
+        return None
+
+
+def _segment_from_checkpoint(payload: Any) -> TranscriptSegment:
+    if not isinstance(payload, dict):
+        raise ValueError("checkpoint segment is not an object")
+    start = parse_time_to_seconds(payload["start"])
+    end = parse_time_to_seconds(payload["end"])
+    words = [
+        TranscriptWord(
+            start=parse_time_to_seconds(word["start"]),
+            end=parse_time_to_seconds(word["end"]),
+            text=str(word["text"]),
+        )
+        for word in payload.get("words", [])
+    ]
+    segment = TranscriptSegment(
+        start=start,
+        end=end,
+        text=str(payload["text"]),
+        speaker=str(payload.get("speaker", "")),
+        importance=int(payload.get("importance", 3)),
+        chaos=bool(payload.get("chaos", False)),
+        words=words,
+        extra_fields={key: value for key, value in payload.items() if key not in {"segment_id", "start", "end", "text", "speaker", "importance", "chaos", "words"}},
+    )
+    if payload.get("segment_id") != segment.to_dict()["segment_id"]:
+        raise ValueError("checkpoint segment id mismatch")
+    return segment
 
 
 def main() -> None:
