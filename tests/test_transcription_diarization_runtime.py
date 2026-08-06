@@ -154,8 +154,10 @@ class TranscriptionDiarizationRuntimeTests(unittest.TestCase):
                 _diarization_backend=diarization,
             )
 
-        replace.assert_called_once()
-        temporary_path, final_path = replace.call_args.args
+        self.assertEqual(len(replace.call_args_list), 2)
+        final_replacements = [call.args for call in replace.call_args_list if Path(call.args[1]) == self.output]
+        self.assertEqual(len(final_replacements), 1)
+        temporary_path, final_path = final_replacements[0]
         self.assertEqual(Path(temporary_path).parent, self.output.parent)
         self.assertEqual(Path(final_path), self.output)
         self.assertTrue(self.output.exists())
@@ -274,6 +276,108 @@ class TranscriptionDiarizationRuntimeTests(unittest.TestCase):
 
         self.assertTrue(transcription.released)
         self.assertEqual(diarization.calls, [])
+
+    def test_successful_asr_writes_checkpoint_before_diarization_failure(self):
+        transcription = FakeTranscriptionBackend(transcript_segments())
+        diarization = FakeDiarizationBackend(transcription, fail=True)
+
+        with self.assertRaisesRegex(RuntimeError, "controlled diarization failure"):
+            transcribe_file(
+                self.audio,
+                self.output,
+                _transcription_backend=transcription,
+                _diarization_backend=diarization,
+            )
+
+        checkpoint = self.output.parent / "asr_checkpoint.json"
+        self.assertTrue(checkpoint.exists())
+        payload = json.loads(checkpoint.read_text(encoding="utf-8"))
+        self.assertEqual(payload["asr_checkpoint_schema_version"], 1)
+        self.assertEqual(len(payload["segments"]), 1)
+        self.assertFalse(self.output.exists())
+
+    def test_matching_checkpoint_skips_asr_and_goes_to_diarization(self):
+        first_transcription = FakeTranscriptionBackend(transcript_segments())
+        first_diarization = FakeDiarizationBackend(first_transcription, fail=True)
+        with self.assertRaisesRegex(RuntimeError, "controlled diarization failure"):
+            transcribe_file(
+                self.audio,
+                self.output,
+                _transcription_backend=first_transcription,
+                _diarization_backend=first_diarization,
+            )
+
+        second_transcription = FakeTranscriptionBackend(transcript_segments())
+        second_diarization = FakeDiarizationBackend(first_transcription)
+        transcribe_file(
+            self.audio,
+            self.output,
+            _transcription_backend=second_transcription,
+            _diarization_backend=second_diarization,
+        )
+        self.assertEqual(second_transcription.calls, [])
+        self.assertEqual(len(second_diarization.calls), 1)
+
+    def test_changed_audio_invalidates_checkpoint(self):
+        transcription = FakeTranscriptionBackend(transcript_segments())
+        diarization = FakeDiarizationBackend(transcription, fail=True)
+        with self.assertRaisesRegex(RuntimeError, "controlled diarization failure"):
+            transcribe_file(
+                self.audio,
+                self.output,
+                _transcription_backend=transcription,
+                _diarization_backend=diarization,
+            )
+
+        self.audio.write_bytes(b"changed-audio")
+        replacement = FakeTranscriptionBackend(transcript_segments())
+        replacement_diarization = FakeDiarizationBackend(replacement, fail=True)
+        with self.assertRaisesRegex(RuntimeError, "controlled diarization failure"):
+            transcribe_file(
+                self.audio,
+                self.output,
+                _transcription_backend=replacement,
+                _diarization_backend=replacement_diarization,
+            )
+        self.assertEqual(len(replacement.calls), 1)
+
+    def test_changed_asr_configuration_invalidates_checkpoint(self):
+        transcription = FakeTranscriptionBackend(transcript_segments())
+        diarization = FakeDiarizationBackend(transcription, fail=True)
+        with self.assertRaisesRegex(RuntimeError, "controlled diarization failure"):
+            transcribe_file(
+                self.audio,
+                self.output,
+                _transcription_backend=transcription,
+                _diarization_backend=diarization,
+            )
+
+        replacement = FakeTranscriptionBackend(transcript_segments())
+        replacement_diarization = FakeDiarizationBackend(replacement, fail=True)
+        with self.assertRaisesRegex(RuntimeError, "controlled diarization failure"):
+            transcribe_file(
+                self.audio,
+                self.output,
+                whisper_model="medium",
+                _transcription_backend=replacement,
+                _diarization_backend=replacement_diarization,
+            )
+        self.assertEqual(len(replacement.calls), 1)
+
+    def test_corrupt_checkpoint_is_not_used(self):
+        checkpoint = self.output.parent / "asr_checkpoint.json"
+        checkpoint.write_text("{not-json", encoding="utf-8")
+        transcription = FakeTranscriptionBackend(transcript_segments())
+        diarization = FakeDiarizationBackend(transcription, fail=True)
+        with self.assertRaisesRegex(RuntimeError, "controlled diarization failure"):
+            transcribe_file(
+                self.audio,
+                self.output,
+                _transcription_backend=transcription,
+                _diarization_backend=diarization,
+            )
+        self.assertEqual(len(transcription.calls), 1)
+        json.loads(checkpoint.read_text(encoding="utf-8"))
 
 
 class TranscriptResumeTests(unittest.TestCase):

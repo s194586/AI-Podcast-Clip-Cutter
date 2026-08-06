@@ -1,7 +1,7 @@
 # Airflow Orchestration
 
-Airflow is an optional orchestration mode. Local mode remains the default and
-continues to use `LocalPipelineOrchestrator` plus `apps.pipeline.entrypoint`.
+Airflow is the canonical Docker orchestration path for the portfolio MVP. Native
+local mode remains available only for development and compatibility.
 Airflow mode uses Apache Airflow 3.3.0, PostgreSQL metadata, LocalExecutor, a
 separate DAG processor, and the Airflow 3 stable REST API.
 

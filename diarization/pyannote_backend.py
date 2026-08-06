@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import re
 import subprocess
 import time
+import traceback
 from typing import Any, Callable, Mapping, Protocol
 
 from transcription.base import TranscriptSegment, compact_text
@@ -97,10 +99,8 @@ class PyannoteDiarizationBackend(DiarizationBackend):
         try:
             model_input = self._preload_audio_file(audio_path) if self._preload_audio else audio_path
             output = pipeline(model_input, **self.config.speaker_constraints())
-        except Exception:
-            raise PyannoteDiarizationError(
-                "Pyannote diarization failed. Verify model access, HF_TOKEN, cache, and offline settings."
-            ) from None
+        except Exception as exc:
+            raise PyannoteDiarizationError(_safe_pyannote_error("diarization", exc, self._environment)) from exc
         exclusive_diarization = self._exclusive_diarization(output)
         itertracks = getattr(exclusive_diarization, "itertracks", None)
         if not callable(itertracks):
@@ -130,10 +130,8 @@ class PyannoteDiarizationBackend(DiarizationBackend):
                 self.config.model_revision,
                 token,
             )
-        except Exception:
-            raise PyannoteDiarizationError(
-                "Pyannote model loading failed. Verify Community-1 access, HF_TOKEN, cache, and offline settings."
-            ) from None
+        except Exception as exc:
+            raise PyannoteDiarizationError(_safe_pyannote_error("model loading", exc, self._environment)) from exc
         return self._pipeline
 
     @staticmethod
@@ -244,3 +242,27 @@ class PyannoteDiarizationBackend(DiarizationBackend):
             raise PyannoteDiarizationError(
                 f"Pyannote speaker turn {index} has an empty speaker label."
             )
+
+
+def _safe_pyannote_error(kind: str, exc: Exception, environment: Mapping[str, Any]) -> str:
+    token = str(environment.get("HF_TOKEN") or "").strip()
+    message = f"Pyannote {kind} failed: exception_type={type(exc).__module__}.{type(exc).__name__}"
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    if status is None:
+        status = getattr(exc, "status_code", None)
+    message += f"; http_status={status if status is not None else 'none'}"
+    message += f"; cause={_redact_pyannote_text(str(exc), token)}"
+    message += f"; traceback={_redact_pyannote_text(traceback.format_exc(), token).strip()}"
+    return message
+
+
+def _redact_pyannote_text(value: str, token: str) -> str:
+    text = str(value)
+    if token:
+        text = text.replace(token, "[REDACTED_SECRET]")
+    text = re.sub(r"(?i)(bearer\s+)[^\s,;]+", r"\1[REDACTED_SECRET]", text)
+    return re.sub(
+        r"(?i)(token|api[_-]?key|authorization|password|secret)\s*[=:]\s*[^\s,;]+",
+        r"\1=[REDACTED_SECRET]",
+        text,
+    )

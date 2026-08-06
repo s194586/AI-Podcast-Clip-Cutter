@@ -2,6 +2,12 @@
 
 Release summaries are based on the verified Git history.
 
+## v1.2.0 — 2026-08-06
+
+- Added deterministic transcript excerpts, shared timecode parsing/formatting, and a reliable post-Review All refresh path.
+- Added a verified 1080×1920 raw/subtitled demo pair and poster under `docs/demo/`.
+- Consolidated the public MVP documentation around Docker/Airflow operation, architecture, demo, limitations, and roadmap.
+
 ## v1.1.0 — 2026-07-21
 
 ### Added

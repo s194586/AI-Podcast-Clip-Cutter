@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import json
-import math
 from pathlib import Path
 from typing import Any
 
 from .project_state import DEFAULT_PROJECT_ID, PROJECT_ROOT
+from .timecode import parse_timecode
 
 WINDOW_MARGIN_SECONDS = 20.0
 MIN_EDITED_DURATION_SECONDS = 10.0
@@ -34,24 +34,10 @@ def _read_json(path: Path) -> Any:
 
 
 def _parse_seconds(value: Any, field_name: str) -> float:
-    if value is None or value == "":
-        raise ClipValidationError(f"Missing required time field: {field_name}")
     try:
-        if isinstance(value, str) and ":" in value:
-            parts = [part for part in value.strip().replace(",", ".").split(":") if part]
-            if len(parts) == 2:
-                seconds = int(parts[0]) * 60 + float(parts[1])
-            elif len(parts) == 3:
-                seconds = int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
-            else:
-                seconds = float(value)
-        else:
-            seconds = float(value)
-    except (TypeError, ValueError) as exc:
-        raise ClipValidationError(f"Invalid time value for {field_name}: {value}") from exc
-    if not math.isfinite(seconds):
-        raise ClipValidationError(f"Invalid non-finite time value for {field_name}: {value}")
-    return seconds
+        return parse_timecode(value, field_name=field_name)
+    except ValueError as exc:
+        raise ClipValidationError(str(exc)) from exc
 
 
 def _first_present(item: dict[str, Any], keys: tuple[str, ...]) -> Any:

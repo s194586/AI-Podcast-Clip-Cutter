@@ -558,7 +558,7 @@ describe('Product UI', () => {
     await screen.findByText('Second clip excerpt')
     fireEvent.click(screen.getByRole('button', { name: /Clip 2/i }))
 
-    expect(screen.getByText('Clip interval 20.0s to 29.0s')).toBeInTheDocument()
+    expect(screen.getByText('Clip interval 00:00:20.0 to 00:00:29.0')).toBeInTheDocument()
   })
 
   it('selecting a clip seeks to edited_start', async () => {
@@ -574,7 +574,7 @@ describe('Product UI', () => {
 
     expect(video.currentTime).toBe(22.5)
     expect(screen.getByText('Current time')).toBeInTheDocument()
-    expect(screen.getAllByText('22.5s').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('00:00:22.5').length).toBeGreaterThan(0)
   })
 
   it('uses fallback seek order from edited to reviewed to original', async () => {
@@ -626,7 +626,7 @@ describe('Product UI', () => {
     fireEvent.loadedMetadata(video)
 
     expect(video.currentTime).toBe(15.25)
-    expect(screen.getAllByText('15.3s').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('00:00:15.3').length).toBeGreaterThan(0)
   })
 
   it('clip selection does not autoplay', async () => {
@@ -656,7 +656,7 @@ describe('Product UI', () => {
     fireEvent.timeUpdate(video)
 
     expect(video.currentTime).toBe(34)
-    expect(screen.getByText('34.0s')).toBeInTheDocument()
+    expect(screen.getByText('00:00:34.0')).toBeInTheDocument()
   })
 
   it('Preview selection uses the latest edited_start', async () => {
@@ -681,7 +681,7 @@ describe('Product UI', () => {
     expect(await screen.findByText('Original selection')).toBeInTheDocument()
     expect(screen.getByText('Gemini suggestion')).toBeInTheDocument()
     expect(screen.getByText('Current edit')).toBeInTheDocument()
-    expect(screen.getAllByText('10.5s').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('00:00:10.5').length).toBeGreaterThan(0)
     expect(screen.getByLabelText('Start range control')).toBeInTheDocument()
     expect(screen.getByLabelText('End range control')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Preview selection' })).toBeInTheDocument()

@@ -71,16 +71,51 @@ export function formatPercent(value: number | null | undefined): string {
   return `${Math.max(0, Math.min(percent, 100))}%`
 }
 
-export function formatSeconds(value: number | null | undefined): string {
+export function parseTimecode(value: string | number): number {
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value) || value < 0) throw new Error('Invalid time value')
+    return value
+  }
+  const parts = value.trim().replace(',', '.').split(':')
+  const numbers = parts.map(Number)
+  if (parts.length !== 2 && parts.length !== 3) {
+    const numeric = Number(value)
+    if (Number.isFinite(numeric) && numeric >= 0) return numeric
+    throw new Error('Invalid time value')
+  }
+  if (numbers.some((part) => !Number.isFinite(part))) throw new Error('Invalid time value')
+  const seconds = parts.length === 2 ? numbers[0] * 60 + numbers[1] : numbers[0] * 3600 + numbers[1] * 60 + numbers[2]
+  if (!Number.isFinite(seconds) || seconds < 0) throw new Error('Invalid time value')
+  return seconds
+}
+
+export function formatTimecode(value: number | null | undefined): string {
   if (value === null || value === undefined || Number.isNaN(Number(value))) {
     return '-'
   }
+  const totalTenths = Math.round(Number(value) * 10)
+  const whole = Math.floor(totalTenths / 10)
+  const tenths = totalTenths % 10
+  const seconds = whole % 60
+  const minutes = Math.floor(whole / 60) % 60
+  const hours = Math.floor(whole / 3600)
+  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}.${tenths}`
+}
+
+export function formatDuration(value: number | null | undefined): string {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return '-'
+  const totalTenths = Math.round(Number(value) * 10)
+  const whole = Math.floor(totalTenths / 10)
+  const tenths = totalTenths % 10
+  return `${String(Math.floor(whole / 60)).padStart(2, '0')}:${String(whole % 60).padStart(2, '0')}.${tenths}`
+}
+
+export function formatSeconds(value: number | null | undefined): string {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return '-'
   const seconds = Number(value)
   const minutes = Math.floor(seconds / 60)
   const remainder = seconds - minutes * 60
-  if (minutes > 0) {
-    return `${minutes}:${remainder.toFixed(1).padStart(4, '0')}`
-  }
+  if (minutes > 0) return `${minutes}:${remainder.toFixed(1).padStart(4, '0')}`
   return `${remainder.toFixed(1)}s`
 }
 

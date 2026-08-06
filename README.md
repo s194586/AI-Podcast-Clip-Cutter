@@ -1,283 +1,100 @@
 # AI Podcast Clip Cutter
 
-AI Podcast Clip Cutter is a local-first MVP for turning a long-form podcast
-into short, human-approved vertical clips. It separates deterministic candidate
-discovery from semantic editorial review: replay-interest data finds moments to
-inspect, while Gemini reviews only the transcript boundaries of an existing
-candidate.
+AI Podcast Clip Cutter is a local-first, human-in-the-loop MVP for turning a
+long podcast into reviewable 9:16 clips. It shows a recruiter the complete
+product loop: deterministic media analysis, speaker-aware transcript assembly,
+bounded semantic boundary review, human editing, and raw/subtitled export.
 
-## User flow
+## Portfolio MVP — v1.2.0
 
-1. Create a project from a source URL and run the local pipeline.
-2. Download, transcribe, validate the transcript, detect replay-interest peaks,
-   and generate neutral candidate windows.
-3. Review each candidate's transcript boundaries with Gemini.
-4. Inspect the result in the React editor, adjust boundaries when needed, then
-   accept or reject the clip.
-5. Render a user-selected 9:16 clip with raw and subtitled variants.
+**Portfolio MVP complete — not a production SaaS.** The product runs locally
+with Docker Compose and Airflow. Candidate discovery is deliberately neutral:
+replay-interest peaks create windows, but do not perform semantic scoring.
+Gemini through the LangGraph boundary-review path is the only automated
+semantic evaluation route; backend validation and the human editor remain
+authoritative.
 
-Candidate generation uses local replay-interest peaks and canonical transcript
-artifacts. It does not make an editorial quality decision. Gemini is the only
-product semantic-review path: it receives a compact transcript window and
-selects start/end segment IDs for one of `render_ready`,
-`adjust_boundaries`, or `reject`. The backend validates those IDs, ranges,
-ordering, and duration before persisting anything.
+### Demo
 
-If Gemini or its transport fails, the review ends as `manual_review`; existing
-boundaries are preserved for a person to inspect. The review path does not
-replace an unavailable provider with heuristic scoring, heuristic decisions, or
-a fallback provider.
+[![Portfolio MVP demo poster](docs/demo/portfolio-mvp-poster.jpg)](docs/demo/portfolio-mvp-subtitled.mp4)
+
+Selected clip: `73:56.70–75:10.88` (74.24 s), presented as a safe
+`9:16 contain layout with blurred background`.
+
+- [Watch subtitled demo](docs/demo/portfolio-mvp-subtitled.mp4)
+- [Watch raw demo](docs/demo/portfolio-mvp-raw.mp4)
+
+The local Project 5 metadata identifies the source as **“PŁACILIŚMY 80%
+PROWIZJI W TEAM X - Lexy Chaplin”** and records
+[`https://www.youtube.com/watch?v=iAcR3T_Q5X8`](https://www.youtube.com/watch?v=iAcR3T_Q5X8).
+The local metadata does not record the channel name, and this repository has
+no confirmation of redistribution rights for the external demo material.
+The MIT license below applies to the code, not to third-party media.
+
+## Verified product flow
+
+`YouTube → Airflow → Faster-Whisper → Pyannote → deterministic merger → replay-interest candidates → Gemini/LangGraph boundary review → human edit → raw/subtitled render`
+
+Candidate windows contain no semantic summary or heuristic quality score. The
+editor builds excerpts from canonical transcript segments that overlap the
+current clip bounds. Time positions use `HH:MM:SS.s`; clip durations use
+`MM:SS.s`.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-  U[React editor / Nginx] --> A[FastAPI API]
-  A --> O[Airflow scheduler + DAG processor]
-  O --> M[(PostgreSQL Airflow metadata)]
-  A --> P[Local pipeline services]
-  P --> T[Transcript + replay-interest peaks]
-  T --> C[Canonical candidate windows]
-  C --> R[LangGraph boundary-review workflow]
-  R --> G[Gemini via google-genai]
-  G --> V[Backend boundary validation]
-  V --> D[(SQLite application state)]
-  D --> U
-  U --> E[Human boundary edit / accept / reject]
-  E --> F[FFmpeg 9:16 render + subtitles]
+  U[React editor] --> N[Nginx]
+  N --> A[FastAPI]
+  A --> O[Airflow orchestration]
+  O --> W[Pipeline workspace]
+  W --> T[Faster-Whisper transcript]
+  T --> D[Pyannote + deterministic merger]
+  D --> C[Neutral candidate windows]
+  C --> G[Gemini/LangGraph boundary review]
+  G --> V[Validated review state]
+  V --> S[(SQLite)]
+  S --> U
+  U --> F[FFmpeg raw/subtitled render]
 ```
 
-The Docker demo uses Airflow orchestration. Nginx serves the React SPA and
-proxies `/api/*` to FastAPI, so browser routes and API routes remain separate.
-FastAPI and all Airflow components share the same application `data/` mount.
-Application state is stored in SQLite; Airflow has separate PostgreSQL scheduler
-metadata. Native local development can still use `LocalPipelineOrchestrator`.
-
-## Technology
-
-| Area | Implementation |
-| --- | --- |
-| Backend | Python 3.12+, FastAPI, SQLAlchemy, Pydantic |
-| Review workflow | LangGraph, `google-genai`, Gemini `gemini-3.5-flash` |
-| TLS on Windows | `truststore` system certificate context in each Gemini client, including spawned workers |
-| Pipeline | Faster-Whisper word timestamps, Pyannote Community-1, yt-dlp, FFmpeg, local replay-interest peak detection |
-| Frontend | React 19, TypeScript, Vite, Tailwind CSS |
-| Persistence | SQLite |
-| Validation | Python `unittest`, Vitest, React Testing Library, GitHub Actions |
-
-## Speaker diarization
-
-The production transcript path is sequential: Faster-Whisper fully materializes
-word timestamps and releases its model, Pyannote Community-1 runs on CPU, its
-`exclusive_speaker_diarization` turns enter the deterministic merger, and the
-merged transcript is written atomically before the existing Gemini boundary
-review can read it. There is no heuristic or single-speaker fallback: missing
-credentials, gated-model access, an offline cache miss, invalid model output,
-or a merger error fails transcription and preserves any existing transcript.
-
-Before using `pyannote` mode, accept the terms for
-`pyannote/speaker-diarization-community-1` on Hugging Face and create a read-only
-Hugging Face token. Store it in the ignored runtime environment as `HF_TOKEN`;
-do not pass it on the command line. The MVP is CPU-only.
-
-```powershell
-$env:DIARIZATION_MODE = "pyannote" # production speaker attribution
-$env:HF_TOKEN = "<read-token>"
-python .\transcribe.py --file .\input\podcast.mp3
-
-$env:DIARIZATION_MODE = "off"      # no model and no placeholder speaker labels
-Remove-Item Env:HF_TOKEN -ErrorAction SilentlyContinue
-python .\transcribe.py --file .\input\podcast.mp3
-```
-
-The default model revision is pinned to
-`3533c8cf8e369892e6b79ff1bf80f7b0286a54ee`. Leave
-`DIARIZATION_NUM_SPEAKERS`, `DIARIZATION_MIN_SPEAKERS`, and
-`DIARIZATION_MAX_SPEAKERS` empty for automatic estimation. An exact count is
-mutually exclusive with the minimum/maximum range.
-
-Set `HF_HOME` to a persistent directory to retain downloaded model files.
-`HF_HUB_OFFLINE=1` forbids network access and therefore works only after the
-pinned model is already cached. Implicit token discovery and telemetry are
-disabled by the provided environment configuration.
-
-Speaker labels are anonymous (`Speaker 0`, `Speaker 1`, and so on); they do not
-identify people and are not associated with faces. Exclusive diarization gives
-one primary speaker at a time, so it does not preserve a complete representation
-of overlapping speech. Regenerating diarization or splitting segments at
-speaker changes changes the canonical time ranges and therefore canonical
-segment IDs.
-
-The real-model smoke test is opt-in and never calls Gemini:
-
-```powershell
-$env:RUN_PYANNOTE_INTEGRATION = "1"
-$env:PYANNOTE_TEST_AUDIO = "C:\path\to\authorized-test-audio.wav"
-$env:HF_TOKEN = "<read-token>"
-.venv\Scripts\python.exe -m unittest tests.test_pyannote_integration
-```
-
-Without the explicit flag the test is skipped and no model is loaded. If this
-test is not run, a manual end-to-end transcription remains the only outstanding
-real-model gate.
-
-## Review and editing contract
-
-Gemini sees no video frames, local candidate scores, database objects, API keys,
-or arbitrary timestamps. It returns non-empty canonical segment IDs and a
-structured decision. `recommended_action` is the persisted compatibility mirror
-of the Gemini decision.
-
-For valid Gemini decisions, review provenance is
-`gemini_boundary_decision` with numeric-score provenance `not_available`.
-Legacy quality/context/hook/payoff/boundary, privacy, crop, and context fields
-remain `NULL` unless a historical record explicitly supplied them. They are not
-used by the Gemini review flow.
-
-The React editor remains authoritative for human-in-the-loop work. A user can
-move the boundaries after review; rendering uses the edited boundaries, never
-an automatic render triggered by the model.
-
-## Run the Docker demo
-
-Requirements: Docker Desktop using Linux containers, Docker Compose v2, and at
-least 4 GB of memory available to Docker. No host Python, Node.js, FFmpeg, or
-Airflow installation is needed. Use only source media you are authorized to
-process.
-
-```powershell
-Copy-Item .\orchestration\airflow\airflow.env.example .\orchestration\airflow\.env.airflow
-notepad .\orchestration\airflow\.env.airflow
-```
-
-Replace every `change-me` value. The required, local-only secrets are
-`AIRFLOW_API_PASSWORD`, `AIRFLOW_DB_PASSWORD`, and `AIRFLOW_JWT_SECRET`;
-`AIRFLOW_API_USERNAME` is also required. Keep the database password URL-safe.
-`CLIP_REVIEW_MODE=gemini` is the normal configuration. `GEMINI_API_KEY` may
-remain empty when semantic review is not used: a missing key does not block
-stack startup, project creation, or pipeline runs with `auto_review` disabled.
-The ignored env file is not copied into either image.
-
-From the repository root, the canonical start command is:
+The canonical Docker start is:
 
 ```powershell
 docker compose --env-file .\orchestration\airflow\.env.airflow up --build --detach --wait
-```
-
-Services and addresses:
-
-| Service | Address | Purpose |
-| --- | --- | --- |
-| React/Nginx | `http://127.0.0.1:5173` | Product UI and `/api/*` reverse proxy |
-| FastAPI | `http://127.0.0.1:8010` | Application API |
-| Airflow | `http://127.0.0.1:8080` | DAG status and logs |
-| PostgreSQL | internal only | Airflow metadata |
-
-Check the running stack:
-
-```powershell
 docker compose --env-file .\orchestration\airflow\.env.airflow ps
-Invoke-RestMethod http://127.0.0.1:5173/healthz
-Invoke-RestMethod http://127.0.0.1:5173/api/health
-Invoke-RestMethod http://127.0.0.1:8010/health
 ```
 
-For a short offline demo, open the UI, create a project with any valid HTTPS
-URL, leave automatic start disabled, and verify that it appears on the
-dashboard. This exercises the real React frontend, Nginx proxy, FastAPI,
-SQLite, and shared Docker workspace without downloading media or contacting an
-external model. For real processing, use an authorized podcast URL.
+Services: React/Nginx at `http://127.0.0.1:5173`, FastAPI at
+`http://127.0.0.1:8010`, and Airflow at `http://127.0.0.1:8080`. Native local
+mode is retained as a development/compatibility path, not the official demo.
+See [docs/DEMO.md](docs/DEMO.md) and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-The controlled repository smoke test uses isolated ports, data, Compose project
-name, and volumes:
+## Validation and limitations
 
-```powershell
-.\scripts\smoke_docker.ps1
-```
+The repository has an offline Python suite, React/Vitest tests, lint/build
+checks, and Docker health checks. The verified 6 August 2026 validation for
+this release includes the Airflow scheduler import, Hugging Face model-info,
+`Pipeline.from_pretrained(...).to(cpu)`, healthy containers, and endpoint
+smoke checks. No audio inference, full E2E, real Gemini call, or YouTube
+download is claimed by this release validation.
 
-It builds both images, waits for every healthcheck, verifies frontend and API
-access (directly and through Nginx), creates and lists one non-started project,
-checks SPA routing, and confirms that Airflow lists the DAG with no import
-errors. The script explicitly sets `CLIP_REVIEW_MODE=local_stub` as a controlled
-test fixture, but it never starts a pipeline or invokes review. It performs a
-collision preflight before creating anything, and its `finally` cleanup removes
-only resources owned by that smoke run.
+The project is CPU-oriented, local-first, single-user, and not hosted. It does
+not guarantee viral clips. Speaker labels are anonymous and are not linked to
+faces. Face tracking is experimental/best-effort and is not an MVP acceptance
+criterion. Subtitle styling is deterministic; it does not claim
+speaker-dependent colors. There is no subtitle text editor or `Render All`.
 
-Real semantic boundary review requires the normal `CLIP_REVIEW_MODE=gemini`
-configuration and a valid `GEMINI_API_KEY`; there is no silent fallback.
-`local_stub` is reserved for controlled automated tests and is not an
-alternative production scoring mode.
+## Production roadmap
 
-Stop the application while preserving databases, logs, and project data:
+- active-speaker/face tracking refinement;
+- speaker-diarization-based subtitle colors;
+- queued sequential `Render All`, progress, retry-failed, and ZIP export;
+- subtitle text editor;
+- hosting, auth, and multi-user persistence;
+- GPU/performance optimization.
 
-```powershell
-docker compose --env-file .\orchestration\airflow\.env.airflow down
-```
+## License
 
-Do not add `--volumes` to the routine stop command.
-
-### Windows troubleshooting
-
-- If Docker reports a missing Linux engine pipe, start Docker Desktop and wait
-  until `docker info` succeeds.
-- If a port is busy, change `WEB_PORT`, `APP_API_PORT`, or `AIRFLOW_PORT` in
-  `.env.airflow`.
-- Keep the repository on a drive shared with Docker Desktop. WSL2-backed Linux
-  containers must be enabled.
-- Corporate HTTPS inspection may require the public root CA at
-  `orchestration/airflow/secrets/custom-ca/root-ca.pem` and
-  `CUSTOM_CA_REQUIRED=true`. Never commit that file. Docker Desktop must also
-  trust the proxy for dependency downloads during image builds.
-- A first build downloads the Airflow image and Python/Node dependencies and
-  can take several minutes. Inspect failures with
-  `docker compose --env-file .\orchestration\airflow\.env.airflow logs`.
-
-## Native development
-
-Native development requires Python 3.14, [uv](https://docs.astral.sh/uv/),
-Node.js/npm, and FFmpeg:
-
-```powershell
-Copy-Item .env.example .env
-uv sync --locked
-.\scripts\dev_full_stack.ps1 -OpenWindows
-```
-
-FastAPI runs at `http://127.0.0.1:8010`; Vite prints its development URL and
-proxies API calls to FastAPI. Keep `PIPELINE_ORCHESTRATOR=local` for this path.
-
-## Test and validation
-
-The CI workflow is the source of truth for the command shape. Run the relevant
-offline checks locally:
-
-```powershell
-uv sync --locked
-uv run python -m unittest tests.test_review_timeouts tests.test_review_agent
-uv run python -m unittest discover -s tests
-uv pip check
-
-Set-Location .\apps\web
-npm ci
-npm run test -- --run
-npm run lint
-npm run build
-Set-Location ..\..
-
-git diff --check
-```
-
-## MVP limits
-
-- A successful live Gemini decision depends on external model availability.
-- The application is local-first and uses SQLite; it is not a multi-user cloud
-  deployment.
-- Rendering is manually initiated after editorial review.
-- There is no browser end-to-end suite, automatic publishing, or automatic
-  moderation/compliance workflow.
-- Transcription quality depends on the input audio and Faster-Whisper output.
-- Optional Docker/Airflow support is not required for normal local development.
-
-See [Sprint 2 review](SPRINT_2_REVIEW.md) for the current acceptance-test
-status and [the review-agent documentation](docs/CLIP_REVIEW_AGENT.md) for the
-protocol details.
+Code is MIT-licensed. This license does not grant rights to external podcast
+or demo media.

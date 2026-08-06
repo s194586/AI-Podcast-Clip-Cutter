@@ -106,6 +106,10 @@ orchestration/airflow/secrets/
 *.ass
 *.srt
 *.vtt
+!docs/demo/
+!docs/demo/portfolio-mvp-raw.mp4
+!docs/demo/portfolio-mvp-subtitled.mp4
+!docs/demo/portfolio-mvp-poster.jpg
 
 # Benchmark generated outputs
 benchmarks/
