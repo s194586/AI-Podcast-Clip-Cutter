@@ -5,7 +5,44 @@ long podcast into reviewable 9:16 clips. It shows a recruiter the complete
 product loop: deterministic media analysis, speaker-aware transcript assembly,
 bounded semantic boundary review, human editing, and raw/subtitled export.
 
-## Portfolio MVP — v1.2.0
+## Portfolio MVP — v1.2.1
+
+This is a local-first, human-in-the-loop product for turning long-form podcasts
+into reviewable vertical clips. It demonstrates a complete workflow from
+deterministic candidate discovery through AI-assisted boundary review, editing,
+and raw or subtitled export.
+
+## Screenshot showcase
+
+### Projects dashboard
+
+![Projects dashboard](docs/screenshots/projects-dashboard.png)
+
+### New project
+
+![New project](docs/screenshots/new-project.png)
+
+### Review editor
+
+![Review editor](docs/screenshots/review-editor.png)
+
+### Exports
+
+![Exports](docs/screenshots/exports.png)
+
+## What this project demonstrates
+
+- local-first AI-assisted podcast clipping workflow;
+- deterministic candidate discovery followed by semantic AI review;
+- Gemini/LangGraph-assisted boundary refinement;
+- human-in-the-loop clip review and manual editing;
+- raw and subtitled vertical export generation;
+- reproducible Docker Compose + Airflow setup.
+
+## Roadmap
+
+See the [Beyond MVP backlog](docs/BEYOND_MVP.md) for planned work outside the
+current Portfolio MVP.
 
 **Portfolio MVP complete — not a production SaaS.** The product runs locally
 with Docker Compose and Airflow. Candidate discovery is deliberately neutral:
@@ -23,7 +60,8 @@ authorized source material. Public portfolio screenshots focus on the
 application interface, review workflow, orchestration status, and export
 results rather than externally owned media.
 
-UI screenshots will be added before the final portfolio release.
+The screenshots above focus on the application interface, review workflow,
+orchestration status, and export results rather than externally owned media.
 
 ## Verified product flow
 
@@ -53,6 +91,13 @@ flowchart LR
 ```
 
 The canonical Docker start is:
+
+First copy the example environment file and fill in the required values and
+secrets:
+
+```powershell
+Copy-Item .\orchestration\airflow\airflow.env.example .\orchestration\airflow\.env.airflow
+```
 
 ```powershell
 docker compose --env-file .\orchestration\airflow\.env.airflow up --build --detach --wait

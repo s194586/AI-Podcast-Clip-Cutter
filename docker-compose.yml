@@ -207,7 +207,7 @@ services:
       dockerfile: Dockerfile
       args:
         VITE_API_BASE_URL: /api
-    image: ai-podcast-clip-cutter-web:1.1.0
+    image: ai-podcast-clip-cutter-web:1.2.1
     ports:
       - "127.0.0.1:${WEB_PORT:-5173}:8080"
     healthcheck:
