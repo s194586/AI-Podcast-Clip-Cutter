@@ -2,11 +2,12 @@
 
 Release summaries are based on the verified Git history.
 
-## Unreleased
+## v1.2.1 — 2026-08-07
 
-- Removed third-party demo media and source-specific references from the public repository.
-- Retained the validated application, architecture, and export workflow.
-- Portfolio UI screenshots will replace external-media demo assets.
+- Added portfolio UI screenshots for the dashboard, project creation, review editor, and exports.
+- Improved the README for recruiter-facing product presentation.
+- Removed third-party demo media from the public repository.
+- Hardened the final Portfolio MVP release presentation and documentation.
 
 ## v1.2.0 — 2026-08-06
 
