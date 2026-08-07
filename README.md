@@ -14,22 +14,16 @@ Gemini through the LangGraph boundary-review path is the only automated
 semantic evaluation route; backend validation and the human editor remain
 authoritative.
 
-### Demo
+### Product evidence
 
-[![Portfolio MVP demo poster](docs/demo/portfolio-mvp-poster.jpg)](docs/demo/portfolio-mvp-subtitled.mp4)
+Third-party media is not distributed with this repository.
 
-Selected clip: `73:56.70–75:10.88` (74.24 s), presented as a safe
-`9:16 contain layout with blurred background`.
+The validated MVP produces raw and subtitled 9:16 MP4 exports from
+authorized source material. Public portfolio screenshots focus on the
+application interface, review workflow, orchestration status, and export
+results rather than externally owned media.
 
-- [Watch subtitled demo](docs/demo/portfolio-mvp-subtitled.mp4)
-- [Watch raw demo](docs/demo/portfolio-mvp-raw.mp4)
-
-The local Project 5 metadata identifies the source as **“PŁACILIŚMY 80%
-PROWIZJI W TEAM X - Lexy Chaplin”** and records
-[`https://www.youtube.com/watch?v=iAcR3T_Q5X8`](https://www.youtube.com/watch?v=iAcR3T_Q5X8).
-The local metadata does not record the channel name, and this repository has
-no confirmation of redistribution rights for the external demo material.
-The MIT license below applies to the code, not to third-party media.
+UI screenshots will be added before the final portfolio release.
 
 ## Verified product flow
 
@@ -85,6 +79,8 @@ faces. Face tracking is experimental/best-effort and is not an MVP acceptance
 criterion. Subtitle styling is deterministic; it does not claim
 speaker-dependent colors. There is no subtitle text editor or `Render All`.
 
+Users are responsible for processing only media they own or are authorized to use.
+
 ## Production roadmap
 
 - active-speaker/face tracking refinement;
@@ -96,5 +92,4 @@ speaker-dependent colors. There is no subtitle text editor or `Render All`.
 
 ## License
 
-Code is MIT-licensed. This license does not grant rights to external podcast
-or demo media.
+Code is MIT-licensed.

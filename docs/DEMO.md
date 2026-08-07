@@ -1,18 +1,17 @@
 # Portfolio MVP demo runbook
 
-The public demo is the prepared clip in [`docs/demo/`](demo/). The raw and
-subtitled files are 1080×1920 H.264/AAC MP4s, 25 FPS, 74.24 seconds long. The
-poster links directly to the subtitled version from the root README.
+Start the application with the canonical Docker/Airflow commands in the
+[root README](../README.md). Use only podcast or other media that you own or
+are authorized to use.
 
-For the product walkthrough, use the canonical Docker/Airflow start from the
-[root README](../README.md), then show:
+For a recruiter-facing walkthrough, show:
 
-1. project and processing state;
-2. neutral candidate windows and the transcript excerpt;
-3. Gemini/LangGraph boundary review state;
-4. human boundary edit and accept/reject;
-5. raw and subtitled exports.
+1. project creation;
+2. Airflow orchestration status;
+3. transcript and candidate review;
+4. the Gemini/LangGraph boundary decision;
+5. manual boundary editing;
+6. raw and subtitled export results.
 
-Do not show credentials, local paths, private metadata, or imply that the
-external podcast media is cleared for redistribution. The repository records
-the source URL, but not the channel name or rights confirmation.
+This repository does not distribute external source media. Do not show
+credentials or private paths during the walkthrough.
