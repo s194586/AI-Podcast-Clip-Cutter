@@ -1,16 +1,11 @@
 # AI Podcast Clip Cutter
 
-AI Podcast Clip Cutter is a local-first, human-in-the-loop MVP for turning a
-long podcast into reviewable 9:16 clips. It shows a recruiter the complete
-product loop: deterministic media analysis, speaker-aware transcript assembly,
-bounded semantic boundary review, human editing, and raw/subtitled export.
+AI Podcast Clip Cutter is a local-first, human-in-the-loop MVP for turning
+long-form podcasts into reviewable 9:16 clips. It demonstrates the complete
+product loop from deterministic candidate discovery through AI-assisted
+boundary review, human editing, and raw or subtitled export.
 
 ## Portfolio MVP — v1.2.1
-
-This is a local-first, human-in-the-loop product for turning long-form podcasts
-into reviewable vertical clips. It demonstrates a complete workflow from
-deterministic candidate discovery through AI-assisted boundary review, editing,
-and raw or subtitled export.
 
 ## Screenshot showcase
 
@@ -53,15 +48,12 @@ authoritative.
 
 ### Product evidence
 
-Third-party media is not distributed with this repository.
+Full third-party source media files are not distributed with this repository.
 
 The validated MVP produces raw and subtitled 9:16 MP4 exports from
 authorized source material. Public portfolio screenshots focus on the
 application interface, review workflow, orchestration status, and export
 results rather than externally owned media.
-
-The screenshots above focus on the application interface, review workflow,
-orchestration status, and export results rather than externally owned media.
 
 ## Verified product flow
 
@@ -125,15 +117,6 @@ criterion. Subtitle styling is deterministic; it does not claim
 speaker-dependent colors. There is no subtitle text editor or `Render All`.
 
 Users are responsible for processing only media they own or are authorized to use.
-
-## Production roadmap
-
-- active-speaker/face tracking refinement;
-- speaker-diarization-based subtitle colors;
-- queued sequential `Render All`, progress, retry-failed, and ZIP export;
-- subtitle text editor;
-- hosting, auth, and multi-user persistence;
-- GPU/performance optimization.
 
 ## License
 

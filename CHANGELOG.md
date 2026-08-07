@@ -2,7 +2,7 @@
 
 Release summaries are based on the verified Git history.
 
-## v1.2.1
+## v1.2.1 — 2026-08-07
 
 - Added portfolio UI screenshots for the dashboard, project creation, review editor, and exports.
 - Improved the README for recruiter-facing product presentation.
